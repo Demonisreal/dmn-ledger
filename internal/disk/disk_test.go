@@ -551,3 +551,104 @@ func TestSimCloneDoesNotDisturbOriginal(t *testing.T) {
 		t.Fatal("crashing a clone changed the original's crash")
 	}
 }
+
+func TestSimFailAfter(t *testing.T) {
+	sim := newSim(3)
+	f, err := sim.Create("/d/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const k = 7
+	sim.FailAfter(k)
+	block := bytes.Repeat([]byte{1}, 1000)
+	var failed []int
+	short := -1
+	for i := 1; i <= 20; i++ {
+		n, err := f.WriteAt(block, int64(i-1)*1000)
+		switch {
+		case errors.Is(err, syscall.EIO):
+			failed = append(failed, i)
+			short = n
+		case err != nil:
+			t.Fatal(err)
+		}
+	}
+	if len(failed) != 1 || failed[0] != k {
+		t.Fatalf("failed writes %v, want exactly write %d", failed, k)
+	}
+	if short == len(block) {
+		t.Fatal("the failed write wrote everything; pick another seed")
+	}
+	got := contents(t, sim, "/d/a")[(k-1)*1000 : k*1000]
+	if want := append(bytes.Repeat([]byte{1}, short), make([]byte, 1000-short)...); !bytes.Equal(got, want) {
+		t.Fatalf("write %d failed after %d bytes, but the file holds something else", k, short)
+	}
+
+	sim.FailAfter(2)
+	sim.FailAfter(0)
+	for range 5 {
+		if err := f.Sync(); err != nil {
+			t.Fatalf("disarmed sync: %v", err)
+		}
+	}
+	sim.FailAfter(1)
+	if _, err := sim.Clone(rand.New(rand.NewPCG(1, 1))).Open("/d/a"); err != nil {
+		t.Fatalf("clone inherited the armed fault: %v", err)
+	}
+	if _, err := sim.Open("/d/a"); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("armed open = %v, want EIO", err)
+	}
+}
+
+func TestSimFailAfterCountsEveryAccess(t *testing.T) {
+	sim := newSim(4)
+	f, _ := sim.Create("/d/a")
+	sim.FailAfter(4)
+	steps := []func() error{
+		func() error { _, err := f.WriteAt([]byte("x"), 0); return err },
+		f.Sync,
+		func() error { _, err := sim.List("/d"); return err },
+		func() error { return sim.Rename("/d/a", "/d/b") },
+		func() error { return sim.SyncDir("/d") },
+	}
+	var failed []int
+	for i, step := range steps {
+		if err := step(); errors.Is(err, syscall.EIO) {
+			failed = append(failed, i+1)
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slices.Equal(failed, []int{4}) {
+		t.Fatalf("failed steps %v, want the rename", failed)
+	}
+}
+
+func TestSimFailSyncAfterDropsPages(t *testing.T) {
+	sim := newSim(5)
+	f, _ := sim.Create("/d/a")
+	_ = sim.SyncDir("/d")
+	write(t, f, []byte("old"), 0)
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	sim.FailSyncAfter(2)
+	write(t, f, []byte("mid"), 0)
+	if err := f.Sync(); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	write(t, f, []byte("new"), 0)
+	if err := f.Sync(); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("second sync = %v, want EIO", err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatalf("sync after the failure: %v", err)
+	}
+	if got := contents(t, sim, "/d/a"); string(got) != "new" {
+		t.Fatalf("page cache shows %q", got)
+	}
+	sim.Crash()
+	if got := contents(t, sim, "/d/a"); string(got) != "mid" {
+		t.Fatalf("after crash %q, want the last synced %q", got, "mid")
+	}
+}

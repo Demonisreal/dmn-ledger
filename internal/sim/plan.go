@@ -1,0 +1,174 @@
+package sim
+
+import (
+	"fmt"
+	"math/rand/v2"
+)
+
+type Profile string
+
+const (
+	ProfileCalm  Profile = "calm"
+	ProfileNet   Profile = "net"
+	ProfileCrash Profile = "crash"
+	ProfileClock Profile = "clock"
+	ProfileAll   Profile = "all"
+)
+
+const (
+	microsecond uint64 = 1000
+	millisecond        = 1000 * microsecond
+	second             = 1000 * millisecond
+
+	tick       = 10 * millisecond
+	clockBase  = 1000 * second
+	clockSkew  = 2 * second
+	jumpMax    = 30 * second
+	stormMin   = 2 * second
+	stormSpan  = 4 * second
+	quietLen   = 5 * second
+	maxWindows = 12
+	windowMin  = 50 * millisecond
+	windowSpan = 1500 * millisecond
+
+	armSpan        = 16
+	gateSpan       = 4
+	restartArmOdds = 3
+	restartMin     = 10 * millisecond
+	restartSpan    = second
+	blackoutSpread = 500 * millisecond
+
+	fsyncMin     = 100 * microsecond
+	fsyncSpan    = 1900 * microsecond
+	slowSyncMin  = 20 * millisecond
+	slowSyncSpan = 280 * millisecond
+	bytesPerNs   = 2
+
+	linkBaseMin  = 200 * microsecond
+	linkBaseSpan = 1800 * microsecond
+	lagOdds      = 100
+	lagMin       = 20 * millisecond
+	lagSpan      = 180 * millisecond
+	stallOdds    = 1000
+	stallMin     = second
+	stallSpan    = 4 * second
+	holdMin      = 100 * millisecond
+	holdSpan     = 900 * millisecond
+)
+
+type fault uint8
+
+const (
+	split fault = iota + 1
+	oneway
+	isolate
+	bridge
+	crash
+	midway
+	blackout
+	slow
+	eio
+	fsyncgate
+	jump
+)
+
+var faultNames = [...]string{
+	split: "split", oneway: "oneway", isolate: "isolate", bridge: "bridge", crash: "crash", midway: "midway",
+	blackout: "blackout", slow: "slow", eio: "eio", fsyncgate: "fsyncgate", jump: "jump",
+}
+
+func (f fault) String() string {
+	return faultNames[f]
+}
+
+type window struct {
+	kind       fault
+	start, end uint64
+	node, peer uint64
+	side       []bool
+	rate       float64
+	shift      uint64
+	back, keep bool
+}
+
+type plan struct {
+	windows   []window
+	quiet     uint64
+	end       uint64
+	loss, dup float64
+	journal   []float64
+	rearm     bool
+}
+
+func profileFaults(p Profile) ([]fault, error) {
+	netFaults := []fault{split, oneway, isolate, bridge}
+	diskFaults := []fault{crash, midway, midway, midway, blackout, slow, eio, fsyncgate}
+	switch p {
+	case ProfileCalm, "":
+		return nil, nil
+	case ProfileNet:
+		return netFaults, nil
+	case ProfileCrash:
+		return diskFaults, nil
+	case ProfileClock:
+		return []fault{jump}, nil
+	case ProfileAll:
+		return append(append(netFaults, diskFaults...), jump), nil
+	}
+	return nil, fmt.Errorf("sim: unknown profile %q", p)
+}
+
+func newPlan(rng *rand.Rand, p Profile, nodes, hosts uint64) (plan, error) {
+	faults, err := profileFaults(p)
+	if err != nil {
+		return plan{}, err
+	}
+	pl := plan{quiet: stormMin + rng.Uint64N(stormSpan), journal: make([]float64, nodes)}
+	pl.end = pl.quiet + quietLen
+	for i := range pl.journal {
+		if rng.IntN(2) == 0 {
+			pl.journal[i] = float64(1+rng.IntN(50)) / 100
+		}
+	}
+	if p == ProfileNet || p == ProfileAll {
+		pl.loss = float64(rng.IntN(201)) / 1000
+		pl.dup = float64(rng.IntN(101)) / 1000
+	}
+	pl.rearm = p == ProfileCrash || p == ProfileAll
+	if len(faults) == 0 {
+		return pl, nil
+	}
+	for range 1 + rng.IntN(maxWindows) {
+		win := window{kind: faults[rng.IntN(len(faults))], node: 1 + rng.Uint64N(nodes)}
+		dur := windowMin + rng.Uint64N(windowSpan)
+		win.start = rng.Uint64N(pl.quiet - dur)
+		win.end = win.start + dur
+		if win.kind == bridge && nodes == 1 {
+			win.kind = isolate
+		}
+		switch win.kind {
+		case split, oneway:
+			win.side = make([]bool, hosts)
+			for i := range win.side {
+				win.side[i] = rng.IntN(2) == 0
+			}
+			win.side[win.node-1] = true
+			if nodes > 1 {
+				win.side[(win.node+rng.Uint64N(nodes-1))%nodes] = false
+			}
+		case isolate:
+			win.side = make([]bool, hosts)
+			win.side[win.node-1] = true
+		case bridge:
+			win.peer = 1 + (win.node+rng.Uint64N(nodes-1))%nodes
+		case eio:
+			win.rate = float64(10+rng.IntN(201)) / 10000
+		case jump:
+			win.shift = millisecond + rng.Uint64N(jumpMax)
+			win.back = rng.IntN(2) == 0
+			win.keep = rng.IntN(2) == 0
+		}
+		pl.windows = append(pl.windows, win)
+	}
+	return pl, nil
+}

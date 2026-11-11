@@ -21,11 +21,15 @@ type Sim struct {
 	JournalRate  float64
 	Sector       int64
 
-	rng     *rand.Rand
-	dirs    map[string]bool
-	live    map[string]*simNode
-	durable map[string]*simNode
-	locks   map[string]*simLock
+	rng      *rand.Rand
+	ops      uint64
+	failAt   uint64
+	syncs    uint64
+	failSync uint64
+	dirs     map[string]bool
+	live     map[string]*simNode
+	durable  map[string]*simNode
+	locks    map[string]*simLock
 }
 
 type simNode struct {
@@ -63,8 +67,27 @@ func (s *Sim) hasDir(dir string) bool {
 	return ok || dir == filepath.Dir(dir)
 }
 
+func (s *Sim) FailAfter(k uint64) {
+	s.failAt = 0
+	if k > 0 {
+		s.failAt = s.ops + k
+	}
+}
+
+func (s *Sim) FailSyncAfter(k uint64) {
+	s.failSync = 0
+	if k > 0 {
+		s.failSync = s.syncs + k
+	}
+}
+
+func (s *Sim) hit(rate float64) bool {
+	s.ops++
+	return s.ops == s.failAt || rate > 0 && s.rng.Float64() < rate
+}
+
 func (s *Sim) eio(op, name string, rate float64) error {
-	if rate > 0 && s.rng.Float64() < rate {
+	if s.hit(rate) {
 		return &fs.PathError{Op: op, Path: name, Err: syscall.EIO}
 	}
 	return nil
@@ -129,7 +152,7 @@ func (s *Sim) Rename(oldname, newname string) error {
 	if n == nil || !s.hasDir(filepath.Dir(newname)) {
 		return &os.LinkError{Op: "rename", Old: oldname, New: newname, Err: fs.ErrNotExist}
 	}
-	if s.MetaErrRate > 0 && s.rng.Float64() < s.MetaErrRate {
+	if s.hit(s.MetaErrRate) {
 		return &os.LinkError{Op: "rename", Old: oldname, New: newname, Err: syscall.EIO}
 	}
 	delete(s.live, oldname)
@@ -270,6 +293,7 @@ func (s *Sim) Clone(rng *rand.Rand) *Sim {
 	}
 	c := *s
 	c.rng = rng
+	c.failAt, c.failSync = 0, 0
 	c.dirs = maps.Clone(s.dirs)
 	c.live = cp(s.live)
 	c.durable = cp(s.durable)
@@ -384,6 +408,11 @@ func (f *simFile) WriteAt(p []byte, off int64) (int, error) {
 func (f *simFile) Sync() error {
 	if f.closed {
 		return f.fail("sync", fs.ErrClosed)
+	}
+	f.sim.syncs++
+	if f.sim.syncs == f.sim.failSync {
+		f.node.dropDirty()
+		return f.fail("sync", syscall.EIO)
 	}
 	if err := f.sim.eio("sync", f.name, f.sim.SyncErrRate); err != nil {
 		if f.sim.rng.IntN(2) == 0 {
