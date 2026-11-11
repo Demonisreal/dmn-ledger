@@ -13,7 +13,9 @@ type Uint128 struct {
 	Hi, Lo uint64
 }
 
-var Max = Uint128{Hi: math.MaxUint64, Lo: math.MaxUint64}
+func Max() Uint128 {
+	return Uint128{Hi: math.MaxUint64, Lo: math.MaxUint64}
+}
 
 func From64(v uint64) Uint128 {
 	return Uint128{Lo: v}
@@ -34,12 +36,12 @@ func (u Uint128) Cmp(v Uint128) int {
 	return cmp.Compare(u.Lo, v.Lo)
 }
 
-func (u Uint128) Add(v Uint128) Uint128 {
+func (u Uint128) AddWrap(v Uint128) Uint128 {
 	sum, _ := u.AddOverflow(v)
 	return sum
 }
 
-func (u Uint128) Sub(v Uint128) Uint128 {
+func (u Uint128) SubWrap(v Uint128) Uint128 {
 	diff, _ := u.SubUnderflow(v)
 	return diff
 }

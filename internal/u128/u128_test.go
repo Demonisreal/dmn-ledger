@@ -28,7 +28,7 @@ func TestString(t *testing.T) {
 		{Uint128{Lo: 1<<64 - 1}, "18446744073709551615"},
 		{Uint128{Hi: 1}, "18446744073709551616"},
 		{Uint128{Hi: 1, Lo: 0x158e460913d00000}, "20000000000000000000"},
-		{Max, "340282366920938463463374607431768211455"},
+		{Max(), "340282366920938463463374607431768211455"},
 	}
 	for _, tt := range tests {
 		if got := tt.u.String(); got != tt.want {
@@ -40,13 +40,13 @@ func TestString(t *testing.T) {
 func TestOverflowEdges(t *testing.T) {
 	t.Parallel()
 	one := From64(1)
-	if sum, o := Max.AddOverflow(one); !o || !sum.IsZero() {
+	if sum, o := Max().AddOverflow(one); !o || !sum.IsZero() {
 		t.Errorf("Max+1 = %v, %v", sum, o)
 	}
-	if sum, o := Max.AddOverflow(Uint128{}); o || sum != Max {
+	if sum, o := Max().AddOverflow(Uint128{}); o || sum != Max() {
 		t.Errorf("Max+0 = %v, %v", sum, o)
 	}
-	if diff, o := (Uint128{}).SubUnderflow(one); !o || diff != Max {
+	if diff, o := (Uint128{}).SubUnderflow(one); !o || diff != Max() {
 		t.Errorf("0-1 = %v, %v", diff, o)
 	}
 	if sum, o := (Uint128{Lo: 1<<64 - 1}).AddOverflow(one); o || sum != (Uint128{Hi: 1}) {
@@ -62,7 +62,7 @@ func randUint128(r *rand.Rand) Uint128 {
 	case 0:
 		return From64(r.Uint64N(1000))
 	case 1:
-		return Max.Sub(From64(r.Uint64N(1000)))
+		return Max().SubWrap(From64(r.Uint64N(1000)))
 	case 2:
 		return Uint128{Lo: r.Uint64()}
 	}

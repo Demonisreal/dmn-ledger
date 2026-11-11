@@ -58,9 +58,9 @@ type Transfer struct {
 	Timestamp       uint64
 }
 
-type Result struct {
-	Index int
-	Code  Code
+type Failure struct {
+	Index  int
+	Reason Reason
 }
 
 const (

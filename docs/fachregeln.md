@@ -59,21 +59,32 @@ pending transfer and the amount actually posted (for void: the pending amount).
 
 ## Batches and time
 
-`Apply(op, batchTimestamp, body)` takes one operation (`CreateAccounts` or `CreateTransfers`) and a
-body of fixed-size big-endian records (96 bytes per account, 100 per transfer, fields in the order
-of the tables above). An unknown op or a body that is not a whole number of records is rejected with
-`ErrMalformedBatch` before anything changes.
+`Apply(op, batchTimestamp, body, dst)` takes one operation (`CreateAccounts` or `CreateTransfers`)
+and a body of fixed-size big-endian records (96 bytes per account, 100 per transfer, fields in the
+order of the tables above). It appends the failures to `dst` and returns it, so a caller that reuses
+the slice gets through a batch without allocating, even when events fail.
 
-1. Pending transfers with `Timestamp + Timeout * 10^9 <= batchTimestamp` expire, in order of
-   expiry time, then ID. Their amounts leave `*Pending`; they can no longer be posted or voided.
-2. Event `i` gets the timestamp `max(batchTimestamp, last + 1) + i`, where `last` is the highest
-   timestamp handed out so far. Timestamps are unique and strictly increasing, even when the
-   leader's clock goes backwards. An empty batch hands out no timestamp but still runs step 1.
-3. Events run in order. The result lists only the events that failed, as `(index, code)` in index
+The whole batch is rejected with `ErrMalformedBatch`, before anything changes, when:
+
+- the op is unknown,
+- the body is not a whole number of records, or
+- a timestamp would reach 2^63: `batchTimestamp >= 2^63` or `max(batchTimestamp, last + 1) + n > 2^63`
+  for `n` events. Below that bound neither the timestamps nor `Timestamp + Timeout * 10^9` (at most
+  about 4.3·10^18) can overflow uint64.
+
+Otherwise:
+
+1. Event `i` gets the timestamp `now + i` with `now = max(batchTimestamp, last + 1)`, where `last` is
+   the highest timestamp handed out so far. Timestamps are unique and strictly increasing, even when
+   the leader's clock goes backwards. An empty batch hands out no timestamp.
+2. Pending transfers with `Timestamp + Timeout * 10^9 <= now` expire, in order of expiry time, then
+   ID. Their amounts leave `*Pending`; they can no longer be posted or voided. This runs for empty
+   batches too.
+3. Events run in order. The result lists only the events that failed, as `(index, reason)` in index
    order; an empty list means every event succeeded.
 
 A pending transfer is also treated as expired when a post or void runs at a timestamp at or after
-its expiry, even if the sweep in step 1 has not removed it yet.
+its expiry, even if the sweep in step 2 has not removed it yet.
 
 ### Chains
 
@@ -81,7 +92,7 @@ its expiry, even if the sweep in step 1 has not removed it yet.
 A chain is atomic:
 
 - If one event fails, every effect of the chain is rolled back. The failing event gets its own
-  code, all other events of the chain get `LinkedEventFailed`, and events after the failure are not
+  reason, all other events of the chain get `LinkedEventFailed`, and events after the failure are not
   evaluated.
 - If the last event of the batch has `Linked`, the chain is open. None of its events are evaluated;
   all of them get `LinkedEventChainOpen`.
@@ -91,11 +102,11 @@ and post it.
 
 ## Check order
 
-The first failing check decides the code.
+The first failing check decides the reason.
 
 ### Create account
 
-| # | Check | Code |
+| # | Check | Reason |
 |---|---|---|
 | 1 | `ID` is 0 | `IDMustNotBeZero` |
 | 2 | `ID` is 2^128-1 | `IDMustNotBeMax` |
@@ -110,7 +121,7 @@ The first failing check decides the code.
 
 ### Create transfer: normal or pending
 
-| # | Check | Code |
+| # | Check | Reason |
 |---|---|---|
 | 1 | `ID` is 0 | `IDMustNotBeZero` |
 | 2 | `ID` is 2^128-1 | `IDMustNotBeMax` |
@@ -140,7 +151,7 @@ The first failing check decides the code.
 
 Checks 1–4 as above, then:
 
-| # | Check | Code |
+| # | Check | Reason |
 |---|---|---|
 | 5 | `PendingID` is 0 | `PendingIDMustNotBeZero` |
 | 6 | `Timeout` is not 0 | `TimeoutRequiresPending` |
@@ -162,11 +173,11 @@ Checks 1–4 as above, then:
 Post and void cannot overflow or break a limit: they only move value from pending to posted on the
 same side, or release it.
 
-## Codes
+## Reasons
 
-The numbers are fixed. New codes are only appended.
+The numbers are fixed. New reasons are only appended.
 
-| Code | Name |
+| Number | Name |
 |---|---|
 | 0 | `OK` (never reported) |
 | 1 | `LinkedEventFailed` |
@@ -218,13 +229,22 @@ The numbers are fixed. New codes are only appended.
 - per account: posted plus pending fits into u128 on both sides
 - per account: the limit flag holds
 
-## Digest
+## Snapshot and digest
 
-`Digest` is SHA-256 over:
+`WriteSnapshot` writes the whole state; `ReadSnapshot` restores it. The bytes depend only on the state,
+not on the order in which it was built:
 
-1. the number of accounts as uint64, then every account record in ID order
-2. the number of transfers as uint64, then every transfer record in ID order, each followed by one
+1. version byte `1`
+2. `last` as uint64
+3. the number of accounts as uint64, then every account record in ID order
+4. the number of transfers as uint64, then every transfer record in ID order, each followed by one
    status byte: 0 none, 1 pending, 2 posted, 3 voided, 4 expired
 
-All integers are big-endian. Two replicas with the same digest hold the same accounts, transfers and
-pending states.
+All integers are big-endian. Indexes and the expiry queue are not stored; they follow from the
+records. `ReadSnapshot` rejects with `ErrBadSnapshot` anything it could not have written: another
+version, `last >= 2^63`, records out of ID order or newer than `last`, transfers on unknown accounts,
+a status that does not match the `Pending` flag, a post or void without its pending transfer,
+missing or trailing bytes, and any state that fails `CheckInvariants`.
+
+`Digest` is SHA-256 over the snapshot bytes. Two replicas with the same digest hold the same
+accounts, transfers, pending states and `last`, so they hand out the same timestamps from then on.

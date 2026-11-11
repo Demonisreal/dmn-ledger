@@ -2,6 +2,7 @@ package state_test
 
 import (
 	"encoding/binary"
+	"math"
 	"math/rand/v2"
 	"slices"
 
@@ -38,7 +39,7 @@ type gen struct {
 }
 
 func newGen(r *rand.Rand) *gen {
-	return &gen{
+	g := &gen{
 		r:           r,
 		ts:          r.Uint64N(1e9),
 		maxAccounts: 2 + r.IntN(24),
@@ -51,6 +52,10 @@ func newGen(r *rand.Rand) *gen {
 		huge:        r.IntN(4) == 0,
 		coarse:      r.IntN(3) == 0,
 	}
+	if r.IntN(16) == 0 {
+		g.ts = 1<<63 - r.Uint64N(600e9)
+	}
+	return g
 }
 
 func (g *gen) batch() batch {
@@ -84,11 +89,11 @@ func (g *gen) batch() batch {
 	return b
 }
 
-func (g *gen) settle(b batch, fails []state.Result) {
+func (g *gen) settle(b batch, fails []state.Failure) {
 	base := len(g.pendings) - len(b.pendings)
 	kept := g.pendings[:base]
 	for k, i := range b.pendings {
-		if !slices.ContainsFunc(fails, func(f state.Result) bool { return f.Index == i }) {
+		if !slices.ContainsFunc(fails, func(f state.Failure) bool { return f.Index == i }) {
 			kept = append(kept, g.pendings[base+k])
 		}
 	}
@@ -123,7 +128,7 @@ func (g *gen) account() state.Account {
 	case 0:
 		a.ID = u128.Uint128{}
 	case 1:
-		a.ID = u128.Max
+		a.ID = u128.Max()
 	case 2:
 		a.Flags |= state.AccountFlags(1) << (2 + r.IntN(14))
 	case 3:
@@ -135,7 +140,7 @@ func (g *gen) account() state.Account {
 	case 6:
 		a.DebitsPending = u128.From64(1)
 	case 7:
-		a.CreditsPosted = u128.Max
+		a.CreditsPosted = u128.Max()
 	case 8:
 		a.Timestamp = 1 + r.Uint64N(1e12)
 	}
@@ -147,7 +152,7 @@ func (g *gen) amount() u128.Uint128 {
 	if g.huge {
 		switch r.IntN(6) {
 		case 0:
-			return u128.Max.Sub(u128.From64(r.Uint64N(1000)))
+			return u128.Max().SubWrap(u128.From64(r.Uint64N(1000)))
 		case 1:
 			return u128.Uint128{Hi: 1<<63 - r.Uint64N(4), Lo: r.Uint64()}
 		}
@@ -181,7 +186,7 @@ func (g *gen) transfer() state.Transfer {
 		tr = g.sent[r.IntN(len(g.sent))]
 		tr.Flags &^= state.Linked
 		if r.IntN(3) == 0 {
-			tr.Amount = tr.Amount.Add(u128.From64(1))
+			tr.Amount = tr.Amount.AddWrap(u128.From64(1))
 		}
 	case len(g.pendings) > 0 && r.IntN(100) < g.pendingPct:
 		p := g.pendings[len(g.pendings)-1-r.IntN(min(len(g.pendings), 16))]
@@ -198,10 +203,10 @@ func (g *gen) transfer() state.Transfer {
 			tr.Amount = p.Amount
 		case 1:
 			if p.Amount.Cmp(u128.From64(1)) > 0 {
-				tr.Amount = p.Amount.Sub(u128.From64(1 + r.Uint64N(2)))
+				tr.Amount = p.Amount.SubWrap(u128.From64(1 + r.Uint64N(2)))
 			}
 		case 2:
-			tr.Amount = p.Amount.Add(u128.From64(1))
+			tr.Amount = p.Amount.AddWrap(u128.From64(1))
 		}
 	default:
 		dr, cr := g.pair()
@@ -215,7 +220,10 @@ func (g *gen) transfer() state.Transfer {
 		}
 		if r.IntN(100) < g.pendingPct {
 			tr.Flags = state.Pending
-			if r.IntN(3) > 0 {
+			switch k := r.IntN(30); {
+			case k == 0:
+				tr.Timeout = math.MaxUint32 - r.Uint32N(3)
+			case k > 10:
 				tr.Timeout = 1 + r.Uint32N(5)
 			}
 			g.pendings = append(g.pendings, tr)
@@ -229,7 +237,7 @@ func (g *gen) transfer() state.Transfer {
 	case 0:
 		tr.ID = u128.Uint128{}
 	case 1:
-		tr.ID = u128.Max
+		tr.ID = u128.Max()
 	case 2:
 		tr.Flags |= state.TransferFlags(1) << (4 + r.IntN(12))
 	case 3:

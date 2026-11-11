@@ -1,14 +1,23 @@
 package state
 
 import (
+	"bufio"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
 	"math/bits"
 
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
 var ErrMalformedBatch = errors.New("malformed batch")
+
+const (
+	tsLimit   = 1 << 63
+	blockBits = 14
+	blockSize = 1 << blockBits
+)
 
 type status uint8
 
@@ -22,6 +31,8 @@ const (
 
 type stored struct {
 	Transfer
+	dr, cr int
+	heap   int
 	status status
 }
 
@@ -34,53 +45,89 @@ type undo struct {
 type Machine struct {
 	accounts    []Account
 	accountIdx  map[u128.Uint128]int
-	transfers   []stored
+	blocks      []*[blockSize]stored
+	ntransfers  int
 	transferIdx map[u128.Uint128]int
-	expiries    expiryQueue
+	expiries    []expiry
 	undo        []undo
 	last        uint64
+
+	accountOrder, transferOrder order
+	hash                        hash.Hash
+	hashw                       *bufio.Writer
 }
 
-func New() *Machine {
-	return &Machine{
-		accountIdx:  make(map[u128.Uint128]int),
-		transferIdx: make(map[u128.Uint128]int),
+func New(accounts, transfers int) *Machine {
+	m := &Machine{
+		accounts:    make([]Account, 0, accounts),
+		accountIdx:  make(map[u128.Uint128]int, accounts),
+		transferIdx: make(map[u128.Uint128]int, transfers),
+		hash:        sha256.New(),
 	}
+	m.hashw = bufio.NewWriter(m.hash)
+	for range (transfers + blockSize - 1) / blockSize {
+		m.blocks = append(m.blocks, new([blockSize]stored))
+	}
+	return m
 }
 
-func (m *Machine) Apply(op Op, ts uint64, body []byte) ([]Result, error) {
-	switch {
-	case op == CreateAccounts && len(body)%AccountSize == 0:
-	case op == CreateTransfers && len(body)%TransferSize == 0:
+func (m *Machine) transfer(i int) *stored {
+	return &m.blocks[i>>blockBits][i&(blockSize-1)]
+}
+
+func (m *Machine) store(s stored) int {
+	i := m.ntransfers
+	if i>>blockBits == len(m.blocks) {
+		m.blocks = append(m.blocks, new([blockSize]stored))
+	}
+	*m.transfer(i) = s
+	m.transferIdx[s.ID] = i
+	m.ntransfers++
+	return i
+}
+
+func (m *Machine) Apply(op Op, ts uint64, body []byte, dst []Failure) ([]Failure, error) {
+	var size int
+	switch op {
+	case CreateAccounts:
+		size = AccountSize
+	case CreateTransfers:
+		size = TransferSize
 	default:
-		return nil, fmt.Errorf("%w: op %d with %d bytes", ErrMalformedBatch, op, len(body))
+		return dst, fmt.Errorf("%w: unknown op %d", ErrMalformedBatch, op)
 	}
-	m.expire(ts)
-	ts = max(ts, m.last+1)
+	if len(body)%size != 0 {
+		return dst, fmt.Errorf("%w: %d bytes is not a multiple of %d", ErrMalformedBatch, len(body), size)
+	}
+	start := max(ts, m.last+1)
+	if ts >= tsLimit || start+uint64(len(body)/size) > tsLimit {
+		return dst, fmt.Errorf("%w: timestamp %d out of range", ErrMalformedBatch, ts)
+	}
+
+	m.expire(start)
 	if op == CreateAccounts {
-		return m.createAccounts(ts, body), nil
+		return m.createAccounts(start, body, dst), nil
 	}
-	return m.createTransfers(ts, body), nil
+	return m.createTransfers(start, body, dst), nil
 }
 
-func (m *Machine) createAccounts(ts uint64, body []byte) []Result {
-	var failed []Result
+func (m *Machine) createAccounts(ts uint64, body []byte, dst []Failure) []Failure {
 	for i := range len(body) / AccountSize {
 		a := DecodeAccount(body[i*AccountSize:])
-		if code := m.createAccount(&a, ts); code != OK {
-			failed = append(failed, Result{Index: i, Code: code})
+		if reason := m.createAccount(&a, ts); reason != OK {
+			dst = append(dst, Failure{Index: i, Reason: reason})
 		}
 		m.last = ts
 		ts++
 	}
-	return failed
+	return dst
 }
 
-func (m *Machine) createAccount(a *Account, ts uint64) Code {
+func (m *Machine) createAccount(a *Account, ts uint64) Reason {
 	switch {
 	case a.ID.IsZero():
 		return IDMustNotBeZero
-	case a.ID == u128.Max:
+	case a.ID == u128.Max():
 		return IDMustNotBeMax
 	case a.Flags&^accountFlagsKnown != 0:
 		return FlagsUnknown
@@ -109,19 +156,18 @@ func (m *Machine) createAccount(a *Account, ts uint64) Code {
 	return OK
 }
 
-func (m *Machine) createTransfers(ts uint64, body []byte) []Result {
+func (m *Machine) createTransfers(ts uint64, body []byte, dst []Failure) []Failure {
 	n := len(body) / TransferSize
 	open := n
 	for open > 0 && DecodeTransfer(body[(open-1)*TransferSize:]).Flags&Linked != 0 {
 		open--
 	}
 
-	var failed []Result
-	first, broken, code := 0, -1, OK
+	first, broken, reason := 0, -1, OK
 	for i := range open {
 		tr := DecodeTransfer(body[i*TransferSize:])
 		if broken < 0 {
-			if code = m.createTransfer(&tr, ts); code != OK {
+			if reason = m.createTransfer(&tr, ts); reason != OK {
 				m.rollback()
 				broken = i
 			}
@@ -133,29 +179,29 @@ func (m *Machine) createTransfers(ts uint64, body []byte) []Result {
 		}
 		if broken >= 0 {
 			for j := first; j <= i; j++ {
-				c := LinkedEventFailed
+				r := LinkedEventFailed
 				if j == broken {
-					c = code
+					r = reason
 				}
-				failed = append(failed, Result{Index: j, Code: c})
+				dst = append(dst, Failure{Index: j, Reason: r})
 			}
 		}
 		m.undo = m.undo[:0]
 		first, broken = i+1, -1
 	}
 	for i := open; i < n; i++ {
-		failed = append(failed, Result{Index: i, Code: LinkedEventChainOpen})
+		dst = append(dst, Failure{Index: i, Reason: LinkedEventChainOpen})
 		m.last = ts
 		ts++
 	}
-	return failed
+	return dst
 }
 
-func (m *Machine) createTransfer(tr *Transfer, ts uint64) Code {
+func (m *Machine) createTransfer(tr *Transfer, ts uint64) Reason {
 	switch {
 	case tr.ID.IsZero():
 		return IDMustNotBeZero
-	case tr.ID == u128.Max:
+	case tr.ID == u128.Max():
 		return IDMustNotBeMax
 	case tr.Flags&^transferFlagsKnown != 0:
 		return FlagsUnknown
@@ -199,14 +245,14 @@ func (m *Machine) createTransfer(tr *Transfer, ts uint64) Code {
 		return TransferMustHaveSameLedgerAsAccounts
 	}
 	if i, ok := m.transferIdx[tr.ID]; ok {
-		return exists(&m.transfers[i].Transfer, *tr)
+		return exists(&m.transfer(i).Transfer, *tr)
 	}
 
-	debits, overflow := dr.DebitsPosted.Add(dr.DebitsPending).AddOverflow(tr.Amount)
+	debits, overflow := dr.DebitsPosted.AddWrap(dr.DebitsPending).AddOverflow(tr.Amount)
 	if overflow {
 		return OverflowsDebits
 	}
-	credits, overflow := cr.CreditsPosted.Add(cr.CreditsPending).AddOverflow(tr.Amount)
+	credits, overflow := cr.CreditsPosted.AddWrap(cr.CreditsPending).AddOverflow(tr.Amount)
 	if overflow {
 		return OverflowsCredits
 	}
@@ -220,23 +266,22 @@ func (m *Machine) createTransfer(tr *Transfer, ts uint64) Code {
 	m.undo = append(m.undo, undo{dr: dri, cr: cri, drPrev: *dr, crPrev: *cr, pending: -1})
 	st := statusNone
 	if tr.Flags&Pending != 0 {
-		dr.DebitsPending = dr.DebitsPending.Add(tr.Amount)
-		cr.CreditsPending = cr.CreditsPending.Add(tr.Amount)
+		dr.DebitsPending = dr.DebitsPending.AddWrap(tr.Amount)
+		cr.CreditsPending = cr.CreditsPending.AddWrap(tr.Amount)
 		st = statusPending
 	} else {
-		dr.DebitsPosted = dr.DebitsPosted.Add(tr.Amount)
-		cr.CreditsPosted = cr.CreditsPosted.Add(tr.Amount)
+		dr.DebitsPosted = dr.DebitsPosted.AddWrap(tr.Amount)
+		cr.CreditsPosted = cr.CreditsPosted.AddWrap(tr.Amount)
 	}
 	tr.Timestamp = ts
-	m.transferIdx[tr.ID] = len(m.transfers)
-	m.transfers = append(m.transfers, stored{Transfer: *tr, status: st})
+	i := m.store(stored{Transfer: *tr, dr: dri, cr: cri, heap: -1, status: st})
 	if st == statusPending && tr.Timeout > 0 {
-		m.expiries.push(expiry{at: tr.expiresAt(), id: tr.ID})
+		m.queue(i)
 	}
 	return OK
 }
 
-func (m *Machine) resolvePending(tr *Transfer, ts uint64) Code {
+func (m *Machine) resolvePending(tr *Transfer, ts uint64) Reason {
 	switch {
 	case tr.PendingID.IsZero():
 		return PendingIDMustNotBeZero
@@ -246,18 +291,18 @@ func (m *Machine) resolvePending(tr *Transfer, ts uint64) Code {
 		return TimestampMustBeZero
 	}
 	if i, ok := m.transferIdx[tr.ID]; ok {
-		e := &m.transfers[i].Transfer
+		e := &m.transfer(i).Transfer
 		if e.PendingID != tr.PendingID {
 			return ExistsWithDifferentFields
 		}
-		return exists(e, inherit(*tr, &m.transfers[m.transferIdx[e.PendingID]].Transfer))
+		return exists(e, inherit(*tr, &m.transfer(m.transferIdx[e.PendingID]).Transfer))
 	}
 
 	pi, ok := m.transferIdx[tr.PendingID]
 	if !ok {
 		return PendingTransferNotFound
 	}
-	p := &m.transfers[pi]
+	p := m.transfer(pi)
 	post := tr.Flags&PostPending != 0
 	switch {
 	case p.Flags&Pending == 0:
@@ -283,21 +328,22 @@ func (m *Machine) resolvePending(tr *Transfer, ts uint64) Code {
 	}
 
 	*tr = inherit(*tr, &p.Transfer)
-	dri, cri := m.accountIdx[p.DebitAccountID], m.accountIdx[p.CreditAccountID]
-	dr, cr := &m.accounts[dri], &m.accounts[cri]
-	m.undo = append(m.undo, undo{dr: dri, cr: cri, drPrev: *dr, crPrev: *cr, pending: pi})
-	dr.DebitsPending = dr.DebitsPending.Sub(p.Amount)
-	cr.CreditsPending = cr.CreditsPending.Sub(p.Amount)
+	dr, cr := &m.accounts[p.dr], &m.accounts[p.cr]
+	m.undo = append(m.undo, undo{dr: p.dr, cr: p.cr, drPrev: *dr, crPrev: *cr, pending: pi})
+	dr.DebitsPending = dr.DebitsPending.SubWrap(p.Amount)
+	cr.CreditsPending = cr.CreditsPending.SubWrap(p.Amount)
 	if post {
-		dr.DebitsPosted = dr.DebitsPosted.Add(tr.Amount)
-		cr.CreditsPosted = cr.CreditsPosted.Add(tr.Amount)
+		dr.DebitsPosted = dr.DebitsPosted.AddWrap(tr.Amount)
+		cr.CreditsPosted = cr.CreditsPosted.AddWrap(tr.Amount)
 		p.status = statusPosted
 	} else {
 		p.status = statusVoided
 	}
+	if p.heap >= 0 {
+		m.unqueue(p.heap)
+	}
 	tr.Timestamp = ts
-	m.transferIdx[tr.ID] = len(m.transfers)
-	m.transfers = append(m.transfers, stored{Transfer: *tr})
+	m.store(stored{Transfer: *tr, dr: p.dr, cr: p.cr, heap: -1})
 	return OK
 }
 
@@ -320,7 +366,7 @@ func inherit(tr Transfer, p *Transfer) Transfer {
 	return tr
 }
 
-func exists(e *Transfer, tr Transfer) Code {
+func exists(e *Transfer, tr Transfer) Reason {
 	tr.Timestamp = e.Timestamp
 	if tr != *e {
 		return ExistsWithDifferentFields
@@ -331,11 +377,18 @@ func exists(e *Transfer, tr Transfer) Code {
 func (m *Machine) rollback() {
 	for i := len(m.undo) - 1; i >= 0; i-- {
 		u := &m.undo[i]
-		last := len(m.transfers) - 1
-		delete(m.transferIdx, m.transfers[last].ID)
-		m.transfers = m.transfers[:last]
+		last := m.ntransfers - 1
+		if t := m.transfer(last); t.heap >= 0 {
+			m.unqueue(t.heap)
+		}
+		delete(m.transferIdx, m.transfer(last).ID)
+		m.ntransfers = last
 		if u.pending >= 0 {
-			m.transfers[u.pending].status = statusPending
+			p := m.transfer(u.pending)
+			p.status = statusPending
+			if p.Timeout > 0 {
+				m.queue(u.pending)
+			}
 		}
 		m.accounts[u.dr] = u.drPrev
 		m.accounts[u.cr] = u.crPrev
@@ -349,19 +402,11 @@ func (tr *Transfer) expiresAt() uint64 {
 
 func (m *Machine) expire(now uint64) {
 	for len(m.expiries) > 0 && m.expiries[0].at <= now {
-		e := m.expiries.pop()
-		i, ok := m.transferIdx[e.id]
-		if !ok {
-			continue
-		}
-		p := &m.transfers[i]
-		if p.status != statusPending || p.Timeout == 0 || p.expiresAt() != e.at {
-			continue
-		}
-		dr := &m.accounts[m.accountIdx[p.DebitAccountID]]
-		cr := &m.accounts[m.accountIdx[p.CreditAccountID]]
-		dr.DebitsPending = dr.DebitsPending.Sub(p.Amount)
-		cr.CreditsPending = cr.CreditsPending.Sub(p.Amount)
+		p := m.transfer(m.expiries[0].tr)
+		m.unqueue(0)
+		dr, cr := &m.accounts[p.dr], &m.accounts[p.cr]
+		dr.DebitsPending = dr.DebitsPending.SubWrap(p.Amount)
+		cr.CreditsPending = cr.CreditsPending.SubWrap(p.Amount)
 		p.status = statusExpired
 	}
 }

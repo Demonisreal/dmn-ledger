@@ -2,7 +2,6 @@ package state
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"maps"
 	"slices"
@@ -24,31 +23,58 @@ func (m *Machine) LookupTransfers(ids []u128.Uint128) []Transfer {
 	var found []Transfer
 	for _, id := range ids {
 		if i, ok := m.transferIdx[id]; ok {
-			found = append(found, m.transfers[i].Transfer)
+			found = append(found, m.transfer(i).Transfer)
 		}
 	}
 	return found
 }
 
 func (m *Machine) Digest() [sha256.Size]byte {
-	accts := slices.SortedFunc(slices.Values(m.accounts), func(a, b Account) int {
-		return a.ID.Cmp(b.ID)
-	})
-	trs := slices.SortedFunc(slices.Values(m.transfers), func(a, b stored) int {
-		return a.ID.Cmp(b.ID)
-	})
+	m.hash.Reset()
+	m.hashw.Reset(m.hash)
+	_ = m.encode(m.hashw)
+	var d [sha256.Size]byte
+	m.hash.Sum(d[:0])
+	return d
+}
 
-	h := sha256.New()
-	buf := make([]byte, 0, TransferSize+1)
-	h.Write(binary.BigEndian.AppendUint64(buf, uint64(len(accts))))
-	for _, a := range accts {
-		h.Write(AppendAccount(buf, a))
+type order struct {
+	idx, spare, fresh []int
+}
+
+func (o *order) sync(n int, cmp func(i, j int) int) []int {
+	if len(o.idx) == n {
+		return o.idx
 	}
-	h.Write(binary.BigEndian.AppendUint64(buf, uint64(len(trs))))
-	for _, tr := range trs {
-		h.Write(append(AppendTransfer(buf, tr.Transfer), byte(tr.status)))
+	o.fresh = o.fresh[:0]
+	for i := len(o.idx); i < n; i++ {
+		o.fresh = append(o.fresh, i)
 	}
-	return [sha256.Size]byte(h.Sum(nil))
+	slices.SortFunc(o.fresh, cmp)
+
+	merged, a, b := o.spare[:0], o.idx, o.fresh
+	for len(a) > 0 && len(b) > 0 {
+		if cmp(a[0], b[0]) < 0 {
+			merged, a = append(merged, a[0]), a[1:]
+		} else {
+			merged, b = append(merged, b[0]), b[1:]
+		}
+	}
+	merged = append(append(merged, a...), b...)
+	o.idx, o.spare = merged, o.idx
+	return o.idx
+}
+
+func (m *Machine) sortedAccounts() []int {
+	return m.accountOrder.sync(len(m.accounts), func(i, j int) int {
+		return m.accounts[i].ID.Cmp(m.accounts[j].ID)
+	})
+}
+
+func (m *Machine) sortedTransfers() []int {
+	return m.transferOrder.sync(m.ntransfers, func(i, j int) int {
+		return m.transfer(i).ID.Cmp(m.transfer(j).ID)
+	})
 }
 
 type total struct {
@@ -69,14 +95,13 @@ type ledgerTotals struct {
 
 func (m *Machine) CheckInvariants() error {
 	open := make([]struct{ debits, credits u128.Uint128 }, len(m.accounts))
-	for i := range m.transfers {
-		tr := &m.transfers[i]
+	for i := range m.ntransfers {
+		tr := m.transfer(i)
 		if tr.status != statusPending {
 			continue
 		}
-		dr, cr := &open[m.accountIdx[tr.DebitAccountID]], &open[m.accountIdx[tr.CreditAccountID]]
-		dr.debits = dr.debits.Add(tr.Amount)
-		cr.credits = cr.credits.Add(tr.Amount)
+		open[tr.dr].debits = open[tr.dr].debits.AddWrap(tr.Amount)
+		open[tr.cr].credits = open[tr.cr].credits.AddWrap(tr.Amount)
 	}
 
 	ledgers := make(map[uint32]*ledgerTotals)

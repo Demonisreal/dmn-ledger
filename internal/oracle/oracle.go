@@ -1,6 +1,7 @@
 package oracle
 
 import (
+	"bytes"
 	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
@@ -50,7 +51,7 @@ func New() *Ledger {
 	}
 }
 
-func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Result, error) {
+func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Failure, error) {
 	var size int
 	switch op {
 	case state.CreateAccounts:
@@ -64,20 +65,30 @@ func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Result, err
 		return nil, fmt.Errorf("%w: %d bytes", state.ErrMalformedBatch, len(body))
 	}
 
-	l.expire(ts)
+	if ts >= 1<<63 {
+		return nil, fmt.Errorf("%w: timestamp %d", state.ErrMalformedBatch, ts)
+	}
 	n := len(body) / size
 	stamps := make([]uint64, n)
+	next := max(ts, l.last+1)
 	for i := range stamps {
-		stamps[i] = max(ts, l.last+1)
-		l.last = stamps[i]
+		stamps[i] = next
+		next++
+	}
+	if next > 1<<63 {
+		return nil, fmt.Errorf("%w: timestamp %d", state.ErrMalformedBatch, ts)
+	}
+	l.expire(max(ts, l.last+1))
+	if n > 0 {
+		l.last = stamps[n-1]
 	}
 
-	var failed []state.Result
+	var failed []state.Failure
 	if op == state.CreateAccounts {
 		for i := range n {
-			code := l.createAccount(state.DecodeAccount(body[i*size:]), stamps[i])
-			if code != state.OK {
-				failed = append(failed, state.Result{Index: i, Code: code})
+			reason := l.createAccount(decode[state.Account](body[i*size:]), stamps[i])
+			if reason != state.OK {
+				failed = append(failed, state.Failure{Index: i, Reason: reason})
 			}
 		}
 		return failed, nil
@@ -85,7 +96,7 @@ func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Result, err
 
 	trs := make([]state.Transfer, n)
 	for i := range trs {
-		trs[i] = state.DecodeTransfer(body[i*size:])
+		trs[i] = decode[state.Transfer](body[i*size:])
 	}
 	for first := 0; first < n; {
 		last := first
@@ -94,7 +105,7 @@ func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Result, err
 		}
 		if last == n {
 			for i := first; i < n; i++ {
-				failed = append(failed, state.Result{Index: i, Code: state.LinkedEventChainOpen})
+				failed = append(failed, state.Failure{Index: i, Reason: state.LinkedEventChainOpen})
 			}
 			break
 		}
@@ -102,17 +113,17 @@ func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Result, err
 		x := &tx{l: l, accounts: map[u128.Uint128]*account{}, transfers: map[u128.Uint128]*transfer{}}
 		ok := true
 		for i := first; i <= last && ok; i++ {
-			code := x.createTransfer(trs[i], stamps[i])
-			if code == state.OK {
+			reason := x.createTransfer(trs[i], stamps[i])
+			if reason == state.OK {
 				continue
 			}
 			ok = false
 			for j := first; j <= last; j++ {
 				c := state.LinkedEventFailed
 				if j == i {
-					c = code
+					c = reason
 				}
-				failed = append(failed, state.Result{Index: j, Code: c})
+				failed = append(failed, state.Failure{Index: j, Reason: c})
 			}
 		}
 		if ok {
@@ -124,11 +135,11 @@ func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Result, err
 	return failed, nil
 }
 
-func (l *Ledger) createAccount(a state.Account, ts uint64) state.Code {
+func (l *Ledger) createAccount(a state.Account, ts uint64) state.Reason {
 	if a.ID.IsZero() {
 		return state.IDMustNotBeZero
 	}
-	if a.ID == u128.Max {
+	if a.ID == u128.Max() {
 		return state.IDMustNotBeMax
 	}
 	if a.Flags > state.DebitsMustNotExceedCredits|state.CreditsMustNotExceedDebits {
@@ -202,7 +213,7 @@ func (x *tx) transfer(id u128.Uint128) *transfer {
 	return &cp
 }
 
-func (x *tx) createTransfer(tr state.Transfer, ts uint64) state.Code {
+func (x *tx) createTransfer(tr state.Transfer, ts uint64) state.Reason {
 	kinds := 0
 	for _, f := range []state.TransferFlags{state.Pending, state.PostPending, state.VoidPending} {
 		if tr.Flags&f != 0 {
@@ -212,7 +223,7 @@ func (x *tx) createTransfer(tr state.Transfer, ts uint64) state.Code {
 	if tr.ID.IsZero() {
 		return state.IDMustNotBeZero
 	}
-	if tr.ID == u128.Max {
+	if tr.ID == u128.Max() {
 		return state.IDMustNotBeMax
 	}
 	if tr.Flags >= state.VoidPending<<1 {
@@ -301,7 +312,7 @@ func (x *tx) createTransfer(tr state.Transfer, ts uint64) state.Code {
 	return state.OK
 }
 
-func (x *tx) finishPending(tr state.Transfer, ts uint64) state.Code {
+func (x *tx) finishPending(tr state.Transfer, ts uint64) state.Reason {
 	zero := u128.Uint128{}
 	if tr.PendingID == zero {
 		return state.PendingIDMustNotBeZero
@@ -395,7 +406,7 @@ func fill(tr, p state.Transfer) state.Transfer {
 	return tr
 }
 
-func compare(e, tr state.Transfer) state.Code {
+func compare(e, tr state.Transfer) state.Reason {
 	e.Timestamp = 0
 	if e == tr {
 		return state.Exists
@@ -448,6 +459,8 @@ func (l *Ledger) LookupTransfers(ids []u128.Uint128) []state.Transfer {
 
 func (l *Ledger) Digest() [sha256.Size]byte {
 	h := sha256.New()
+	_ = binary.Write(h, binary.BigEndian, uint8(1))
+	_ = binary.Write(h, binary.BigEndian, l.last)
 	ids := slices.SortedFunc(maps.Keys(l.accounts), u128.Uint128.Cmp)
 	_ = binary.Write(h, binary.BigEndian, uint64(len(ids)))
 	for _, id := range ids {
@@ -498,6 +511,12 @@ func (a *account) export() state.Account {
 		Flags:          a.flags,
 		Timestamp:      a.timestamp,
 	}
+}
+
+func decode[T state.Account | state.Transfer](rec []byte) T {
+	var v T
+	_ = binary.Read(bytes.NewReader(rec), binary.BigEndian, &v)
+	return v
 }
 
 func toBig(u u128.Uint128) *big.Int {

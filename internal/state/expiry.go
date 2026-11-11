@@ -1,54 +1,70 @@
 package state
 
-import "github.com/Demonisreal/dmn-ledger/internal/u128"
-
 type expiry struct {
 	at uint64
-	id u128.Uint128
+	tr int
 }
 
-type expiryQueue []expiry
-
-func (q expiryQueue) less(i, j int) bool {
-	if q[i].at != q[j].at {
-		return q[i].at < q[j].at
+func (m *Machine) earlier(i, j int) bool {
+	a, b := m.expiries[i], m.expiries[j]
+	if a.at != b.at {
+		return a.at < b.at
 	}
-	return q[i].id.Cmp(q[j].id) < 0
+	return m.transfer(a.tr).ID.Cmp(m.transfer(b.tr).ID) < 0
 }
 
-func (q *expiryQueue) push(e expiry) {
-	h := append(*q, e)
-	for i := len(h) - 1; i > 0; {
+func (m *Machine) swap(i, j int) {
+	q := m.expiries
+	q[i], q[j] = q[j], q[i]
+	m.transfer(q[i].tr).heap = i
+	m.transfer(q[j].tr).heap = j
+}
+
+func (m *Machine) up(i int) {
+	for i > 0 {
 		parent := (i - 1) / 2
-		if !h.less(i, parent) {
-			break
+		if !m.earlier(i, parent) {
+			return
 		}
-		h[i], h[parent] = h[parent], h[i]
+		m.swap(i, parent)
 		i = parent
 	}
-	*q = h
 }
 
-func (q *expiryQueue) pop() expiry {
-	h := *q
-	top := h[0]
-	last := len(h) - 1
-	h[0] = h[last]
-	h = h[:last]
-	for i := 0; ; {
+func (m *Machine) down(i int) {
+	for {
 		next := i
-		if l := 2*i + 1; l < len(h) && h.less(l, next) {
+		if l := 2*i + 1; l < len(m.expiries) && m.earlier(l, next) {
 			next = l
 		}
-		if r := 2*i + 2; r < len(h) && h.less(r, next) {
+		if r := 2*i + 2; r < len(m.expiries) && m.earlier(r, next) {
 			next = r
 		}
 		if next == i {
-			break
+			return
 		}
-		h[i], h[next] = h[next], h[i]
+		m.swap(i, next)
 		i = next
 	}
-	*q = h
-	return top
+}
+
+func (m *Machine) queue(tr int) {
+	t := m.transfer(tr)
+	t.heap = len(m.expiries)
+	m.expiries = append(m.expiries, expiry{at: t.expiresAt(), tr: tr})
+	m.up(t.heap)
+}
+
+func (m *Machine) unqueue(pos int) {
+	last := len(m.expiries) - 1
+	m.transfer(m.expiries[pos].tr).heap = -1
+	if pos != last {
+		m.expiries[pos] = m.expiries[last]
+		m.transfer(m.expiries[pos].tr).heap = pos
+	}
+	m.expiries = m.expiries[:last]
+	if pos < last {
+		m.down(pos)
+		m.up(pos)
+	}
 }
