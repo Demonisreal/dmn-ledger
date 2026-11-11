@@ -1,0 +1,230 @@
+# Ledger rules
+
+This is the contract of the state machine in `internal/state`. The reference model in
+`internal/oracle` implements the same rules independently, and the model test checks both against
+each other. Every replica must reach the same result for the same batch, so the order of the checks
+below is part of the contract, not an implementation detail.
+
+## Accounts
+
+| Field | Type | Notes |
+|---|---|---|
+| `ID` | u128 | not 0, not 2^128-1 |
+| `DebitsPending`, `DebitsPosted`, `CreditsPending`, `CreditsPosted` | u128 | 0 on creation |
+| `Ledger` | uint32 | not 0; transfers only move value inside one ledger |
+| `Code` | uint16 | not 0; chosen by the user, e.g. account type |
+| `Flags` | uint16 | see below |
+| `Timestamp` | uint64 | 0 on creation, set by the state machine |
+
+| Flag | Bit | Meaning |
+|---|---|---|
+| `DebitsMustNotExceedCredits` | 0 | `DebitsPosted + DebitsPending` must stay ≤ `CreditsPosted` |
+| `CreditsMustNotExceedDebits` | 1 | `CreditsPosted + CreditsPending` must stay ≤ `DebitsPosted` |
+
+Both flags together are invalid. Accounts cannot be linked.
+
+## Transfers
+
+| Field | Type | Notes |
+|---|---|---|
+| `ID` | u128 | not 0, not 2^128-1 |
+| `DebitAccountID`, `CreditAccountID` | u128 | may be 0 on post/void, then taken from the pending transfer |
+| `Amount` | u128 | 0 on post/void means the full pending amount |
+| `PendingID` | u128 | only on post/void |
+| `Timeout` | uint32 | seconds, only on pending transfers; 0 means no expiry |
+| `Ledger` | uint32 | may be 0 on post/void |
+| `Code` | uint16 | may be 0 on post/void |
+| `Flags` | uint16 | see below |
+| `Timestamp` | uint64 | 0 on creation, set by the state machine |
+
+| Flag | Bit | Meaning |
+|---|---|---|
+| `Linked` | 0 | the next event in the batch belongs to the same chain |
+| `Pending` | 1 | reserve the amount on `*Pending` instead of posting it |
+| `PostPending` | 2 | post a pending transfer, fully or partially |
+| `VoidPending` | 3 | release a pending transfer |
+
+At most one of `Pending`, `PostPending`, `VoidPending`.
+
+- **Normal:** debits and credits are posted at once.
+- **Pending:** the amount goes to `DebitsPending` of the debit account and `CreditsPending` of the
+  credit account. With `Timeout > 0` it expires at `Timestamp + Timeout * 10^9`.
+- **Post:** refers to an open pending transfer via `PendingID`. The full pending amount leaves
+  `*Pending`; `Amount` (or the full amount if 0) is added to `*Posted`. A smaller amount posts
+  partially and releases the rest.
+- **Void:** releases the full pending amount. `Amount` must be 0 or exactly the pending amount.
+
+A stored post or void transfer carries the resolved values: accounts, ledger and code of the
+pending transfer and the amount actually posted (for void: the pending amount).
+
+## Batches and time
+
+`Apply(op, batchTimestamp, body)` takes one operation (`CreateAccounts` or `CreateTransfers`) and a
+body of fixed-size big-endian records (96 bytes per account, 100 per transfer, fields in the order
+of the tables above). An unknown op or a body that is not a whole number of records is rejected with
+`ErrMalformedBatch` before anything changes.
+
+1. Pending transfers with `Timestamp + Timeout * 10^9 <= batchTimestamp` expire, in order of
+   expiry time, then ID. Their amounts leave `*Pending`; they can no longer be posted or voided.
+2. Event `i` gets the timestamp `max(batchTimestamp, last + 1) + i`, where `last` is the highest
+   timestamp handed out so far. Timestamps are unique and strictly increasing, even when the
+   leader's clock goes backwards. An empty batch hands out no timestamp but still runs step 1.
+3. Events run in order. The result lists only the events that failed, as `(index, code)` in index
+   order; an empty list means every event succeeded.
+
+A pending transfer is also treated as expired when a post or void runs at a timestamp at or after
+its expiry, even if the sweep in step 1 has not removed it yet.
+
+### Chains
+
+`Linked` joins an event with the next one. A chain ends with the first event without `Linked`.
+A chain is atomic:
+
+- If one event fails, every effect of the chain is rolled back. The failing event gets its own
+  code, all other events of the chain get `LinkedEventFailed`, and events after the failure are not
+  evaluated.
+- If the last event of the batch has `Linked`, the chain is open. None of its events are evaluated;
+  all of them get `LinkedEventChainOpen`.
+
+Events later in a chain see the effects of earlier ones, so a chain can create a pending transfer
+and post it.
+
+## Check order
+
+The first failing check decides the code.
+
+### Create account
+
+| # | Check | Code |
+|---|---|---|
+| 1 | `ID` is 0 | `IDMustNotBeZero` |
+| 2 | `ID` is 2^128-1 | `IDMustNotBeMax` |
+| 3 | unknown flag bits | `FlagsUnknown` |
+| 4 | both limit flags | `FlagsAreMutuallyExclusive` |
+| 5 | `Ledger` is 0 | `LedgerMustNotBeZero` |
+| 6 | `Code` is 0 | `CodeMustNotBeZero` |
+| 7 | a balance is not 0 | `BalancesMustBeZero` |
+| 8 | `Timestamp` is not 0 | `TimestampMustBeZero` |
+| 9 | `ID` exists with other `Ledger`, `Code` or `Flags` | `ExistsWithDifferentFields` |
+| 10 | `ID` exists | `Exists` |
+
+### Create transfer: normal or pending
+
+| # | Check | Code |
+|---|---|---|
+| 1 | `ID` is 0 | `IDMustNotBeZero` |
+| 2 | `ID` is 2^128-1 | `IDMustNotBeMax` |
+| 3 | unknown flag bits | `FlagsUnknown` |
+| 4 | more than one of `Pending`, `PostPending`, `VoidPending` | `FlagsAreMutuallyExclusive` |
+| 5 | `DebitAccountID` is 0 | `DebitAccountIDMustNotBeZero` |
+| 6 | `CreditAccountID` is 0 | `CreditAccountIDMustNotBeZero` |
+| 7 | both account IDs are equal | `AccountsMustBeDifferent` |
+| 8 | `PendingID` is not 0 | `PendingIDMustBeZero` |
+| 9 | `Timeout` without `Pending` | `TimeoutRequiresPending` |
+| 10 | `Ledger` is 0 | `LedgerMustNotBeZero` |
+| 11 | `Code` is 0 | `CodeMustNotBeZero` |
+| 12 | `Amount` is 0 | `AmountMustNotBeZero` |
+| 13 | `Timestamp` is not 0 | `TimestampMustBeZero` |
+| 14 | debit account does not exist | `DebitAccountNotFound` |
+| 15 | credit account does not exist | `CreditAccountNotFound` |
+| 16 | accounts are on different ledgers | `AccountsMustHaveSameLedger` |
+| 17 | transfer is on another ledger than the accounts | `TransferMustHaveSameLedgerAsAccounts` |
+| 18 | `ID` exists with any other field (timestamp aside) | `ExistsWithDifferentFields` |
+| 19 | `ID` exists | `Exists` |
+| 20 | `DebitsPosted + DebitsPending + Amount` of the debit account overflows u128 | `OverflowsDebits` |
+| 21 | `CreditsPosted + CreditsPending + Amount` of the credit account overflows u128 | `OverflowsCredits` |
+| 22 | debit account has `DebitsMustNotExceedCredits` and its debits would exceed `CreditsPosted` | `ExceedsCredits` |
+| 23 | credit account has `CreditsMustNotExceedDebits` and its credits would exceed `DebitsPosted` | `ExceedsDebits` |
+
+### Create transfer: post or void
+
+Checks 1–4 as above, then:
+
+| # | Check | Code |
+|---|---|---|
+| 5 | `PendingID` is 0 | `PendingIDMustNotBeZero` |
+| 6 | `Timeout` is not 0 | `TimeoutRequiresPending` |
+| 7 | `Timestamp` is not 0 | `TimestampMustBeZero` |
+| 8 | `ID` exists with another `PendingID`, or with other fields once the zero fields are filled from the pending transfer | `ExistsWithDifferentFields` |
+| 9 | `ID` exists | `Exists` |
+| 10 | pending transfer does not exist | `PendingTransferNotFound` |
+| 11 | referenced transfer is not a pending transfer | `PendingTransferNotPending` |
+| 12 | `DebitAccountID` is set and differs | `PendingTransferHasDifferentDebitAccount` |
+| 13 | `CreditAccountID` is set and differs | `PendingTransferHasDifferentCreditAccount` |
+| 14 | `Ledger` is set and differs | `PendingTransferHasDifferentLedger` |
+| 15 | `Code` is set and differs | `PendingTransferHasDifferentCode` |
+| 16 | pending transfer was posted | `PendingTransferAlreadyPosted` |
+| 17 | pending transfer was voided | `PendingTransferAlreadyVoided` |
+| 18 | pending transfer expired | `PendingTransferExpired` |
+| 19 | post: `Amount` is greater than the pending amount | `ExceedsPendingTransferAmount` |
+| 20 | void: `Amount` is neither 0 nor the pending amount | `PendingTransferHasDifferentAmount` |
+
+Post and void cannot overflow or break a limit: they only move value from pending to posted on the
+same side, or release it.
+
+## Codes
+
+The numbers are fixed. New codes are only appended.
+
+| Code | Name |
+|---|---|
+| 0 | `OK` (never reported) |
+| 1 | `LinkedEventFailed` |
+| 2 | `LinkedEventChainOpen` |
+| 3 | `IDMustNotBeZero` |
+| 4 | `IDMustNotBeMax` |
+| 5 | `FlagsUnknown` |
+| 6 | `FlagsAreMutuallyExclusive` |
+| 7 | `LedgerMustNotBeZero` |
+| 8 | `CodeMustNotBeZero` |
+| 9 | `BalancesMustBeZero` |
+| 10 | `TimestampMustBeZero` |
+| 11 | `ExistsWithDifferentFields` |
+| 12 | `Exists` |
+| 13 | `DebitAccountIDMustNotBeZero` |
+| 14 | `CreditAccountIDMustNotBeZero` |
+| 15 | `AccountsMustBeDifferent` |
+| 16 | `PendingIDMustBeZero` |
+| 17 | `PendingIDMustNotBeZero` |
+| 18 | `TimeoutRequiresPending` |
+| 19 | `AmountMustNotBeZero` |
+| 20 | `DebitAccountNotFound` |
+| 21 | `CreditAccountNotFound` |
+| 22 | `AccountsMustHaveSameLedger` |
+| 23 | `TransferMustHaveSameLedgerAsAccounts` |
+| 24 | `PendingTransferNotFound` |
+| 25 | `PendingTransferNotPending` |
+| 26 | `PendingTransferHasDifferentDebitAccount` |
+| 27 | `PendingTransferHasDifferentCreditAccount` |
+| 28 | `PendingTransferHasDifferentLedger` |
+| 29 | `PendingTransferHasDifferentCode` |
+| 30 | `PendingTransferAlreadyPosted` |
+| 31 | `PendingTransferAlreadyVoided` |
+| 32 | `PendingTransferExpired` |
+| 33 | `ExceedsPendingTransferAmount` |
+| 34 | `PendingTransferHasDifferentAmount` |
+| 35 | `OverflowsDebits` |
+| 36 | `OverflowsCredits` |
+| 37 | `ExceedsCredits` |
+| 38 | `ExceedsDebits` |
+
+## Invariants
+
+`CheckInvariants` verifies after any batch:
+
+- per ledger: Σ `DebitsPosted` = Σ `CreditsPosted` and Σ `DebitsPending` = Σ `CreditsPending`
+  (summed without wrap-around)
+- per account: `DebitsPending` and `CreditsPending` equal the sum of its open pending transfers
+- per account: posted plus pending fits into u128 on both sides
+- per account: the limit flag holds
+
+## Digest
+
+`Digest` is SHA-256 over:
+
+1. the number of accounts as uint64, then every account record in ID order
+2. the number of transfers as uint64, then every transfer record in ID order, each followed by one
+   status byte: 0 none, 1 pending, 2 posted, 3 voided, 4 expired
+
+All integers are big-endian. Two replicas with the same digest hold the same accounts, transfers and
+pending states.
