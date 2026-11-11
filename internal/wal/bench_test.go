@@ -1,10 +1,7 @@
 package wal
 
 import (
-	"context"
 	"fmt"
-	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
@@ -47,57 +44,6 @@ func BenchmarkAppendSync(b *testing.B) {
 				}
 			}
 			b.ReportMetric(float64(ops*n)/b.Elapsed().Seconds(), "entries/s")
-		})
-	}
-}
-
-func BenchmarkCommitter(b *testing.B) {
-	for _, writers := range []int{1, 16, 256} {
-		b.Run(fmt.Sprintf("writers=%d", writers), func(b *testing.B) {
-			w, err := Open(disk.OS{}, b.TempDir(), Options{})
-			if err != nil {
-				b.Fatal(err)
-			}
-			defer func() { _ = w.Close() }()
-			c, err := NewCommitter(w, CommitterOptions{MaxEntries: 8190, MaxBytes: 8 << 20, Queue: 8190})
-			if err != nil {
-				b.Fatal(err)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			done := make(chan error, 1)
-			go func() { done <- c.Run(ctx) }()
-
-			body := make([]byte, benchBody)
-			var mu sync.Mutex
-			next := uint64(1)
-			var left atomic.Int64
-			left.Store(int64(b.N))
-			b.ReportAllocs()
-			b.ResetTimer()
-			var wg sync.WaitGroup
-			for range writers {
-				wg.Go(func() {
-					for left.Add(-1) >= 0 {
-						mu.Lock()
-						errc, err := c.Submit(ctx, Entry{Index: next, Term: 1, Body: body})
-						next++
-						mu.Unlock()
-						if err == nil {
-							err = <-errc
-						}
-						if err != nil {
-							b.Error(err)
-							return
-						}
-					}
-				})
-			}
-			wg.Wait()
-			b.ReportMetric(float64(next-1)/b.Elapsed().Seconds(), "entries/s")
-			cancel()
-			if err := <-done; err != nil {
-				b.Fatal(err)
-			}
 		})
 	}
 }

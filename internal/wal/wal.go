@@ -16,7 +16,10 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 )
 
-const DefaultSegmentSize = 64 << 20
+const (
+	MaxSegmentSize = 64 << 20
+	maxSegmentFile = MaxSegmentSize + segHdrLen + frameHdrLen + MaxBodySize
+)
 
 var (
 	ErrCorrupt     = errors.New("wal: corrupt")
@@ -26,8 +29,6 @@ var (
 	ErrOutOfOrder  = errors.New("wal: entry out of order")
 	ErrTooLarge    = errors.New("wal: entry too large")
 	ErrClosed      = errors.New("wal: closed")
-
-	errNoHeader = errors.New("wal: segment without header")
 )
 
 type CorruptError struct {
@@ -51,6 +52,7 @@ type Options struct {
 type WAL struct {
 	fs      disk.FS
 	dir     string
+	lock    io.Closer
 	segSize int64
 	nonces  io.Reader
 	segs    []*segment
@@ -102,10 +104,21 @@ func parseSegmentName(name string) (uint64, bool) {
 }
 
 func Open(fsys disk.FS, dir string, opts Options) (_ *WAL, err error) {
+	if opts.SegmentSize < 0 || opts.SegmentSize > MaxSegmentSize {
+		return nil, fmt.Errorf("wal: segment size %d not in [0, %d]", opts.SegmentSize, MaxSegmentSize)
+	}
+	if err := fsys.MkdirAll(dir); err != nil {
+		return nil, err
+	}
+	lock, err := fsys.Lock(dir)
+	if err != nil {
+		return nil, err
+	}
 	w := &WAL{
 		fs:      fsys,
 		dir:     dir,
-		segSize: cmp.Or(opts.SegmentSize, DefaultSegmentSize),
+		lock:    lock,
+		segSize: cmp.Or(opts.SegmentSize, MaxSegmentSize),
 		nonces:  cmp.Or[io.Reader](opts.Nonces, rand.Reader),
 	}
 	defer func() {
@@ -113,83 +126,17 @@ func Open(fsys disk.FS, dir string, opts Options) (_ *WAL, err error) {
 			_ = w.Close()
 		}
 	}()
-	if err := fsys.MkdirAll(dir); err != nil {
+	if err := w.openSegments(); err != nil {
 		return nil, err
 	}
-	names, err := fsys.List(dir)
-	if err != nil {
-		return nil, err
-	}
-	for _, name := range names {
-		first, ok := parseSegmentName(name)
-		if !ok {
-			continue
-		}
-		f, err := fsys.Open(filepath.Join(dir, name))
-		if err != nil {
-			return nil, err
-		}
-		w.segs = append(w.segs, &segment{name: name, f: f, first: first})
-	}
-
-	limit := max(w.segSize, DefaultSegmentSize) + segHdrLen + frameHdrLen + MaxBodySize
-	var raw, tail []byte
-	for i, seg := range w.segs {
-		last := i == len(w.segs)-1
-		size, err := seg.f.Size()
-		if err != nil {
-			return nil, err
-		}
-		if size > limit {
-			return nil, &CorruptError{File: seg.name, Offset: limit}
-		}
-		raw = slices.Grow(raw[:0], int(size))[:size]
-		if _, err := seg.f.ReadAt(raw, 0); err != nil {
-			return nil, err
-		}
-		err = seg.readHeader(raw)
-		if errors.Is(err, errNoHeader) && last {
-			if err := w.removeSegment(seg); err != nil {
-				return nil, err
-			}
-			w.segs, tail = w.segs[:i], nil
-			break
-		}
-		if errors.Is(err, errNoHeader) {
-			return nil, &CorruptError{File: seg.name, Offset: 0}
-		}
-		if err != nil {
-			return nil, err
-		}
-		if i > 0 && seg.first != w.segs[i-1].last()+1 {
-			return nil, &CorruptError{File: seg.name, Offset: 0}
-		}
-		if w.term, err = seg.scan(raw, w.term); err != nil {
-			return nil, err
-		}
-		tail = raw[:seg.size]
-		if seg.size == size {
-			continue
-		}
-		if !last || provenSynced(raw[seg.size:], seg.last()+1, seg.seed) {
-			return nil, &CorruptError{File: seg.name, Offset: seg.size}
-		}
-		if err := seg.f.Truncate(seg.size); err != nil {
+	for i := range w.segs {
+		if err := w.recoverSegment(i); err != nil {
 			return nil, err
 		}
 	}
-
-	if len(w.segs) == 1 && len(w.segs[0].terms) == 0 {
-		if err := w.removeSegment(w.segs[0]); err != nil {
-			return nil, err
-		}
-		w.segs, tail = nil, nil
-	}
-	if seg := w.active(); seg != nil && tail != nil {
-		if _, err := seg.f.WriteAt(tail, 0); err != nil {
-			return nil, err
-		}
-		if err := seg.f.Sync(); err != nil {
+	if seg := w.active(); seg != nil && len(seg.terms) == 0 {
+		w.segs = w.segs[:len(w.segs)-1]
+		if err := w.removeSegment(seg); err != nil {
 			return nil, err
 		}
 	}
@@ -200,11 +147,76 @@ func Open(fsys disk.FS, dir string, opts Options) (_ *WAL, err error) {
 	return w, nil
 }
 
-func (s *segment) readHeader(raw []byte) error {
-	if len(raw) < segHdrLen || [segHdrLen]byte(raw) == [segHdrLen]byte{} {
-		return errNoHeader
+func (w *WAL) openSegments() error {
+	names, err := w.fs.List(w.dir)
+	if err != nil {
+		return err
 	}
-	if binary.LittleEndian.Uint32(raw[segOffCRC:]) != crc32.Checksum(raw[:segOffCRC], castagnoli) ||
+	for _, name := range names {
+		if base, ok := strings.CutSuffix(name, ".tmp"); ok {
+			if _, ok := parseSegmentName(base); ok {
+				if err := w.fs.Remove(filepath.Join(w.dir, name)); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		first, ok := parseSegmentName(name)
+		if !ok {
+			continue
+		}
+		f, err := w.fs.Open(filepath.Join(w.dir, name))
+		if err != nil {
+			return err
+		}
+		w.segs = append(w.segs, &segment{name: name, f: f, first: first})
+	}
+	return nil
+}
+
+func (w *WAL) recoverSegment(i int) error {
+	seg, tail := w.segs[i], i == len(w.segs)-1
+	size, err := seg.f.Size()
+	if err != nil {
+		return err
+	}
+	if size > maxSegmentFile {
+		return &CorruptError{File: seg.name, Offset: maxSegmentFile}
+	}
+	raw := make([]byte, size)
+	if _, err := seg.f.ReadAt(raw, 0); err != nil {
+		return err
+	}
+	if err := seg.readHeader(raw); err != nil {
+		return err
+	}
+	if i > 0 && seg.first != w.segs[i-1].last()+1 {
+		return &CorruptError{File: seg.name, Offset: 0}
+	}
+	if w.term, err = seg.scan(raw, w.term); err != nil {
+		return err
+	}
+	if seg.size < size {
+		if !tail || provenSynced(raw[seg.size:], seg.last()+1, seg.seed) {
+			return &CorruptError{File: seg.name, Offset: seg.size}
+		}
+		if err := seg.f.Truncate(seg.size); err != nil {
+			return err
+		}
+	}
+	if !tail || len(seg.terms) == 0 {
+		return nil
+	}
+	from := seg.unproven(raw)
+	if _, err := seg.f.WriteAt(raw[from:seg.size], from); err != nil {
+		return err
+	}
+	return seg.f.Sync()
+}
+
+func (s *segment) readHeader(raw []byte) error {
+	if len(raw) < segHdrLen ||
+		binary.LittleEndian.Uint32(raw[segOffCRC:]) != crc32.Checksum(raw[:segOffCRC], castagnoli) ||
 		binary.LittleEndian.Uint32(raw) != segMagic {
 		return &CorruptError{File: s.name, Offset: 0}
 	}
@@ -232,6 +244,14 @@ func (s *segment) scan(raw []byte, term uint64) (uint64, error) {
 	}
 	s.size = int64(off)
 	return term, nil
+}
+
+func (s *segment) unproven(raw []byte) int64 {
+	fr, _ := decodeFrame(raw[s.offs[len(s.offs)-1]:], s.seed)
+	if fr.synced < s.first {
+		return s.offs[0]
+	}
+	return s.offs[fr.synced-s.first+1]
 }
 
 func (w *WAL) active() *segment {
@@ -341,7 +361,8 @@ func (w *WAL) roll(first uint64) error {
 		return err
 	}
 	name := segmentName(first)
-	f, err := w.fs.Create(filepath.Join(w.dir, name))
+	path := filepath.Join(w.dir, name)
+	f, err := w.fs.Create(path + ".tmp")
 	if err != nil {
 		return err
 	}
@@ -349,6 +370,9 @@ func (w *WAL) roll(first uint64) error {
 	_, err = f.WriteAt(appendSegmentHeader(nil, n), 0)
 	if err == nil {
 		err = f.Sync()
+	}
+	if err == nil {
+		err = w.fs.Rename(path+".tmp", path)
 	}
 	if err == nil {
 		err = w.fs.SyncDir(w.dir)
@@ -376,7 +400,7 @@ func (w *WAL) Sync() error {
 }
 
 func (w *WAL) fail(err error) error {
-	w.err = fmt.Errorf("wal: unusable after I/O error: %w", err)
+	w.err = fmt.Errorf("wal: stopped after error: %w", err)
 	return w.err
 }
 
@@ -462,10 +486,10 @@ func (w *WAL) TruncateAfter(i uint64) error {
 		return nil
 	}
 	for seg := w.active(); seg != nil && seg.first > i; seg = w.active() {
+		w.segs = w.segs[:len(w.segs)-1]
 		if err := w.removeSegment(seg); err != nil {
 			return w.fail(err)
 		}
-		w.segs = w.segs[:len(w.segs)-1]
 	}
 	seg := w.active()
 	if seg == nil {
@@ -492,13 +516,14 @@ func (w *WAL) CompactBefore(i uint64) error {
 		return w.err
 	}
 	for len(w.segs) > 0 && w.segs[0].last() < i {
-		if err := w.removeSegment(w.segs[0]); err != nil {
+		seg := w.segs[0]
+		w.segs = w.segs[1:]
+		if err := w.removeSegment(seg); err != nil {
 			return w.fail(err)
 		}
-		w.segs = w.segs[1:]
 	}
 	if len(w.segs) == 0 {
-		w.synced = 0
+		w.synced, w.term = 0, 0
 	}
 	return nil
 }
@@ -519,6 +544,10 @@ func (w *WAL) Close() error {
 		errs = append(errs, seg.f.Close())
 	}
 	w.segs = nil
+	if w.lock != nil {
+		errs = append(errs, w.lock.Close())
+		w.lock = nil
+	}
 	if w.err == nil {
 		w.err = ErrClosed
 	}

@@ -3,9 +3,16 @@ package disk
 import (
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"syscall"
 )
+
+var ErrLocked = errors.New("disk: directory locked")
+
+const lockName = "LOCK"
 
 type File interface {
 	io.ReaderAt
@@ -24,6 +31,7 @@ type FS interface {
 	List(dir string) ([]string, error)
 	SyncDir(dir string) error
 	MkdirAll(dir string) error
+	Lock(dir string) (io.Closer, error)
 }
 
 type OS struct{}
@@ -87,18 +95,38 @@ func (OS) SyncDir(dir string) error {
 }
 
 func (fsys OS) MkdirAll(dir string) error {
-	dir = filepath.Clean(dir)
-	if _, err := os.Stat(dir); err == nil {
-		return nil
-	}
-	parent := filepath.Dir(dir)
-	if parent != dir {
-		if err := fsys.MkdirAll(parent); err != nil {
+	for _, d := range chain(dir) {
+		if err := os.Mkdir(d, 0o750); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if err := fsys.SyncDir(filepath.Dir(d)); err != nil {
 			return err
 		}
 	}
-	if err := os.Mkdir(dir, 0o750); err != nil && !errors.Is(err, os.ErrExist) {
-		return err
+	return nil
+}
+
+func (OS) Lock(dir string) (io.Closer, error) {
+	f, err := os.OpenFile(filepath.Join(filepath.Clean(dir), lockName), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
 	}
-	return fsys.SyncDir(parent)
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		err = ErrLocked
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, &fs.PathError{Op: "lock", Path: dir, Err: err}
+	}
+	return f, nil
+}
+
+func chain(dir string) []string {
+	var dirs []string
+	for dir = filepath.Clean(dir); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		dirs = append(dirs, dir)
+	}
+	slices.Reverse(dirs)
+	return dirs
 }

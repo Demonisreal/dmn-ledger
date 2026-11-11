@@ -113,7 +113,7 @@ func provenSynced(tail []byte, want uint64, seed uint32) bool {
 		if synced < want || idx <= synced || idx > limit {
 			continue
 		}
-		if fr, ok := decodeFrame(tail[p:], seed); ok && fr.synced >= want {
+		if _, ok := decodeFrame(tail[p:], seed); ok {
 			return true
 		}
 	}

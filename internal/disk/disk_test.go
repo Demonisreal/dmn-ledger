@@ -98,6 +98,22 @@ func TestFileContract(t *testing.T) {
 			if err := fsys.Remove(filepath.Join(dir, "b")); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("second remove: %v", err)
 			}
+
+			l, err := fsys.Lock(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fsys.Lock(dir); !errors.Is(err, disk.ErrLocked) {
+				t.Fatalf("second lock: %v", err)
+			}
+			if err := l.Close(); err != nil {
+				t.Fatal(err)
+			}
+			l, err = fsys.Lock(dir)
+			if err != nil {
+				t.Fatalf("lock after release: %v", err)
+			}
+			_ = l.Close()
 		})
 	}
 }
@@ -220,23 +236,30 @@ func TestSimTornWriteBySector(t *testing.T) {
 	}
 }
 
-func TestSimTornAppendLeavesZeros(t *testing.T) {
+func TestSimTornAppendLeavesGarbage(t *testing.T) {
+	garbage := 0
 	for seed := range uint64(20) {
 		sim := newSim(seed)
 		f, _ := sim.Create("/d/a")
 		_ = sim.SyncDir("/d")
-		write(t, f, bytes.Repeat([]byte{7}, 4*disk.SectorSize), 0)
+		write(t, f, []byte("synced"), 0)
+		_ = f.Sync()
+		write(t, f, bytes.Repeat([]byte{7}, 4*disk.SectorSize), 6)
 		sim.Crash()
 
 		got := contents(t, sim, "/d/a")
-		if len(got) > 4*disk.SectorSize {
-			t.Fatalf("seed %d: size %d", seed, len(got))
+		if len(got) < 6 || len(got) > 6+4*disk.SectorSize || string(got[:6]) != "synced" {
+			t.Fatalf("seed %d: %d bytes, starts %q", seed, len(got), got[:min(len(got), 6)])
 		}
-		for _, b := range got {
-			if b != 0 && b != 7 {
-				t.Fatalf("seed %d: garbage byte %d", seed, b)
+		for off := 0; off < len(got); off += disk.SectorSize {
+			sec := got[max(off, 6):min(off+disk.SectorSize, len(got))]
+			if !bytes.Equal(sec, bytes.Repeat([]byte{7}, len(sec))) && bytes.Count(sec, []byte{0}) < len(sec)/2 {
+				garbage++
 			}
 		}
+	}
+	if garbage == 0 {
+		t.Fatal("lost sectors of an append always read as the new data")
 	}
 }
 
@@ -266,7 +289,7 @@ func TestSimCloneIsIndependent(t *testing.T) {
 	write(t, f, []byte("abc"), 0)
 	_ = f.Sync()
 
-	c := sim.Clone()
+	c := sim.Clone(rand.New(rand.NewPCG(7, 7)))
 	write(t, f, []byte("xyz"), 0)
 	_ = f.Sync()
 	c.Crash()
@@ -327,13 +350,25 @@ func TestSimInjectedErrors(t *testing.T) {
 		if _, err := sim.Create("/d/b"); errors.Is(err, syscall.EIO) {
 			counts["create"]++
 		}
+		if _, err := sim.Open("/d/a"); errors.Is(err, syscall.EIO) {
+			counts["open"]++
+		}
+		if _, err := sim.List("/d"); errors.Is(err, syscall.EIO) {
+			counts["list"]++
+		}
+		if _, err := f.Size(); errors.Is(err, syscall.EIO) {
+			counts["size"]++
+		}
+		if err := sim.MkdirAll("/d/sub"); errors.Is(err, syscall.EIO) {
+			counts["mkdir"]++
+		}
 	}
 	for op, n := range counts {
 		if n < 50 || n > 150 {
 			t.Errorf("%s: EIO %d out of 200", op, n)
 		}
 	}
-	if len(counts) != 6 {
+	if len(counts) != 10 {
 		t.Fatalf("injected errors: %v", counts)
 	}
 }
@@ -429,5 +464,90 @@ func TestSimCrashLengthAnywhereBetween(t *testing.T) {
 	}
 	if len(seen) < 5 {
 		t.Fatalf("lengths after crash: %v", seen)
+	}
+}
+
+func TestSimDirectoryNeedsSyncedParent(t *testing.T) {
+	sim := newSim(1)
+	sim.MetaErrRate = 1
+	if err := sim.MkdirAll("/new"); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("mkdir = %v", err)
+	}
+	sim.MetaErrRate = 0
+	f, err := sim.Create("/new/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Sync()
+	if err := sim.SyncDir("/new"); err != nil {
+		t.Fatal(err)
+	}
+	c := sim.Clone(rand.New(rand.NewPCG(1, 1)))
+	c.Crash()
+	if _, err := c.List("/new"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("directory without synced parent survived: %v", err)
+	}
+
+	if err := sim.MkdirAll("/new"); err != nil {
+		t.Fatal(err)
+	}
+	sim.Crash()
+	if names, err := sim.List("/new"); err != nil || !slices.Equal(names, []string{"a"}) {
+		t.Fatalf("after second mkdir and crash: %v, %v", names, err)
+	}
+}
+
+func TestSimJournalMakesNamesDurableEarly(t *testing.T) {
+	sim := newSim(1)
+	sim.JournalRate = 1
+	f, _ := sim.Create("/d/a")
+	write(t, f, []byte("x"), 0)
+	_ = f.Sync()
+	sim.Crash()
+	if got := contents(t, sim, "/d/a"); string(got) != "x" {
+		t.Fatalf("after crash %q", got)
+	}
+}
+
+func TestSimLockEndsWithProcess(t *testing.T) {
+	sim := newSim(1)
+	old, err := sim.Lock("/d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sim.Lock("/missing"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("lock missing dir: %v", err)
+	}
+	if _, err := sim.Clone(rand.New(rand.NewPCG(1, 1))).Lock("/d"); err != nil {
+		t.Fatalf("clone inherited the lock: %v", err)
+	}
+	sim.Crash()
+	l, err := sim.Lock("/d")
+	if err != nil {
+		t.Fatalf("lock after crash: %v", err)
+	}
+	_ = old.Close()
+	if _, err := sim.Lock("/d"); !errors.Is(err, disk.ErrLocked) {
+		t.Fatalf("stale handle released the new lock: %v", err)
+	}
+	_ = l.Close()
+}
+
+func TestSimCloneDoesNotDisturbOriginal(t *testing.T) {
+	run := func(check bool) []byte {
+		sim := newSim(5)
+		f, _ := sim.Create("/d/a")
+		_ = sim.SyncDir("/d")
+		for i := range 6 {
+			write(t, f, bytes.Repeat([]byte{byte(i + 1)}, 2*disk.SectorSize), int64(i)*900)
+			if check {
+				sim.Clone(rand.New(rand.NewPCG(uint64(i), 3))).Crash()
+			}
+		}
+		sim.Crash()
+		return contents(t, sim, "/d/a")
+	}
+	if !bytes.Equal(run(false), run(true)) {
+		t.Fatal("crashing a clone changed the original's crash")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"io/fs"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -71,6 +72,9 @@ func (sw *snapWriter) Write(p []byte) (int, error) {
 }
 
 func SaveSnapshot(fsys disk.FS, dir string, meta SnapshotMeta, write func(io.Writer) error) error {
+	if err := fsys.MkdirAll(dir); err != nil {
+		return err
+	}
 	name := filepath.Join(dir, snapshotName(meta))
 	tmp := name + ".tmp"
 	f, err := fsys.Create(tmp)
@@ -128,6 +132,9 @@ func pruneSnapshots(fsys disk.FS, dir string) error {
 }
 
 func LoadSnapshot(fsys disk.FS, dir string, read func(io.Reader) error) (SnapshotMeta, error) {
+	if err := fsys.MkdirAll(dir); err != nil {
+		return SnapshotMeta{}, err
+	}
 	names, err := fsys.List(dir)
 	if err != nil {
 		return SnapshotMeta{}, err
@@ -140,7 +147,7 @@ func LoadSnapshot(fsys disk.FS, dir string, read func(io.Reader) error) (Snapsho
 		if !ok {
 			continue
 		}
-		if err := readSnapshot(fsys, filepath.Join(dir, names[i]), meta, read); err != nil {
+		if err := ReadSnapshot(fsys, dir, meta, read); err != nil {
 			return SnapshotMeta{}, err
 		}
 		return meta, nil
@@ -148,8 +155,12 @@ func LoadSnapshot(fsys disk.FS, dir string, read func(io.Reader) error) (Snapsho
 	return SnapshotMeta{}, ErrNoSnapshot
 }
 
-func readSnapshot(fsys disk.FS, path string, meta SnapshotMeta, read func(io.Reader) error) error {
+func ReadSnapshot(fsys disk.FS, dir string, meta SnapshotMeta, read func(io.Reader) error) error {
+	path := filepath.Join(dir, snapshotName(meta))
 	f, err := fsys.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %s", ErrNoSnapshot, path)
+	}
 	if err != nil {
 		return err
 	}

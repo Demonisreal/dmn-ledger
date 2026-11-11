@@ -5,9 +5,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
+	"io"
 	"math"
 	"math/rand/v2"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -366,7 +368,7 @@ func TestTornTailIsCut(t *testing.T) {
 }
 
 func TestTornFirstFrameEmptiesLog(t *testing.T) {
-	for _, cut := range []int64{0, 10, segHdrLen, segHdrLen + 10} {
+	for _, cut := range []int64{segHdrLen, segHdrLen + 10} {
 		sim := newSim(1)
 		w := mustOpen(t, sim, opts(0))
 		mustAppend(t, w, ent(1, 1))
@@ -609,11 +611,10 @@ func TestOversizedSegmentIsCorrupt(t *testing.T) {
 	mustAppend(t, w, span(1, 4, 1)...)
 	_ = w.Close()
 	f := lastSegment(t, sim)
-	limit := int64(DefaultSegmentSize + segHdrLen + frameHdrLen + MaxBodySize)
-	_ = f.Truncate(limit + 1)
+	_ = f.Truncate(maxSegmentFile + 1)
 
 	_, err := Open(sim, dir, opts(0))
-	wantCorrupt(t, err, segments(t, sim)[0], limit)
+	wantCorrupt(t, err, segments(t, sim)[0], maxSegmentFile)
 }
 
 func TestFailedAppendHidesUnwrittenEntries(t *testing.T) {
@@ -681,7 +682,7 @@ func freezeAt(sim *disk.Sim, op string, armed *bool) (hookFS, func() *disk.Sim) 
 	var frozen *disk.Sim
 	fsys := hookFS{Sim: sim, after: func(got string) {
 		if *armed && got == op && frozen == nil {
-			frozen = sim.Clone()
+			frozen = fork(sim, 1)
 		}
 	}}
 	return fsys, func() *disk.Sim { return frozen }
@@ -765,7 +766,7 @@ func TestOpenRewritesPagesAfterFailedSync(t *testing.T) {
 		sim.SyncErrRate = 0
 		_ = w.Close()
 
-		c := sim.Clone()
+		c := fork(sim, seed)
 		c.Crash()
 		if w, err := Open(c, dir, opts(0)); err == nil && lastIndex(t, w) == 5 {
 			dropped++
@@ -832,4 +833,361 @@ func FuzzOpen(f *testing.F) {
 		}
 		checkTerms(t, w, 1, repeat(1, int(last))...)
 	})
+}
+
+func TestCompactToEmptyResetsTerm(t *testing.T) {
+	sim := newSim(1)
+	w := mustOpen(t, sim, opts(0))
+	mustAppend(t, w, span(1, 10, 4)...)
+	mustAppend(t, w, ent(10, 5))
+	if err := w.CompactBefore(11); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(ent(16, 4)); err != nil {
+		t.Fatalf("term 4 after compacting away term 5: %v", err)
+	}
+	_ = w.Close()
+	w = mustOpen(t, sim, opts(0))
+	checkTerms(t, w, 16, 4)
+}
+
+func TestLowerTermAfterTruncate(t *testing.T) {
+	w := mustOpen(t, newSim(1), opts(0))
+	mustAppend(t, w, span(1, 6, 2)...)
+	mustAppend(t, w, span(6, 9, 4)...)
+	if err := w.TruncateAfter(5); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(ent(6, 3)); err != nil {
+		t.Fatalf("term 3 after cutting the entries of term 4: %v", err)
+	}
+	if err := w.Append(ent(7, 2)); !errors.Is(err, ErrOutOfOrder) {
+		t.Fatalf("term 2 after term 3: %v", err)
+	}
+	if err := w.TruncateAfter(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(ent(1, 1)); err != nil {
+		t.Fatalf("term 1 after emptying the log: %v", err)
+	}
+}
+
+func TestOpenCutsTornTailOnDisk(t *testing.T) {
+	sim := newSim(1)
+	w := mustOpen(t, sim, opts(0))
+	fixed := func(i uint64, fill byte) Entry {
+		return Entry{Index: i, Term: 1, Body: bytes.Repeat([]byte{fill}, 60)}
+	}
+	mustAppend(t, w, fixed(1, 'a'), fixed(2, 'a'))
+	if err := w.Append(fixed(3, 'a'), fixed(4, 'a')); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+
+	f := lastSegment(t, sim)
+	third := int64(segHdrLen + 2*frameSize(fixed(1, 'a')))
+	_, _ = f.WriteAt(make([]byte, 20), third+frameHdrLen)
+	_ = f.Sync()
+
+	w = mustOpen(t, sim, opts(0))
+	if last := lastIndex(t, w); last != 2 {
+		t.Fatalf("last = %d after torn entry 3", last)
+	}
+	mustAppend(t, w, fixed(3, 'b'))
+	_ = w.Close()
+
+	w = mustOpen(t, sim, opts(0))
+	if last := lastIndex(t, w); last != 3 {
+		t.Fatalf("last = %d: entry 4 from before the crash came back behind a new entry 3", last)
+	}
+}
+
+func TestOlderSegmentWithoutHeaderIsCorrupt(t *testing.T) {
+	sim := newSim(1)
+	o := opts(400)
+	w := mustOpen(t, sim, o)
+	mustAppend(t, w, span(1, 41, 1)...)
+	_ = w.Close()
+	segs := segments(t, sim)
+	f, _ := sim.Open(filepath.Join(dir, segs[1]))
+	_, _ = f.WriteAt(make([]byte, segHdrLen), 0)
+	_, err := Open(sim, dir, o)
+	wantCorrupt(t, err, segs[1], 0)
+}
+
+func TestTornHeaderIsCorrupt(t *testing.T) {
+	for _, cut := range []int64{0, 10} {
+		sim := newSim(1)
+		w := mustOpen(t, sim, opts(0))
+		mustAppend(t, w, ent(1, 1))
+		_ = w.Close()
+		_ = lastSegment(t, sim).Truncate(cut)
+		_, err := Open(sim, dir, opts(0))
+		wantCorrupt(t, err, segmentName(1), 0)
+	}
+}
+
+func TestCrashInRollLeavesNoSegment(t *testing.T) {
+	sim := newSim(1)
+	o := opts(300)
+	armed := false
+	fsys, frozen := freezeAt(sim, "create", &armed)
+	w := mustOpen(t, fsys, o)
+	mustAppend(t, w, span(1, 4, 1)...)
+	armed = true
+	for i := uint64(4); frozen() == nil; i++ {
+		mustAppend(t, w, ent(i, 1))
+	}
+	proc := frozen()
+	names, _ := proc.List(dir)
+	if !slices.ContainsFunc(names, func(name string) bool { return strings.HasSuffix(name, ".tmp") }) {
+		t.Fatalf("no temporary segment while rolling: %v", names)
+	}
+	last := lastIndex(t, w)
+	w = mustOpen(t, proc, o)
+	if got := lastIndex(t, w); got != last-1 {
+		t.Fatalf("last = %d, want %d", got, last-1)
+	}
+	if names, _ := proc.List(dir); slices.ContainsFunc(names, func(name string) bool { return strings.HasSuffix(name, ".tmp") }) {
+		t.Fatalf("temporary segment left after open: %v", names)
+	}
+}
+
+func TestEmptyLastSegmentIsRemoved(t *testing.T) {
+	sim := newSim(1)
+	o := opts(300)
+	w := mustOpen(t, sim, o)
+	mustAppend(t, w, span(1, 20, 1)...)
+	_ = w.Close()
+	segs := segments(t, sim)
+	_ = lastSegment(t, sim).Truncate(segHdrLen)
+	first, _ := parseSegmentName(segs[len(segs)-1])
+
+	w = mustOpen(t, sim, o)
+	if got := segments(t, sim); len(got) != len(segs)-1 {
+		t.Fatalf("segments %v after open, before %v", got, segs)
+	}
+	if err := w.CompactBefore(first); err != nil {
+		t.Fatal(err)
+	}
+	if lo, hi := bounds(t, w); lo > hi {
+		t.Fatalf("log is [%d, %d]", lo, hi)
+	}
+}
+
+func TestOpenRewritesOnlyUnprovenTail(t *testing.T) {
+	sim := newSim(1)
+	w := mustOpen(t, sim, opts(0))
+	pad := make([]byte, 128)
+	for i := uint64(1); i <= 20000; i += 1000 {
+		var ents []Entry
+		for k := range uint64(1000) {
+			ents = append(ents, Entry{Index: i + k, Term: 1, Body: pad})
+		}
+		mustAppend(t, w, ents...)
+	}
+	_ = w.Close()
+
+	fsys := &windowFS{Sim: sim, open: map[int64]bool{}}
+	w = mustOpen(t, fsys, opts(0))
+	if batch := int64(1000 * (frameHdrLen + 128)); fsys.bytes != batch {
+		t.Fatalf("open rewrote %d bytes, the last unproven batch has %d", fsys.bytes, batch)
+	}
+	if err := w.Append(Entry{Index: 20001, Term: 1}); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	fsys.bytes = 0
+	w = mustOpen(t, fsys, opts(0))
+	if fsys.bytes != frameHdrLen {
+		t.Fatalf("open rewrote %d bytes after one unsynced entry", fsys.bytes)
+	}
+	_ = w.Close()
+}
+
+func TestResetFromTheBack(t *testing.T) {
+	const snap = 10
+	points := 0
+	for _, sector := range []int64{disk.SectorSize, 4096} {
+		sim := newSim(uint64(sector))
+		sim.Sector = sector
+		o := opts(400)
+		check := func(op string) {}
+		fsys := hookFS{Sim: sim, after: func(op string) { check(op) }}
+		w := mustOpen(t, fsys, o)
+		mustAppend(t, w, span(1, 61, 1)...)
+		check = func(op string) {
+			points++
+			c := fork(sim, uint64(points))
+			c.Crash()
+			r := mustOpen(t, c, o)
+			first, last := bounds(t, r)
+			switch {
+			case last == 0:
+			case first == 1:
+				checkTerms(t, r, 1, repeat(1, int(last))...)
+			case first == snap+1:
+				checkTerms(t, r, snap+1, repeat(2, int(last-snap))...)
+			default:
+				t.Fatalf("power loss after %s: log [%d, %d] next to a snapshot at %d", op, first, last, snap)
+			}
+			_ = r.Close()
+		}
+		if err := w.TruncateAfter(0); err != nil {
+			t.Fatal(err)
+		}
+		mustAppend(t, w, span(snap+1, snap+30, 2)...)
+		_ = w.Close()
+	}
+	if points < 40 {
+		t.Fatalf("only %d crash points", points)
+	}
+}
+
+func TestCloseAfterFailedRemove(t *testing.T) {
+	sim := newSim(1)
+	w := mustOpen(t, sim, opts(400))
+	mustAppend(t, w, span(1, 61, 1)...)
+	sim.MetaErrRate = 1
+	if err := w.CompactBefore(30); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("compact = %v", err)
+	}
+	sim.MetaErrRate = 0
+	if err := w.Close(); err != nil {
+		t.Fatalf("close after failed compaction: %v", err)
+	}
+}
+
+func TestOpenCreatesDirectories(t *testing.T) {
+	sim := disk.NewSim(rand.New(rand.NewPCG(1, 1)))
+	h, _, err := OpenHardState(sim, "/node/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h.Close()
+	if err := SaveSnapshot(sim, "/node/a/snap", SnapshotMeta{Index: 1, Term: 1}, func(io.Writer) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSnapshot(sim, "/node/b/snap", func(io.Reader) error { return nil }); !errors.Is(err, ErrNoSnapshot) {
+		t.Fatalf("load from a new directory: %v", err)
+	}
+	w, err := Open(sim, "/node/a/wal", opts(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAppend(t, w, ent(1, 1))
+	_ = w.Close()
+	sim.Crash()
+	w, err = Open(sim, "/node/a/wal", opts(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := lastIndex(t, w); last != 1 {
+		t.Fatalf("last = %d after power loss", last)
+	}
+}
+
+func TestOpenIsLocked(t *testing.T) {
+	sim := newSim(1)
+	w := mustOpen(t, sim, opts(0))
+	if _, err := Open(sim, dir, opts(0)); !errors.Is(err, disk.ErrLocked) {
+		t.Fatalf("second open = %v", err)
+	}
+	_ = w.Close()
+	w = mustOpen(t, sim, opts(0))
+	_ = w.Close()
+}
+
+func TestSegmentSizeOutOfRange(t *testing.T) {
+	for _, size := range []int64{-1, MaxSegmentSize + 1} {
+		if _, err := Open(newSim(1), dir, opts(size)); err == nil {
+			t.Errorf("segment size %d accepted", size)
+		}
+	}
+}
+
+func TestRealFilesystem(t *testing.T) {
+	root := t.TempDir()
+	fsys := disk.OS{}
+	o := Options{SegmentSize: 400}
+	walDir := filepath.Join(root, "node", "wal")
+	w, err := Open(fsys, walDir, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAppend(t, w, span(1, 61, 1)...)
+	if err := w.TruncateAfter(40); err != nil {
+		t.Fatal(err)
+	}
+	mustAppend(t, w, span(41, 51, 2)...)
+	if err := w.CompactBefore(20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(fsys, walDir, o); !errors.Is(err, disk.ErrLocked) {
+		t.Fatalf("second open = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	names, _ := fsys.List(walDir)
+	f, err := fsys.Open(filepath.Join(walDir, names[len(names)-1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	size, _ := f.Size()
+	if err := f.Truncate(size - 7); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	w, err = Open(fsys, walDir, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, last := bounds(t, w)
+	if first == 0 || first > 20 || last != 49 {
+		t.Fatalf("log is [%d, %d], want [<=20, 49]", first, last)
+	}
+	terms := repeat(1, int(41-first))
+	checkTerms(t, w, first, append(terms, repeat(2, 9)...)...)
+	_ = w.Close()
+
+	nodeDir := filepath.Join(root, "node")
+	h, hs, err := OpenHardState(fsys, nodeDir)
+	if err != nil || hs != (HardState{}) {
+		t.Fatalf("hard state: %+v, %v", hs, err)
+	}
+	for term := uint64(1); term <= 3; term++ {
+		if err := h.Save(HardState{Term: term, Vote: term}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = h.Close()
+	if h, hs, err = OpenHardState(fsys, nodeDir); err != nil || hs != (HardState{Term: 3, Vote: 3}) {
+		t.Fatalf("hard state after reopen: %+v, %v", hs, err)
+	}
+	_ = h.Close()
+
+	snapDir := filepath.Join(nodeDir, "snap")
+	for _, meta := range []SnapshotMeta{{10, 1}, {20, 1}, {30, 2}} {
+		if err := SaveSnapshot(fsys, snapDir, meta, func(w io.Writer) error {
+			_, err := w.Write(snapBody(meta))
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []byte
+	meta, err := LoadSnapshot(fsys, snapDir, func(r io.Reader) error {
+		var err error
+		got, err = io.ReadAll(r)
+		return err
+	})
+	if err != nil || meta != (SnapshotMeta{30, 2}) || !bytes.Equal(got, snapBody(meta)) {
+		t.Fatalf("snapshot: %+v, %v", meta, err)
+	}
+	if names, _ := fsys.List(snapDir); len(names) != 2 {
+		t.Fatalf("snapshot files: %v", names)
+	}
 }

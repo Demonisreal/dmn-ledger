@@ -18,12 +18,14 @@ type Sim struct {
 	SyncErrRate  float64
 	MetaErrRate  float64
 	ReadErrRate  float64
+	JournalRate  float64
 	Sector       int64
 
 	rng     *rand.Rand
 	dirs    map[string]bool
 	live    map[string]*simNode
 	durable map[string]*simNode
+	locks   map[string]*simLock
 }
 
 type simNode struct {
@@ -40,6 +42,11 @@ type simFile struct {
 	closed bool
 }
 
+type simLock struct {
+	sim *Sim
+	dir string
+}
+
 func NewSim(rng *rand.Rand) *Sim {
 	return &Sim{
 		Sector:  SectorSize,
@@ -47,11 +54,13 @@ func NewSim(rng *rand.Rand) *Sim {
 		dirs:    make(map[string]bool),
 		live:    make(map[string]*simNode),
 		durable: make(map[string]*simNode),
+		locks:   make(map[string]*simLock),
 	}
 }
 
 func (s *Sim) hasDir(dir string) bool {
-	return dir == filepath.Dir(dir) || s.dirs[dir]
+	_, ok := s.dirs[dir]
+	return ok || dir == filepath.Dir(dir)
 }
 
 func (s *Sim) eio(op, name string, rate float64) error {
@@ -59,6 +68,15 @@ func (s *Sim) eio(op, name string, rate float64) error {
 		return &fs.PathError{Op: op, Path: name, Err: syscall.EIO}
 	}
 	return nil
+}
+
+func (s *Sim) journal() {
+	if s.JournalRate > 0 && s.rng.Float64() < s.JournalRate {
+		s.durable = maps.Clone(s.live)
+		for d := range s.dirs {
+			s.dirs[d] = true
+		}
+	}
 }
 
 func (s *Sim) Create(name string) (File, error) {
@@ -76,6 +94,7 @@ func (s *Sim) Create(name string) (File, error) {
 	} else {
 		n.resize(0)
 	}
+	s.journal()
 	return &simFile{sim: s, node: n, name: name}, nil
 }
 
@@ -84,6 +103,9 @@ func (s *Sim) Open(name string) (File, error) {
 	n := s.live[name]
 	if n == nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	if err := s.eio("open", name, s.MetaErrRate); err != nil {
+		return nil, err
 	}
 	return &simFile{sim: s, node: n, name: name}, nil
 }
@@ -97,6 +119,7 @@ func (s *Sim) Remove(name string) error {
 		return err
 	}
 	delete(s.live, name)
+	s.journal()
 	return nil
 }
 
@@ -111,6 +134,7 @@ func (s *Sim) Rename(oldname, newname string) error {
 	}
 	delete(s.live, oldname)
 	s.live[newname] = n
+	s.journal()
 	return nil
 }
 
@@ -118,6 +142,9 @@ func (s *Sim) List(dir string) ([]string, error) {
 	dir = filepath.Clean(dir)
 	if !s.hasDir(dir) {
 		return nil, &fs.PathError{Op: "open", Path: dir, Err: fs.ErrNotExist}
+	}
+	if err := s.eio("readdirent", dir, s.MetaErrRate); err != nil {
+		return nil, err
 	}
 	var names []string
 	for name := range s.live {
@@ -137,6 +164,11 @@ func (s *Sim) SyncDir(dir string) error {
 	if err := s.eio("sync", dir, s.MetaErrRate); err != nil {
 		return err
 	}
+	s.commit(dir)
+	return nil
+}
+
+func (s *Sim) commit(dir string) {
 	maps.DeleteFunc(s.durable, func(name string, _ *simNode) bool {
 		return filepath.Dir(name) == dir
 	})
@@ -145,20 +177,69 @@ func (s *Sim) SyncDir(dir string) error {
 			s.durable[name] = n
 		}
 	}
-	return nil
+	for d := range s.dirs {
+		if filepath.Dir(d) == dir {
+			s.dirs[d] = true
+		}
+	}
 }
 
 func (s *Sim) MkdirAll(dir string) error {
-	for dir = filepath.Clean(dir); !s.hasDir(dir); dir = filepath.Dir(dir) {
-		s.dirs[dir] = true
+	for _, d := range chain(dir) {
+		if !s.hasDir(d) {
+			s.dirs[d] = false
+		}
+		parent := filepath.Dir(d)
+		if err := s.eio("sync", parent, s.MetaErrRate); err != nil {
+			return err
+		}
+		s.commit(parent)
 	}
 	return nil
 }
 
+func (s *Sim) Lock(dir string) (io.Closer, error) {
+	dir = filepath.Clean(dir)
+	if !s.hasDir(dir) {
+		return nil, &fs.PathError{Op: "open", Path: dir, Err: fs.ErrNotExist}
+	}
+	if s.locks[dir] != nil {
+		return nil, &fs.PathError{Op: "lock", Path: dir, Err: ErrLocked}
+	}
+	l := &simLock{sim: s, dir: dir}
+	s.locks[dir] = l
+	return l, nil
+}
+
+func (l *simLock) Close() error {
+	if l.sim.locks[l.dir] == l {
+		delete(l.sim.locks, l.dir)
+	}
+	return nil
+}
+
+func (s *Sim) survives(dir string) bool {
+	for ; dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if !s.dirs[dir] {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Sim) Crash() {
+	dirs := make(map[string]bool, len(s.dirs))
+	for d := range s.dirs {
+		if s.survives(d) {
+			dirs[d] = true
+		}
+	}
 	crashed := make(map[*simNode]*simNode)
 	live := make(map[string]*simNode, len(s.durable))
 	for _, name := range slices.Sorted(maps.Keys(s.durable)) {
+		if !s.survives(filepath.Dir(name)) {
+			continue
+		}
 		old := s.durable[name]
 		n, ok := crashed[old]
 		if !ok {
@@ -167,11 +248,13 @@ func (s *Sim) Crash() {
 		}
 		live[name] = n
 	}
+	s.dirs = dirs
 	s.live = live
 	s.durable = maps.Clone(live)
+	s.locks = make(map[string]*simLock)
 }
 
-func (s *Sim) Clone() *Sim {
+func (s *Sim) Clone(rng *rand.Rand) *Sim {
 	copies := make(map[*simNode]*simNode)
 	cp := func(names map[string]*simNode) map[string]*simNode {
 		out := make(map[string]*simNode, len(names))
@@ -186,9 +269,11 @@ func (s *Sim) Clone() *Sim {
 		return out
 	}
 	c := *s
+	c.rng = rng
 	c.dirs = maps.Clone(s.dirs)
 	c.live = cp(s.live)
 	c.durable = cp(s.durable)
+	c.locks = make(map[string]*simLock)
 	return &c
 }
 
@@ -256,6 +341,9 @@ func (n *simNode) crash(rng *rand.Rand, sector int64) *simNode {
 	size := int64(short) + rng.Int64N(int64(long-short)+1)
 	onDisk := make([]byte, size)
 	copy(onDisk, n.synced)
+	for k := int64(len(n.synced)); k < size; k++ {
+		onDisk[k] = byte(rng.Uint32()) //nolint:gosec
+	}
 	for sec := n.lo / sector * sector; sec < size; sec += sector {
 		if rng.IntN(2) == 0 || sec >= int64(len(n.cur)) {
 			continue
@@ -304,6 +392,7 @@ func (f *simFile) Sync() error {
 		return err
 	}
 	f.node.sync()
+	f.sim.journal()
 	return nil
 }
 
@@ -321,6 +410,9 @@ func (f *simFile) Truncate(size int64) error {
 func (f *simFile) Size() (int64, error) {
 	if f.closed {
 		return 0, f.fail("stat", fs.ErrClosed)
+	}
+	if err := f.sim.eio("stat", f.name, f.sim.ReadErrRate); err != nil {
+		return 0, err
 	}
 	return int64(len(f.node.cur)), nil
 }

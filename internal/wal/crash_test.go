@@ -81,24 +81,49 @@ func quiet(sim *disk.Sim) *disk.Sim {
 	return sim
 }
 
+func fork(sim *disk.Sim, seed uint64) *disk.Sim {
+	c := quiet(sim.Clone(rand.New(rand.NewPCG(seed, 0x5eed))))
+	c.JournalRate = 0
+	return c
+}
+
 type logModel struct {
 	first, last uint64
 	next        uint64
 	term        uint64
-	terms       map[uint64]uint64
-	seen        map[uint64][]uint64
+	gen         uint64
+	bodyMax     uint64
+	log         map[uint64]Entry
+	seen        map[uint64][]Entry
 	durable     uint64
 	floor       uint64
 }
 
+func newModel(bodyMax uint64) *logModel {
+	return &logModel{next: 1, term: 1, bodyMax: bodyMax, log: map[uint64]Entry{}, seen: map[uint64][]Entry{}}
+}
+
 func (m *logModel) clone() *logModel {
 	c := *m
-	c.terms = maps.Clone(m.terms)
-	c.seen = make(map[uint64][]uint64, len(m.seen))
-	for i, terms := range m.seen {
-		c.seen[i] = slices.Clone(terms)
+	c.log = maps.Clone(m.log)
+	c.seen = make(map[uint64][]Entry, len(m.seen))
+	for i, ents := range m.seen {
+		c.seen[i] = slices.Clone(ents)
 	}
 	return &c
+}
+
+func sameEntry(a, b Entry) bool {
+	return a.Index == b.Index && a.Term == b.Term && a.Kind == b.Kind && bytes.Equal(a.Body, b.Body)
+}
+
+func (m *logModel) entry(i uint64) Entry {
+	m.gen++
+	b := make([]byte, (i*31+m.gen*7)%m.bodyMax)
+	for k := range b {
+		b[k] = byte(i + m.gen + uint64(k))
+	}
+	return Entry{Index: i, Term: m.term, Kind: Kind(m.gen % 3), Body: b}
 }
 
 func (m *logModel) verify(w *WAL) error {
@@ -121,211 +146,416 @@ func (m *logModel) verify(w *WAL) error {
 	}
 	for _, e := range ents {
 		i := e.Index
-		if !slices.Contains(m.seen[i], e.Term) || e.Kind != Kind(i%3) || !bytes.Equal(e.Body, body(i, e.Term)) {
-			return fmt.Errorf("entry %d term %d was never written or was truncated", i, e.Term)
+		if !slices.ContainsFunc(m.seen[i], func(s Entry) bool { return sameEntry(s, e) }) {
+			return fmt.Errorf("entry %d term %d was never written, was cut away or was lost in a crash before", i, e.Term)
 		}
-		if i >= m.floor && i <= m.durable && e.Term != m.terms[i] {
-			return fmt.Errorf("entry %d has term %d, synced term %d", i, e.Term, m.terms[i])
+		if i >= m.floor && i <= m.durable && !sameEntry(e, m.log[i]) {
+			return fmt.Errorf("entry %d term %d differs from the synced one with term %d", i, e.Term, m.log[i].Term)
 		}
 	}
 	return nil
 }
 
-func (m *logModel) adopt(w *WAL) {
-	m.first, _ = w.FirstIndex()
-	m.last, _ = w.LastIndex()
-	clear(m.terms)
-	for i := m.first; i <= m.last && m.last > 0; i++ {
-		m.terms[i], _ = w.Term(i)
+func (m *logModel) adopt(w *WAL) error {
+	first, _ := w.FirstIndex()
+	last, _ := w.LastIndex()
+	clear(m.log)
+	if last > 0 {
+		ents, err := w.Entries(first, last+1, noLimit)
+		if err != nil {
+			return err
+		}
+		for _, e := range ents {
+			m.log[e.Index] = e
+		}
+		m.next = last + 1
 	}
-	if m.last > 0 {
-		m.next = m.last + 1
+	maps.DeleteFunc(m.seen, func(k uint64, _ []Entry) bool { return k > last })
+	m.first, m.last, m.durable = first, last, last
+	return nil
+}
+
+func (m *logModel) bounds(w *WAL) error {
+	first, _ := w.FirstIndex()
+	last, err := w.LastIndex()
+	if err != nil {
+		return err
 	}
-	m.durable = m.last
+	if first != m.first || last != m.last {
+		return fmt.Errorf("log is [%d, %d], model says [%d, %d]", first, last, m.first, m.last)
+	}
+	return nil
+}
+
+func (m *logModel) appendN(w *WAL, n uint64) error {
+	ents := make([]Entry, n)
+	for k := range ents {
+		e := m.entry(m.next + uint64(k))
+		m.seen[e.Index] = append(m.seen[e.Index], e)
+		ents[k] = e
+	}
+	if err := w.Append(ents...); err != nil {
+		return err
+	}
+	for _, e := range ents {
+		m.log[e.Index] = e
+	}
+	if m.last == 0 {
+		m.first = m.next
+	}
+	m.last = m.next + n - 1
+	m.next = m.last + 1
+	return nil
+}
+
+func (m *logModel) truncate(w *WAL, i uint64, rng *rand.Rand) error {
+	m.durable = min(m.durable, i)
+	if err := w.TruncateAfter(i); err != nil {
+		return err
+	}
+	if i < m.last {
+		maps.DeleteFunc(m.log, func(k uint64, _ Entry) bool { return k > i })
+		maps.DeleteFunc(m.seen, func(k uint64, _ []Entry) bool { return k > i })
+		m.durable, m.last, m.next = i, i, i+1
+		switch {
+		case i < m.first:
+			m.first, m.last, m.durable = 0, 0, 0
+			m.term = 1 + rng.Uint64N(m.term)
+		case rng.IntN(2) == 0:
+			m.term = m.log[i].Term
+		default:
+			m.term++
+		}
+	}
+	return m.bounds(w)
+}
+
+func (m *logModel) compact(w *WAL, c uint64, rng *rand.Rand) error {
+	m.floor = max(m.floor, c)
+	if err := w.CompactBefore(c); err != nil {
+		return err
+	}
+	first, err := w.FirstIndex()
+	if err != nil {
+		return err
+	}
+	if m.last < c {
+		m.first, m.last, m.durable, m.next = 0, 0, 0, c
+		m.term = 1 + rng.Uint64N(m.term)
+	} else if first > m.first && first <= c {
+		m.first = first
+	}
+	maps.DeleteFunc(m.log, func(k uint64, _ Entry) bool { return k < m.first })
+	return m.bounds(w)
 }
 
 func (m *logModel) apply(w *WAL, rng *rand.Rand) error {
 	switch r := rng.IntN(100); {
 	case r < 45:
-		n := 1 + rng.Uint64N(4)
-		ents := span(m.next, m.next+n, m.term)
-		for _, e := range ents {
-			if !slices.Contains(m.seen[e.Index], m.term) {
-				m.seen[e.Index] = append(m.seen[e.Index], m.term)
-			}
-		}
-		if err := w.Append(ents...); err != nil {
-			return err
-		}
-		for _, e := range ents {
-			m.terms[e.Index] = m.term
-		}
-		if m.last == 0 {
-			m.first = m.next
-		}
-		m.last = m.next + n - 1
-		m.next = m.last + 1
+		return m.appendN(w, 1+rng.Uint64N(4))
 	case r < 70:
 		if err := w.Sync(); err != nil {
 			return err
 		}
 		m.durable = m.last
 	case r < 80 && m.last > 0:
-		i := m.first - 1 + rng.Uint64N(m.last-m.first+2)
-		m.durable = min(m.durable, i)
-		durable, last := m.durable, m.last
-		if err := w.TruncateAfter(i); err != nil {
-			return err
-		}
-		m.adopt(w)
-		if i >= last {
-			m.durable = durable
-		}
-		maps.DeleteFunc(m.seen, func(k uint64, _ []uint64) bool { return k > i })
-		m.next = i + 1
-		m.term++
+		return m.truncate(w, m.first-1+rng.Uint64N(m.last-m.first+2), rng)
 	case r < 87 && m.last > 0:
-		c := m.first + rng.Uint64N(m.last-m.first+2)
-		m.floor = max(m.floor, c)
-		durable := m.durable
-		if err := w.CompactBefore(c); err != nil {
-			return err
-		}
-		m.adopt(w)
-		m.durable = durable
-		if m.last == 0 {
-			m.next = c
-		}
+		return m.compact(w, m.first+rng.Uint64N(m.last-m.first+2), rng)
 	default:
 		m.term++
 	}
 	return nil
 }
 
-func TestCrashAtEveryWrite(t *testing.T) {
-	seeds, steps := uint64(32), 600
-	if testing.Short() {
-		seeds, steps = 4, 150
+type crashCheck struct {
+	t      *testing.T
+	o      Options
+	rng    *rand.Rand
+	forks  uint64
+	where  string
+	points int
+	faulty int
+}
+
+func (c *crashCheck) fork(sim *disk.Sim) *disk.Sim {
+	c.forks++
+	return fork(sim, c.forks)
+}
+
+func (c *crashCheck) fail(format string, args ...any) {
+	c.t.Helper()
+	c.t.Fatalf(c.where+": "+format, args...)
+}
+
+func (c *crashCheck) reopen(sim *disk.Sim, m *logModel, depth int, tag string) {
+	c.t.Helper()
+	c.points++
+	cur := m
+	var fsys disk.FS = sim
+	if depth > 0 {
+		fsys = hookFS{Sim: sim, after: func(op string) {
+			lost := c.fork(sim)
+			lost.Crash()
+			c.reopen(lost, cur, depth-1, tag+", power loss after "+op)
+		}}
 	}
-	var total crashStats
-	for seed := range seeds {
-		t.Run(fmt.Sprint(seed), func(t *testing.T) {
-			st := crashRun(t, seed, steps)
-			total.power += st.power
-			total.process += st.process
-			total.recoveries += st.recoveries
-			total.restarts += st.restarts
-		})
+	w, err := Open(fsys, dir, c.o)
+	if err != nil {
+		c.fail("%s: open: %v", tag, err)
 	}
-	if total.restarts == 0 || total.recoveries == total.restarts || total.process == 0 {
-		t.Errorf("coverage: %+v", total)
+	if err := m.verify(w); err != nil {
+		c.fail("%s: %v", tag, err)
 	}
-	t.Logf("%d power losses, %d process crashes followed by power loss, %d recoveries after EIO (%d without power loss)",
-		total.power, total.process, total.recoveries, total.restarts)
+	pm := m.clone()
+	if err := pm.adopt(w); err != nil {
+		c.fail("%s: %v", tag, err)
+	}
+	cur = pm
+	for range 3 {
+		if err := pm.apply(w, c.rng); err != nil {
+			c.fail("%s: after reopen: %v", tag, err)
+		}
+	}
+	if err := w.Sync(); err != nil {
+		c.fail("%s: sync after reopen: %v", tag, err)
+	}
+	pm.durable = pm.last
+	_ = w.Close()
+	after := c.fork(sim)
+	after.Crash()
+	if w, err = Open(after, dir, c.o); err != nil {
+		c.fail("%s: open after power loss: %v", tag, err)
+	}
+	if err := pm.verify(w); err != nil {
+		c.fail("%s: reported by Open or synced after it, then lost: %v", tag, err)
+	}
+	_ = w.Close()
+}
+
+func (c *crashCheck) faultyReopen(sim *disk.Sim, m *logModel) {
+	c.t.Helper()
+	c.faulty++
+	sim.WriteErrRate, sim.SyncErrRate, sim.MetaErrRate, sim.ReadErrRate = 0.15, 0.15, 0.15, 0.05
+	for try := 0; ; try++ {
+		if try == 12 {
+			quiet(sim)
+		}
+		w, err := Open(sim, dir, c.o)
+		if errors.Is(err, syscall.EIO) {
+			if c.rng.IntN(3) == 0 {
+				sim.Crash()
+			}
+			continue
+		}
+		if err != nil {
+			c.fail("open try %d: %v", try, err)
+		}
+		quiet(sim)
+		if err := m.verify(w); err != nil {
+			c.fail("after %d failed opens: %v", try, err)
+		}
+		pm := m.clone()
+		if err := pm.adopt(w); err != nil {
+			c.fail("%v", err)
+		}
+		_ = w.Close()
+		quiet(sim).Crash()
+		if w, err = Open(sim, dir, c.o); err != nil {
+			c.fail("open after failed opens and power loss: %v", err)
+		}
+		if err := pm.verify(w); err != nil {
+			c.fail("reported by Open after failed opens, then lost: %v", err)
+		}
+		_ = w.Close()
+		return
+	}
+}
+
+type crashConfig struct {
+	seeds    uint64
+	steps    int
+	segSizes []int64
+	bodyMax  uint64
+	journal  float64
+	depth    int
 }
 
 type crashStats struct {
-	power, process, recoveries, restarts int
+	checks, faulty, restarts, failedOpens int
 }
 
-func crashRun(t *testing.T, seed uint64, steps int) crashStats {
+func crashRun(t *testing.T, cfg crashConfig, seed uint64) crashStats {
 	var st crashStats
 	rng := rand.New(rand.NewPCG(seed, 99))
 	sim := newSim(seed)
-	if seed/4%2 == 1 {
-		sim.Sector = 4096
+	sim.Sector = []int64{disk.SectorSize, 4096}[seed%2]
+	sim.JournalRate = cfg.journal
+	c := &crashCheck{
+		t:   t,
+		rng: rand.New(rand.NewPCG(seed, 100)),
+		o:   Options{SegmentSize: cfg.segSizes[seed/2%uint64(len(cfg.segSizes))], Nonces: rand.NewChaCha8([32]byte{byte(seed)})},
 	}
-	o := Options{SegmentSize: []int64{300, 4096}[seed/2%2], Nonces: rand.NewChaCha8([32]byte{byte(seed)})}
-	m := &logModel{next: 1, term: 1, terms: map[uint64]uint64{}, seen: map[uint64][]uint64{}}
-	step := 0
-	fail := func(format string, args ...any) {
-		t.Helper()
-		t.Fatalf("seed %d step %d: "+format, append([]any{seed, step}, args...)...)
-	}
-	fsys := hookFS{Sim: sim, after: func(string) {
-		st.power++
-		c := quiet(sim.Clone())
-		c.Crash()
-		w, err := Open(c, dir, o)
-		if err != nil {
-			fail("open after power loss: %v", err)
-		}
-		if err := m.verify(w); err != nil {
-			fail("after power loss: %v", err)
-		}
-		_ = w.Close()
-
-		if st.power%4 != 0 {
-			return
-		}
-		st.process++
-		proc := quiet(sim.Clone())
-		w, err = Open(proc, dir, o)
-		if err != nil {
-			fail("open after process crash: %v", err)
-		}
-		if err := m.verify(w); err != nil {
-			fail("after process crash: %v", err)
-		}
-		pm := m.clone()
-		pm.adopt(w)
-		for range 3 {
-			if err := pm.apply(w, rng); err != nil {
-				fail("after process crash: %v", err)
+	m := newModel(cfg.bodyMax)
+	step, hooks := 0, 0
+	fsys := hookFS{Sim: sim, after: func(op string) {
+		hooks++
+		c.where = fmt.Sprintf("seed %d step %d after %s", seed, step, op)
+		switch hooks % 3 {
+		case 0:
+			lost := c.fork(sim)
+			lost.Crash()
+			c.reopen(lost, m, cfg.depth, "power loss")
+		case 1:
+			c.reopen(c.fork(sim), m, cfg.depth, "process crash")
+		case 2:
+			proc := c.fork(sim)
+			if c.rng.IntN(2) == 0 {
+				proc.Crash()
 			}
+			c.faultyReopen(proc, m)
 		}
-		if err := w.Sync(); err != nil {
-			fail("sync after process crash: %v", err)
-		}
-		pm.durable = pm.last
-		_ = w.Close()
-		proc.Crash()
-		if w, err = Open(proc, dir, o); err != nil {
-			fail("open after process crash and power loss: %v", err)
-		}
-		if err := pm.verify(w); err != nil {
-			fail("after process crash and power loss: %v", err)
-		}
-		_ = w.Close()
 	}}
-
-	faults := [4]float64{}
-	if seed%2 == 1 {
-		faults = [4]float64{0.01, 0.02, 0.01, 0}
-	}
+	faults := seed%3 != 0
 	setFaults := func() {
-		sim.WriteErrRate, sim.SyncErrRate, sim.MetaErrRate, sim.ReadErrRate = faults[0], faults[1], faults[2], faults[3]
+		if faults {
+			sim.WriteErrRate, sim.SyncErrRate, sim.MetaErrRate, sim.ReadErrRate = 0.01, 0.02, 0.02, 0.01
+		}
 	}
-	w := mustOpen(t, fsys, o)
+	setFaults()
+	w := mustOpen(t, fsys, c.o)
 	restart := func(crash bool) {
+		st.restarts++
 		_ = w.Close()
 		if crash {
 			sim.Crash()
 		}
+		for {
+			var err error
+			if w, err = Open(fsys, dir, c.o); err == nil {
+				break
+			}
+			if !errors.Is(err, syscall.EIO) {
+				t.Fatalf("seed %d step %d: open: %v", seed, step, err)
+			}
+			st.failedOpens++
+			if rng.IntN(3) == 0 {
+				sim.Crash()
+			}
+		}
 		quiet(sim)
-		w = mustOpen(t, fsys, o)
+		if err := m.verify(w); err != nil {
+			t.Fatalf("seed %d step %d: after restart: %v", seed, step, err)
+		}
+		if err := m.adopt(w); err != nil {
+			t.Fatalf("seed %d step %d: %v", seed, step, err)
+		}
 		setFaults()
-		m.adopt(w)
 	}
-	setFaults()
-
-	for step = range steps {
-		if rng.IntN(100) < 5 {
-			restart(false)
+	for step = range cfg.steps {
+		if rng.IntN(100) < 4 {
+			restart(rng.IntN(2) == 0)
 			continue
 		}
 		if err := m.apply(w, rng); err != nil {
 			if !errors.Is(err, syscall.EIO) {
-				fail("%v", err)
+				t.Fatalf("seed %d step %d: %v", seed, step, err)
 			}
-			st.recoveries++
-			crash := rng.IntN(2) == 0
-			if !crash {
-				st.restarts++
-			}
-			restart(crash)
+			restart(rng.IntN(2) == 0)
 		}
 	}
 	_ = w.Close()
+	st.checks, st.faulty = c.points, c.faulty
 	return st
+}
+
+func TestCrashAtEveryWrite(t *testing.T) {
+	cases := map[string]crashConfig{
+		"small frames":    {seeds: 24, steps: 300, segSizes: []int64{300, 1500, 4096, 20000}, bodyMax: 97, depth: 1},
+		"nested":          {seeds: 4, steps: 80, segSizes: []int64{300, 1500}, bodyMax: 97, depth: 2},
+		"large frames":    {seeds: 8, steps: 120, segSizes: []int64{6000, 20000, 65536, 200000}, bodyMax: 3001, depth: 1},
+		"eager namespace": {seeds: 8, steps: 300, segSizes: []int64{300, 1500, 4096, 20000}, bodyMax: 97, journal: 0.5, depth: 1},
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			if testing.Short() {
+				cfg.seeds, cfg.steps = cfg.seeds/4, cfg.steps/2
+			}
+			var total crashStats
+			for seed := range cfg.seeds {
+				st := crashRun(t, cfg, seed)
+				total.checks += st.checks
+				total.faulty += st.faulty
+				total.restarts += st.restarts
+				total.failedOpens += st.failedOpens
+			}
+			if !testing.Short() && (total.restarts == 0 || total.failedOpens == 0 || total.faulty == 0) {
+				t.Errorf("coverage: %+v", total)
+			}
+			t.Logf("%d checked recoveries, %d recoveries with faults during Open, %d restarts, %d failed opens in the main run",
+				total.checks, total.faulty, total.restarts, total.failedOpens)
+		})
+	}
+}
+
+func TestCrashAtEveryCutAndCompact(t *testing.T) {
+	const n = 45
+	points := 0
+	for _, sector := range []int64{disk.SectorSize, 4096} {
+		for _, segSize := range []int64{300, 700} {
+			if (segSize == 700) != (sector == 4096) || testing.Short() && sector == 4096 {
+				continue
+			}
+			base := newSim(uint64(segSize + sector))
+			base.Sector = sector
+			o := Options{SegmentSize: segSize, Nonces: rand.NewChaCha8([32]byte{9})}
+			start := newModel(97)
+			w := mustOpen(t, base, o)
+			for range n / 3 {
+				if err := start.appendN(w, 3); err != nil {
+					t.Fatal(err)
+				}
+				if err := w.Sync(); err != nil {
+					t.Fatal(err)
+				}
+				start.durable = start.last
+				start.term += uint64(start.next % 2)
+			}
+			_ = w.Close()
+
+			for cut := uint64(0); cut <= n+1; cut++ {
+				for _, compact := range []bool{false, true} {
+					sim := base.Clone(rand.New(rand.NewPCG(cut, 1)))
+					m := start.clone()
+					c := &crashCheck{t: t, o: o, rng: rand.New(rand.NewPCG(cut, 5))}
+					c.where = fmt.Sprintf("sector %d segment %d cut %d compact %v", sector, segSize, cut, compact)
+					w := mustOpen(t, hookFS{Sim: sim, after: func(op string) {
+						lost := c.fork(sim)
+						lost.Crash()
+						c.reopen(lost, m, 1, "power loss after "+op)
+						c.reopen(c.fork(sim), m, 0, "process crash after "+op)
+					}}, o)
+					var err error
+					if compact {
+						err = m.compact(w, cut, c.rng)
+					} else {
+						err = m.truncate(w, cut, c.rng)
+					}
+					if err != nil {
+						c.fail("%v", err)
+					}
+					if err := m.appendN(w, 2); err != nil {
+						c.fail("append after the cut with term %d: %v", m.term, err)
+					}
+					if err := w.Sync(); err != nil {
+						c.fail("%v", err)
+					}
+					m.durable = m.last
+					_ = w.Close()
+					points += c.points
+				}
+			}
+		}
+	}
+	t.Logf("%d checked recoveries", points)
 }
