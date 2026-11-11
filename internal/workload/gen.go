@@ -1,7 +1,6 @@
-package state_test
+package workload
 
 import (
-	"encoding/binary"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -10,15 +9,17 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
-type batch struct {
-	op       state.Op
-	ts       uint64
-	body     []byte
-	ids      []u128.Uint128
-	pendings []int
+type Batch struct {
+	Op   state.Op
+	TS   uint64
+	Body []byte
+	IDs  []u128.Uint128
+
+	pendings   []int
+	pendingIDs []u128.Uint128
 }
 
-type gen struct {
+type Gen struct {
 	r      *rand.Rand
 	ts     uint64
 	nextID uint64
@@ -27,101 +28,116 @@ type gen struct {
 	sent     []state.Transfer
 	pendings []state.Transfer
 
-	maxAccounts int
-	ledgers     uint32
-	maxBatch    int
-	maxStep     uint64
-	linkedPct   int
-	limitPct    int
-	pendingPct  int
-	huge        bool
-	coarse      bool
+	MaxAccounts int
+	Ledgers     uint32
+	MaxBatch    int
+	MaxStep     uint64
+	LinkedPct   int
+	LimitPct    int
+	PendingPct  int
+	Huge        bool
+	Coarse      bool
 }
 
-func newGen(r *rand.Rand) *gen {
-	g := &gen{
+func New(r *rand.Rand) *Gen {
+	g := &Gen{
 		r:           r,
 		ts:          r.Uint64N(1e9),
-		maxAccounts: 2 + r.IntN(24),
-		ledgers:     1 + r.Uint32N(3),
-		maxBatch:    1 + r.IntN(64),
-		maxStep:     1 + r.Uint64N(3e9),
-		linkedPct:   r.IntN(25),
-		limitPct:    r.IntN(60),
-		pendingPct:  10 + r.IntN(40),
-		huge:        r.IntN(4) == 0,
-		coarse:      r.IntN(3) == 0,
+		MaxAccounts: 2 + r.IntN(24),
+		Ledgers:     1 + r.Uint32N(3),
+		MaxBatch:    1 + r.IntN(64),
+		MaxStep:     1 + r.Uint64N(3e9),
+		LinkedPct:   r.IntN(25),
+		LimitPct:    r.IntN(60),
+		PendingPct:  10 + r.IntN(40),
+		Huge:        r.IntN(4) == 0,
+		Coarse:      r.IntN(3) == 0,
 	}
 	if r.IntN(16) == 0 {
 		g.ts = 1<<63 - r.Uint64N(600e9)
 	}
 	if r.IntN(8) == 0 {
-		g.linkedPct = 50 + r.IntN(41)
+		g.LinkedPct = 50 + r.IntN(41)
 	}
 	return g
 }
 
-func (g *gen) batch() batch {
+func (g *Gen) Batch() Batch {
 	r := g.r
-	g.ts += r.Uint64N(g.maxStep)
-	if g.coarse {
+	g.ts += r.Uint64N(g.MaxStep)
+	if g.Coarse {
 		g.ts = g.ts/1e9*1e9 + r.Uint64N(16)
 	}
 	if r.IntN(20) == 0 {
 		g.ts -= min(g.ts, r.Uint64N(2e9))
 	}
-	b := batch{op: state.CreateTransfers, ts: g.ts}
-	if len(g.accts) < 2 || (len(g.accts) < g.maxAccounts && r.IntN(6) == 0) || r.IntN(40) == 0 {
-		b.op = state.CreateAccounts
+	b := Batch{Op: state.CreateTransfers, TS: g.ts}
+	if len(g.accts) < 2 || (len(g.accts) < g.MaxAccounts && r.IntN(6) == 0) || r.IntN(40) == 0 {
+		b.Op = state.CreateAccounts
 	}
-	for i := range r.IntN(g.maxBatch + 1) {
-		if b.op == state.CreateAccounts {
+	for i := range r.IntN(g.MaxBatch + 1) {
+		if b.Op == state.CreateAccounts {
 			a := g.account()
-			b.body = state.AppendAccount(b.body, a)
-			b.ids = append(b.ids, a.ID)
+			b.Body = state.AppendAccount(b.Body, a)
+			b.IDs = append(b.IDs, a.ID)
 			continue
 		}
 		before := len(g.pendings)
 		tr := g.transfer()
 		if len(g.pendings) > before {
 			b.pendings = append(b.pendings, i)
+			b.pendingIDs = append(b.pendingIDs, g.pendings[before].ID)
 		}
-		b.body = state.AppendTransfer(b.body, tr)
-		b.ids = append(b.ids, tr.ID, tr.DebitAccountID, tr.CreditAccountID, tr.PendingID)
+		b.Body = state.AppendTransfer(b.Body, tr)
+		b.IDs = append(b.IDs, tr.ID, tr.DebitAccountID, tr.CreditAccountID, tr.PendingID)
 	}
 	return b
 }
 
-func (g *gen) settle(b batch, fails []state.Failure) {
-	base := len(g.pendings) - len(b.pendings)
-	kept := g.pendings[:base]
+func (g *Gen) Settle(b Batch, fails []state.Failure) {
 	for k, i := range b.pendings {
-		if !slices.ContainsFunc(fails, func(f state.Failure) bool { return f.Index == i }) {
-			kept = append(kept, g.pendings[base+k])
+		if slices.ContainsFunc(fails, func(f state.Failure) bool { return f.Index == i }) {
+			id := b.pendingIDs[k]
+			g.pendings = slices.DeleteFunc(g.pendings, func(p state.Transfer) bool { return p.ID == id })
 		}
 	}
-	g.pendings = kept
 }
 
-func (g *gen) id() u128.Uint128 {
+func (g *Gen) Lookup() (accounts bool, ids []u128.Uint128) {
+	r := g.r
+	accounts = len(g.sent) == 0 || r.IntN(2) == 0
+	for range 1 + r.IntN(8) {
+		switch {
+		case r.IntN(10) == 0:
+			ids = append(ids, g.id())
+		case accounts && len(g.accts) > 0:
+			ids = append(ids, g.accts[r.IntN(len(g.accts))].ID)
+		case !accounts:
+			ids = append(ids, g.sent[r.IntN(len(g.sent))].ID)
+		}
+	}
+	return accounts, ids
+}
+
+func (g *Gen) id() u128.Uint128 {
 	g.nextID++
 	return u128.Uint128{Hi: g.r.Uint64N(3) << 62, Lo: g.nextID}
 }
 
-func (g *gen) account() state.Account {
+func (g *Gen) account() state.Account {
 	r := g.r
 	var a state.Account
-	if len(g.accts) >= g.maxAccounts || len(g.accts) > 0 && r.IntN(5) == 0 {
+	if len(g.accts) >= g.MaxAccounts || len(g.accts) > 0 && r.IntN(5) == 0 {
 		a = g.accts[r.IntN(len(g.accts))]
 		if r.IntN(3) == 0 {
 			a.Code++
 		}
 	} else {
-		a = state.Account{ID: g.id(), Ledger: 1 + r.Uint32N(g.ledgers), Code: uint16(1 + r.IntN(3))}
+		a = state.Account{ID: g.id(), Ledger: 1 + r.Uint32N(g.Ledgers), Code: uint16(1 + r.IntN(3))} //nolint:gosec
 		switch n := r.IntN(100); {
-		case n < g.limitPct/2:
+		case n < g.LimitPct/2:
 			a.Flags = state.DebitsMustNotExceedCredits
-		case n < g.limitPct:
+		case n < g.LimitPct:
 			a.Flags = state.CreditsMustNotExceedDebits
 		}
 		g.accts = append(g.accts, a)
@@ -150,9 +166,9 @@ func (g *gen) account() state.Account {
 	return a
 }
 
-func (g *gen) amount() u128.Uint128 {
+func (g *Gen) amount() u128.Uint128 {
 	r := g.r
-	if g.huge {
+	if g.Huge {
 		switch r.IntN(6) {
 		case 0:
 			return u128.Max().SubWrap(u128.From64(r.Uint64N(1000)))
@@ -163,14 +179,14 @@ func (g *gen) amount() u128.Uint128 {
 	return u128.From64(1 + r.Uint64N(100))
 }
 
-func (g *gen) pickAccount() state.Account {
+func (g *Gen) pickAccount() state.Account {
 	if g.r.IntN(30) == 0 {
 		return state.Account{ID: g.id(), Ledger: 1}
 	}
 	return g.accts[g.r.IntN(len(g.accts))]
 }
 
-func (g *gen) pair() (dr, cr state.Account) {
+func (g *Gen) pair() (dr, cr state.Account) {
 	dr = g.pickAccount()
 	for range 8 {
 		cr = g.pickAccount()
@@ -181,7 +197,7 @@ func (g *gen) pair() (dr, cr state.Account) {
 	return dr, cr
 }
 
-func (g *gen) transfer() state.Transfer {
+func (g *Gen) transfer() state.Transfer {
 	r := g.r
 	var tr state.Transfer
 	switch {
@@ -191,7 +207,7 @@ func (g *gen) transfer() state.Transfer {
 		if r.IntN(3) == 0 {
 			tr.Amount = tr.Amount.AddWrap(u128.From64(1))
 		}
-	case len(g.pendings) > 0 && r.IntN(100) < g.pendingPct:
+	case len(g.pendings) > 0 && r.IntN(100) < g.PendingPct:
 		p := g.pendings[len(g.pendings)-1-r.IntN(min(len(g.pendings), 16))]
 		tr = state.Transfer{ID: g.id(), PendingID: p.ID, Flags: state.PostPending}
 		if r.IntN(3) == 0 {
@@ -219,9 +235,9 @@ func (g *gen) transfer() state.Transfer {
 			CreditAccountID: cr.ID,
 			Amount:          g.amount(),
 			Ledger:          dr.Ledger,
-			Code:            uint16(1 + r.IntN(3)),
+			Code:            uint16(1 + r.IntN(3)), //nolint:gosec
 		}
-		if r.IntN(100) < g.pendingPct {
+		if r.IntN(100) < g.PendingPct {
 			tr.Flags = state.Pending
 			switch k := r.IntN(30); {
 			case k == 0:
@@ -233,7 +249,7 @@ func (g *gen) transfer() state.Transfer {
 		}
 	}
 
-	if r.IntN(100) < g.linkedPct {
+	if r.IntN(100) < g.LinkedPct {
 		tr.Flags |= state.Linked
 	}
 	switch r.IntN(300) {
@@ -281,24 +297,4 @@ func (g *gen) transfer() state.Transfer {
 		g.sent[r.IntN(len(g.sent))] = tr
 	}
 	return tr
-}
-
-type fuzzSource struct {
-	b    []byte
-	weyl uint64
-}
-
-func (s *fuzzSource) Uint64() uint64 {
-	if len(s.b) >= 8 {
-		v := binary.LittleEndian.Uint64(s.b)
-		s.b = s.b[8:]
-		return v
-	}
-	s.b = nil
-	s.weyl += 0x9e3779b97f4a7c15
-	return s.weyl
-}
-
-func (s *fuzzSource) exhausted() bool {
-	return s.b == nil
 }

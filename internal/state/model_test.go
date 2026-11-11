@@ -14,6 +14,7 @@ import (
 
 	"github.com/Demonisreal/dmn-ledger/internal/oracle"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
+	"github.com/Demonisreal/dmn-ledger/internal/workload"
 )
 
 const eventsPerRun = 2000
@@ -29,8 +30,8 @@ func TestModel(t *testing.T) {
 		for seed := range uint64(total / eventsPerRun) {
 			t.Run(fmt.Sprint(seed), func(t *testing.T) {
 				t.Parallel()
-				g := newGen(rand.New(rand.NewPCG(seed, 0x1ed6e5)))
-				run(t, g, eventsPerRun, nil, func(c state.Reason) { seen[c].Add(1) })
+				r := rand.New(rand.NewPCG(seed, 0x1ed6e5))
+				run(t, r, workload.New(r), eventsPerRun, nil, func(c state.Reason) { seen[c].Add(1) })
 			})
 		}
 	})
@@ -52,9 +53,10 @@ func TestModelBeyondOneBlock(t *testing.T) {
 	for seed := range uint64(3) {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
 			t.Parallel()
-			g := newGen(rand.New(rand.NewPCG(seed, 0xb10c)))
-			g.maxBatch, g.maxAccounts, g.limitPct, g.huge = 2000, 64, 0, false
-			if m := run(t, g, 60_000, nil, nil); m.Transfers() <= 1<<14 {
+			r := rand.New(rand.NewPCG(seed, 0xb10c))
+			g := workload.New(r)
+			g.MaxBatch, g.MaxAccounts, g.LimitPct, g.Huge = 2000, 64, 0, false
+			if m := run(t, r, g, 60_000, nil, nil); m.Transfers() <= 1<<14 {
 				t.Fatalf("only %d transfers stored", m.Transfers())
 			}
 		})
@@ -72,7 +74,8 @@ func FuzzApply(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, seed []byte) {
 		src := &fuzzSource{b: seed}
-		run(t, newGen(rand.New(src)), eventsPerRun, src.exhausted, nil)
+		r := rand.New(src)
+		run(t, r, workload.New(r), eventsPerRun, src.exhausted, nil)
 	})
 }
 
@@ -136,29 +139,29 @@ func FuzzApplyRaw(f *testing.F) {
 	})
 }
 
-func run(t *testing.T, g *gen, events int, stop func() bool, observe func(state.Reason)) *state.Machine {
+func run(t *testing.T, r *rand.Rand, g *workload.Gen, events int, stop func() bool, observe func(state.Reason)) *state.Machine {
 	t.Helper()
-	m, o := state.New(g.r.IntN(32), g.r.IntN(3000)), oracle.New()
+	m, o := state.New(r.IntN(32), r.IntN(3000)), oracle.New()
 	var replica *state.Machine
 	var got, again []state.Failure
 	for batchNo := 0; events > 0 && (stop == nil || !stop()); batchNo++ {
 		if batchNo%64 == 32 {
 			replica = restore(t, m)
 		}
-		b := g.batch()
+		b := g.Batch()
 		var err error
-		got, err = m.Apply(b.op, b.ts, b.body, got[:0])
-		want, oerr := o.Apply(b.op, b.ts, b.body)
+		got, err = m.Apply(b.Op, b.TS, b.Body, got[:0])
+		want, oerr := o.Apply(b.Op, b.TS, b.Body)
 		if (err == nil) != (oerr == nil) || err != nil && !errors.Is(err, state.ErrMalformedBatch) {
 			t.Fatalf("batch %d: errors differ: %v, oracle %v\n%s", batchNo, err, oerr, dump(b))
 		}
 		if !slices.Equal(got, want) {
 			t.Fatalf("batch %d: failures differ\n got %v\nwant %v\n%s", batchNo, got, want, dump(b))
 		}
-		if found, want := m.LookupAccounts(b.ids, nil), o.LookupAccounts(b.ids); !slices.Equal(found, want) {
+		if found, want := m.LookupAccounts(b.IDs, nil), o.LookupAccounts(b.IDs); !slices.Equal(found, want) {
 			t.Fatalf("batch %d: accounts differ\n got %+v\nwant %+v\n%s", batchNo, found, want, dump(b))
 		}
-		if found, want := m.LookupTransfers(b.ids, nil), o.LookupTransfers(b.ids); !slices.Equal(found, want) {
+		if found, want := m.LookupTransfers(b.IDs, nil), o.LookupTransfers(b.IDs); !slices.Equal(found, want) {
 			t.Fatalf("batch %d: transfers differ\n got %+v\nwant %+v\n%s", batchNo, found, want, dump(b))
 		}
 		digest := m.Digest()
@@ -173,22 +176,22 @@ func run(t *testing.T, g *gen, events int, stop func() bool, observe func(state.
 		}
 		if replica != nil {
 			var rerr error
-			again, rerr = replica.Apply(b.op, b.ts, b.body, again[:0])
+			again, rerr = replica.Apply(b.Op, b.TS, b.Body, again[:0])
 			if (rerr == nil) != (err == nil) || !slices.Equal(again, got) || replica.Digest() != digest {
 				t.Fatalf("batch %d: restored replica diverged: %v %v", batchNo, again, rerr)
 			}
 		}
 
-		g.settle(b, got)
+		g.Settle(b, got)
 		if observe != nil {
 			for _, fail := range got {
 				observe(fail.Reason)
 			}
 		}
-		if b.op == state.CreateAccounts {
-			events -= len(b.body) / state.AccountSize
+		if b.Op == state.CreateAccounts {
+			events -= len(b.Body) / state.AccountSize
 		} else {
-			events -= len(b.body) / state.TransferSize
+			events -= len(b.Body) / state.TransferSize
 		}
 	}
 	return m
@@ -213,17 +216,37 @@ func restore(t *testing.T, m *state.Machine) *state.Machine {
 	return c
 }
 
-func dump(b batch) string {
+func dump(b workload.Batch) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "op %d at %d:\n", b.op, b.ts)
-	if b.op == state.CreateAccounts {
-		for i := 0; i < len(b.body); i += state.AccountSize {
-			fmt.Fprintf(&sb, "  %d %+v\n", i/state.AccountSize, state.DecodeAccount(b.body[i:]))
+	fmt.Fprintf(&sb, "op %d at %d:\n", b.Op, b.TS)
+	if b.Op == state.CreateAccounts {
+		for i := 0; i < len(b.Body); i += state.AccountSize {
+			fmt.Fprintf(&sb, "  %d %+v\n", i/state.AccountSize, state.DecodeAccount(b.Body[i:]))
 		}
 		return sb.String()
 	}
-	for i := 0; i < len(b.body); i += state.TransferSize {
-		fmt.Fprintf(&sb, "  %d %+v\n", i/state.TransferSize, state.DecodeTransfer(b.body[i:]))
+	for i := 0; i < len(b.Body); i += state.TransferSize {
+		fmt.Fprintf(&sb, "  %d %+v\n", i/state.TransferSize, state.DecodeTransfer(b.Body[i:]))
 	}
 	return sb.String()
+}
+
+type fuzzSource struct {
+	b    []byte
+	weyl uint64
+}
+
+func (s *fuzzSource) Uint64() uint64 {
+	if len(s.b) >= 8 {
+		v := binary.LittleEndian.Uint64(s.b)
+		s.b = s.b[8:]
+		return v
+	}
+	s.b = nil
+	s.weyl += 0x9e3779b97f4a7c15
+	return s.weyl
+}
+
+func (s *fuzzSource) exhausted() bool {
+	return s.b == nil
 }
