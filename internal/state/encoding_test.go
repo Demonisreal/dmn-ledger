@@ -2,6 +2,7 @@ package state_test
 
 import (
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -69,7 +70,7 @@ func TestGoldenLayout(t *testing.T) {
 func TestReasonNames(t *testing.T) {
 	t.Parallel()
 	seen := map[string]state.Reason{}
-	for r := state.OK; r <= state.ExceedsDebits; r++ {
+	for r := state.OK; r <= state.LastReason; r++ {
 		name := r.String()
 		if name == "" || strings.HasPrefix(name, "reason(") {
 			t.Errorf("reason %d has no name", r)
@@ -79,7 +80,7 @@ func TestReasonNames(t *testing.T) {
 		}
 		seen[name] = r
 	}
-	if got := (state.ExceedsDebits + 1).String(); got != "reason(39)" {
+	if got, want := (state.LastReason + 1).String(), fmt.Sprintf("reason(%d)", state.LastReason+1); got != want {
 		t.Errorf("unknown reason prints as %q", got)
 	}
 }

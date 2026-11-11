@@ -3,6 +3,7 @@ package state_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -23,23 +24,40 @@ func TestModel(t *testing.T) {
 	if testing.Short() {
 		total = 40_000
 	}
-	var seen [state.ExceedsDebits + 1]atomic.Int64
+	var seen [state.LastReason + 1]atomic.Int64
 	t.Run("seeds", func(t *testing.T) {
 		for seed := range uint64(total / eventsPerRun) {
 			t.Run(fmt.Sprint(seed), func(t *testing.T) {
 				t.Parallel()
-				r := rand.New(rand.NewPCG(seed, 0x1ed6e5))
-				run(t, r, eventsPerRun, nil, func(c state.Reason) { seen[c].Add(1) })
+				g := newGen(rand.New(rand.NewPCG(seed, 0x1ed6e5)))
+				run(t, g, eventsPerRun, nil, func(c state.Reason) { seen[c].Add(1) })
 			})
 		}
 	})
 	if testing.Short() || t.Failed() {
 		return
 	}
-	for c := state.LinkedEventFailed; c <= state.ExceedsDebits; c++ {
+	for c := state.LinkedEventFailed; c <= state.LastReason; c++ {
 		if seen[c].Load() == 0 {
 			t.Errorf("generator never produced %v", c)
 		}
+	}
+}
+
+func TestModelBeyondOneBlock(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("long runs")
+	}
+	for seed := range uint64(3) {
+		t.Run(fmt.Sprint(seed), func(t *testing.T) {
+			t.Parallel()
+			g := newGen(rand.New(rand.NewPCG(seed, 0xb10c)))
+			g.maxBatch, g.maxAccounts, g.limitPct, g.huge = 2000, 64, 0, false
+			if m := run(t, g, 60_000, nil, nil); m.Transfers() <= 1<<14 {
+				t.Fatalf("only %d transfers stored", m.Transfers())
+			}
+		})
 	}
 }
 
@@ -54,44 +72,73 @@ func FuzzApply(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, seed []byte) {
 		src := &fuzzSource{b: seed}
-		run(t, rand.New(src), eventsPerRun, src.exhausted, nil)
+		run(t, newGen(rand.New(src)), eventsPerRun, src.exhausted, nil)
 	})
+}
+
+func rawBatches(specs ...batchSpec) []byte {
+	var raw []byte
+	for _, b := range specs {
+		raw = append(raw, byte(b.op))
+		raw = binary.BigEndian.AppendUint64(raw, b.ts)
+		raw = binary.BigEndian.AppendUint16(raw, uint16(len(b.body)))
+		raw = append(raw, b.body...)
+	}
+	return raw
 }
 
 func FuzzApplyRaw(f *testing.F) {
 	valid := state.Transfer{ID: id128(1000), DebitAccountID: id128(1), CreditAccountID: id128(2), Amount: id128(5), Ledger: 1, Code: 1}
-	f.Add(uint8(state.CreateTransfers), uint64(20), encodeTransfers(valid))
-	f.Add(uint8(state.CreateTransfers), uint64(40e9), encodeTransfers(
-		state.Transfer{ID: id128(1001), PendingID: id128(200), Amount: id128(3), Flags: state.PostPending | state.Linked},
-		state.Transfer{ID: id128(1002), PendingID: id128(205), Flags: state.VoidPending},
+	pending := state.Transfer{ID: id128(1001), DebitAccountID: id128(1), CreditAccountID: id128(2), Amount: id128(5), Ledger: 1, Code: 1,
+		Flags: state.Pending, Timeout: 2}
+	f.Add(rawBatches(
+		batchSpec{state.CreateTransfers, 20, encodeTransfers(valid, pending)},
+		batchSpec{state.CreateTransfers, 40e9, nil},
+		batchSpec{state.CreateTransfers, 30, encodeTransfers(
+			state.Transfer{ID: id128(1002), PendingID: id128(1001), Flags: state.PostPending | state.Linked},
+			state.Transfer{ID: id128(1003), PendingID: id128(205), Flags: state.VoidPending},
+		)},
 	))
-	f.Add(uint8(state.CreateTransfers), uint64(1<<63-1), encodeTransfers(valid))
-	f.Add(uint8(state.CreateAccounts), uint64(20), encodeAccounts(state.Account{ID: id128(9), Ledger: 1, Code: 1}))
-	f.Add(uint8(7), uint64(0), []byte{1})
-	f.Fuzz(func(t *testing.T, op uint8, ts uint64, body []byte) {
+	f.Add(rawBatches(
+		batchSpec{state.CreateTransfers, 1<<63 - 2, encodeTransfers(valid)},
+		batchSpec{state.CreateTransfers, 5, nil},
+		batchSpec{state.CreateTransfers, 5, nil},
+	))
+	f.Add(rawBatches(
+		batchSpec{state.CreateAccounts, 20, encodeAccounts(state.Account{ID: id128(9), Ledger: 1, Code: 1})},
+		batchSpec{7, 0, []byte{1}},
+	))
+	f.Fuzz(func(t *testing.T, raw []byte) {
 		m, o := state.New(0, 0), oracle.New()
 		for _, b := range setup {
 			_, _ = m.Apply(b.op, b.ts, b.body, nil)
 			_, _ = o.Apply(b.op, b.ts, b.body)
 		}
-		got, err := m.Apply(state.Op(op), ts, body, nil)
-		want, oerr := o.Apply(state.Op(op), ts, body)
-		if (err == nil) != (oerr == nil) || !slices.Equal(got, want) {
-			t.Fatalf("got %v %v, oracle %v %v", got, err, want, oerr)
-		}
-		if m.Digest() != o.Digest() {
-			t.Fatal("digests differ")
-		}
-		if err := m.CheckInvariants(); err != nil {
-			t.Fatal(err)
+		var got []state.Failure
+		for batchNo := 0; len(raw) >= 11; batchNo++ {
+			op, ts := state.Op(raw[0]), binary.BigEndian.Uint64(raw[1:])
+			body := raw[11:][:min(int(binary.BigEndian.Uint16(raw[9:])), len(raw)-11)]
+			raw = raw[11+len(body):]
+
+			var err error
+			got, err = m.Apply(op, ts, body, got[:0])
+			want, oerr := o.Apply(op, ts, body)
+			if (err == nil) != (oerr == nil) || !slices.Equal(got, want) {
+				t.Fatalf("batch %d: got %v %v, oracle %v %v", batchNo, got, err, want, oerr)
+			}
+			if m.Digest() != o.Digest() {
+				t.Fatalf("batch %d: digests differ", batchNo)
+			}
+			if err := m.CheckInvariants(); err != nil {
+				t.Fatalf("batch %d: %v", batchNo, err)
+			}
 		}
 	})
 }
 
-func run(t *testing.T, r *rand.Rand, events int, stop func() bool, observe func(state.Reason)) {
+func run(t *testing.T, g *gen, events int, stop func() bool, observe func(state.Reason)) *state.Machine {
 	t.Helper()
-	g := newGen(r)
-	m, o := state.New(0, 0), oracle.New()
+	m, o := state.New(g.r.IntN(32), g.r.IntN(3000)), oracle.New()
 	var replica *state.Machine
 	var got, again []state.Failure
 	for batchNo := 0; events > 0 && (stop == nil || !stop()); batchNo++ {
@@ -108,11 +155,11 @@ func run(t *testing.T, r *rand.Rand, events int, stop func() bool, observe func(
 		if !slices.Equal(got, want) {
 			t.Fatalf("batch %d: failures differ\n got %v\nwant %v\n%s", batchNo, got, want, dump(b))
 		}
-		if got, want := m.LookupAccounts(b.ids), o.LookupAccounts(b.ids); !slices.Equal(got, want) {
-			t.Fatalf("batch %d: accounts differ\n got %+v\nwant %+v\n%s", batchNo, got, want, dump(b))
+		if found, want := m.LookupAccounts(b.ids, nil), o.LookupAccounts(b.ids); !slices.Equal(found, want) {
+			t.Fatalf("batch %d: accounts differ\n got %+v\nwant %+v\n%s", batchNo, found, want, dump(b))
 		}
-		if got, want := m.LookupTransfers(b.ids), o.LookupTransfers(b.ids); !slices.Equal(got, want) {
-			t.Fatalf("batch %d: transfers differ\n got %+v\nwant %+v\n%s", batchNo, got, want, dump(b))
+		if found, want := m.LookupTransfers(b.ids, nil), o.LookupTransfers(b.ids); !slices.Equal(found, want) {
+			t.Fatalf("batch %d: transfers differ\n got %+v\nwant %+v\n%s", batchNo, found, want, dump(b))
 		}
 		digest := m.Digest()
 		if digest != o.Digest() {
@@ -144,6 +191,7 @@ func run(t *testing.T, r *rand.Rand, events int, stop func() bool, observe func(
 			events -= len(b.body) / state.TransferSize
 		}
 	}
+	return m
 }
 
 func restore(t *testing.T, m *state.Machine) *state.Machine {

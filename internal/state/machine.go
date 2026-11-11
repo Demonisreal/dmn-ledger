@@ -37,9 +37,9 @@ type stored struct {
 }
 
 type undo struct {
-	dr, cr         int
-	drPrev, crPrev Account
-	pending        int
+	dr, cr, pending               int
+	debitsPending, debitsPosted   u128.Uint128
+	creditsPending, creditsPosted u128.Uint128
 }
 
 type Machine struct {
@@ -100,10 +100,11 @@ func (m *Machine) Apply(op Op, ts uint64, body []byte, dst []Failure) ([]Failure
 		return dst, fmt.Errorf("%w: %d bytes is not a multiple of %d", ErrMalformedBatch, len(body), size)
 	}
 	start := max(ts, m.last+1)
-	if ts >= tsLimit || start+uint64(len(body)/size) > tsLimit {
-		return dst, fmt.Errorf("%w: timestamp %d out of range", ErrMalformedBatch, ts)
+	if ts >= tsLimit || start+max(uint64(len(body)/size), 1) > tsLimit {
+		return dst, fmt.Errorf("%w: timestamp %d out of range, last %d", ErrMalformedBatch, ts, m.last)
 	}
 
+	m.last = start
 	m.expire(start)
 	if op == CreateAccounts {
 		return m.createAccounts(start, body, dst), nil
@@ -159,7 +160,7 @@ func (m *Machine) createAccount(a *Account, ts uint64) Reason {
 func (m *Machine) createTransfers(ts uint64, body []byte, dst []Failure) []Failure {
 	n := len(body) / TransferSize
 	open := n
-	for open > 0 && DecodeTransfer(body[(open-1)*TransferSize:]).Flags&Linked != 0 {
+	for open > 0 && transferFlags(body[(open-1)*TransferSize:])&Linked != 0 {
 		open--
 	}
 
@@ -263,7 +264,7 @@ func (m *Machine) createTransfer(tr *Transfer, ts uint64) Reason {
 		return ExceedsDebits
 	}
 
-	m.undo = append(m.undo, undo{dr: dri, cr: cri, drPrev: *dr, crPrev: *cr, pending: -1})
+	m.saveBalances(dri, cri, -1)
 	st := statusNone
 	if tr.Flags&Pending != 0 {
 		dr.DebitsPending = dr.DebitsPending.AddWrap(tr.Amount)
@@ -276,7 +277,7 @@ func (m *Machine) createTransfer(tr *Transfer, ts uint64) Reason {
 	tr.Timestamp = ts
 	i := m.store(stored{Transfer: *tr, dr: dri, cr: cri, heap: -1, status: st})
 	if st == statusPending && tr.Timeout > 0 {
-		m.queue(i)
+		m.scheduleExpiry(i)
 	}
 	return OK
 }
@@ -329,7 +330,7 @@ func (m *Machine) resolvePending(tr *Transfer, ts uint64) Reason {
 
 	*tr = inherit(*tr, &p.Transfer)
 	dr, cr := &m.accounts[p.dr], &m.accounts[p.cr]
-	m.undo = append(m.undo, undo{dr: p.dr, cr: p.cr, drPrev: *dr, crPrev: *cr, pending: pi})
+	m.saveBalances(p.dr, p.cr, pi)
 	dr.DebitsPending = dr.DebitsPending.SubWrap(p.Amount)
 	cr.CreditsPending = cr.CreditsPending.SubWrap(p.Amount)
 	if post {
@@ -340,7 +341,7 @@ func (m *Machine) resolvePending(tr *Transfer, ts uint64) Reason {
 		p.status = statusVoided
 	}
 	if p.heap >= 0 {
-		m.unqueue(p.heap)
+		m.cancelExpiry(p.heap)
 	}
 	tr.Timestamp = ts
 	m.store(stored{Transfer: *tr, dr: p.dr, cr: p.cr, heap: -1})
@@ -374,12 +375,21 @@ func exists(e *Transfer, tr Transfer) Reason {
 	return Exists
 }
 
+func (m *Machine) saveBalances(dr, cr, pending int) {
+	d, c := &m.accounts[dr], &m.accounts[cr]
+	m.undo = append(m.undo, undo{
+		dr: dr, cr: cr, pending: pending,
+		debitsPending: d.DebitsPending, debitsPosted: d.DebitsPosted,
+		creditsPending: c.CreditsPending, creditsPosted: c.CreditsPosted,
+	})
+}
+
 func (m *Machine) rollback() {
 	for i := len(m.undo) - 1; i >= 0; i-- {
 		u := &m.undo[i]
 		last := m.ntransfers - 1
 		if t := m.transfer(last); t.heap >= 0 {
-			m.unqueue(t.heap)
+			m.cancelExpiry(t.heap)
 		}
 		delete(m.transferIdx, m.transfer(last).ID)
 		m.ntransfers = last
@@ -387,11 +397,12 @@ func (m *Machine) rollback() {
 			p := m.transfer(u.pending)
 			p.status = statusPending
 			if p.Timeout > 0 {
-				m.queue(u.pending)
+				m.scheduleExpiry(u.pending)
 			}
 		}
-		m.accounts[u.dr] = u.drPrev
-		m.accounts[u.cr] = u.crPrev
+		dr, cr := &m.accounts[u.dr], &m.accounts[u.cr]
+		dr.DebitsPending, dr.DebitsPosted = u.debitsPending, u.debitsPosted
+		cr.CreditsPending, cr.CreditsPosted = u.creditsPending, u.creditsPosted
 	}
 	m.undo = m.undo[:0]
 }
@@ -403,7 +414,7 @@ func (tr *Transfer) expiresAt() uint64 {
 func (m *Machine) expire(now uint64) {
 	for len(m.expiries) > 0 && m.expiries[0].at <= now {
 		p := m.transfer(m.expiries[0].tr)
-		m.unqueue(0)
+		m.cancelExpiry(0)
 		dr, cr := &m.accounts[p.dr], &m.accounts[p.cr]
 		dr.DebitsPending = dr.DebitsPending.SubWrap(p.Amount)
 		cr.CreditsPending = cr.CreditsPending.SubWrap(p.Amount)

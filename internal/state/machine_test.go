@@ -1,8 +1,10 @@
 package state_test
 
 import (
+	"bytes"
 	"errors"
 	"math"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -38,7 +40,7 @@ func mustApply(t *testing.T, m *state.Machine, ts uint64, trs ...state.Transfer)
 
 func account(t *testing.T, m *state.Machine, id uint64) state.Account {
 	t.Helper()
-	found := m.LookupAccounts([]u128.Uint128{id128(id)})
+	found := m.LookupAccounts([]u128.Uint128{id128(id)}, nil)
 	if len(found) != 1 {
 		t.Fatalf("account %d not found", id)
 	}
@@ -251,7 +253,7 @@ func TestPostPartial(t *testing.T) {
 	if want := before.DebitsPosted.AddWrap(id128(4)); dr.DebitsPosted != want {
 		t.Errorf("debits posted %v, want %v", dr.DebitsPosted, want)
 	}
-	stored := m.LookupTransfers([]u128.Uint128{id128(1000)})
+	stored := m.LookupTransfers([]u128.Uint128{id128(1000)}, nil)
 	want := state.Transfer{
 		ID: id128(1000), DebitAccountID: id128(1), CreditAccountID: id128(2), Amount: id128(4), PendingID: id128(200),
 		Ledger: 1, Code: 1, Flags: state.PostPending, Timestamp: 20,
@@ -318,7 +320,7 @@ func TestLinked(t *testing.T) {
 			}
 			for i, tr := range tt.trs {
 				failed := slices.ContainsFunc(fails, func(f state.Failure) bool { return f.Index == i })
-				if found := len(m.LookupTransfers([]u128.Uint128{tr.ID})) == 1; found == failed {
+				if found := len(m.LookupTransfers([]u128.Uint128{tr.ID}, nil)) == 1; found == failed {
 					t.Errorf("transfer %v: found %v after failed=%v", tr.ID, found, failed)
 				}
 			}
@@ -360,7 +362,7 @@ func TestTimestamps(t *testing.T) {
 		{50, 2, 103},
 		{105, 1, 105},
 		{1000, 0, 0},
-		{900, 1, 900},
+		{900, 1, 1001},
 		{2000, 2, 2000},
 	}
 	var id uint64
@@ -446,7 +448,7 @@ func TestExpiryIgnoresRecreatedTransfer(t *testing.T) {
 	if _, err := m.Apply(state.CreateTransfers, at-10, encodeTransfers(append(filler, recreated)...), nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.LookupTransfers([]u128.Uint128{id128(300)}); len(got) != 1 || got[0].Timestamp != at {
+	if got := m.LookupTransfers([]u128.Uint128{id128(300)}, nil); len(got) != 1 || got[0].Timestamp != at {
 		t.Fatalf("recreated transfer %+v, want timestamp %d", got, uint64(at))
 	}
 	mustApply(t, m, at+5, state.Transfer{ID: id128(400), PendingID: id128(300), Flags: state.PostPending})
@@ -484,23 +486,111 @@ func TestApplyMalformed(t *testing.T) {
 	}
 }
 
+func TestEmptyBatchMovesClock(t *testing.T) {
+	t.Parallel()
+	m := newLedger(t)
+	mustApply(t, m, 1e9, state.Transfer{ID: id128(300), DebitAccountID: id128(2), CreditAccountID: id128(1), Amount: id128(5),
+		Ledger: 1, Code: 1, Flags: state.Pending, Timeout: 100})
+	mustApply(t, m, 200e9)
+	if m.Last() != 200e9 {
+		t.Fatalf("last %d after the empty batch, want %d", m.Last(), uint64(200e9))
+	}
+
+	fails, err := m.Apply(state.CreateTransfers, 2e9, encodeTransfers(
+		state.Transfer{ID: id128(400), PendingID: id128(300), Flags: state.PostPending},
+		state.Transfer{ID: id128(401), DebitAccountID: id128(2), CreditAccountID: id128(1), Amount: id128(1), Ledger: 1, Code: 1},
+	), nil)
+	if want := []state.Failure{{Index: 0, Reason: state.PendingTransferExpired}}; err != nil || !slices.Equal(fails, want) {
+		t.Fatalf("post after the sweep: %v %v", fails, err)
+	}
+	if got := m.LookupTransfers([]u128.Uint128{id128(401)}, nil); len(got) != 1 || got[0].Timestamp != 200e9+2 {
+		t.Fatalf("transfer after the sweep %+v, want timestamp %d", got, uint64(200e9+2))
+	}
+	if err := m.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTimestampLimit(t *testing.T) {
 	t.Parallel()
 	m := newLedger(t)
-	fails, err := m.Apply(state.CreateTransfers, 1<<63-2, encodeTransfers(
+	fails, err := m.Apply(state.CreateTransfers, 1<<63-3, encodeTransfers(
 		state.Transfer{ID: id128(300), DebitAccountID: id128(2), CreditAccountID: id128(1), Amount: id128(5),
 			Ledger: 1, Code: 1, Flags: state.Pending, Timeout: math.MaxUint32},
 		state.Transfer{},
 	), nil)
 	if err != nil || len(fails) != 1 {
-		t.Fatalf("batch up to the last timestamp: %v %v", fails, err)
+		t.Fatalf("batch up to the second to last timestamp: %v %v", fails, err)
 	}
 	mustApply(t, m, 5)
-	if _, err = m.Apply(state.CreateTransfers, 5, make([]byte, state.TransferSize), nil); !errors.Is(err, state.ErrMalformedBatch) {
-		t.Fatalf("event after the last timestamp: err = %v", err)
+	for _, n := range []int{0, 1} {
+		if _, err = m.Apply(state.CreateTransfers, 5, make([]byte, n*state.TransferSize), nil); !errors.Is(err, state.ErrMalformedBatch) {
+			t.Fatalf("batch of %d after the last timestamp: err = %v", n, err)
+		}
 	}
 	if got := account(t, m, 2).DebitsPending; got != id128(5) {
 		t.Fatalf("pending with the longest timeout expired early: debits pending %v", got)
+	}
+	if err := m.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChainAcrossBlockBoundary(t *testing.T) {
+	t.Parallel()
+	const before = 1<<14 - 4
+	m, twin := newLedger(t), newLedger(t)
+	filler := make([]state.Transfer, before-8)
+	for i := range filler {
+		filler[i] = state.Transfer{ID: id128(uint64(10_000 + i)), DebitAccountID: id128(1), CreditAccountID: id128(2), Amount: id128(1),
+			Ledger: 1, Code: 1}
+	}
+	filler[0].Flags, filler[0].Timeout = state.Pending, 60
+	for _, x := range []*state.Machine{m, twin} {
+		mustApply(t, x, 1e9, filler...)
+		if x.Transfers() != before {
+			t.Fatalf("%d transfers stored, want %d", x.Transfers(), before)
+		}
+	}
+
+	chain := []state.Transfer{{ID: id128(500), PendingID: id128(10_000), Flags: state.PostPending | state.Linked}}
+	for i := range uint64(7) {
+		chain = append(chain, state.Transfer{ID: id128(501 + i), DebitAccountID: id128(2), CreditAccountID: id128(1), Amount: id128(1),
+			Ledger: 1, Code: 1, Flags: state.Linked})
+	}
+	chain = append(chain,
+		state.Transfer{ID: id128(508), DebitAccountID: id128(1), CreditAccountID: id128(2), Amount: id128(3), Ledger: 1, Code: 1,
+			Flags: state.Pending | state.Linked, Timeout: 1},
+		state.Transfer{ID: id128(509), DebitAccountID: id128(1), CreditAccountID: id128(2), Ledger: 1, Code: 1},
+	)
+	fails, err := m.Apply(state.CreateTransfers, 2e9, encodeTransfers(chain...), nil)
+	if err != nil || len(fails) != len(chain) || fails[len(chain)-1].Reason != state.AmountMustNotBeZero {
+		t.Fatalf("chain over the boundary: %v %v", fails, err)
+	}
+	if _, err := twin.Apply(state.CreateTransfers, 2e9, make([]byte, len(chain)*state.TransferSize), nil); err != nil {
+		t.Fatal(err)
+	}
+	if m.Digest() != twin.Digest() {
+		t.Fatal("rolled back chain over the block boundary left traces")
+	}
+
+	chain[len(chain)-1].Amount = id128(1)
+	mustApply(t, m, 3e9, chain...)
+	if m.Transfers() != before+len(chain) {
+		t.Fatalf("%d transfers stored, want %d", m.Transfers(), before+len(chain))
+	}
+	c, err := state.ReadSnapshot(bytes.NewReader(snapshot(t, m)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range []*state.Machine{m, c} {
+		if err := x.CheckInvariants(); err != nil {
+			t.Fatal(err)
+		}
+		mustApply(t, x, 3e9+100, state.Transfer{ID: id128(600), PendingID: id128(508), Flags: state.VoidPending})
+	}
+	if c.Digest() != m.Digest() {
+		t.Fatal("restored machine diverged")
 	}
 }
 
@@ -515,9 +605,9 @@ func TestApplyDoesNotAllocate(t *testing.T) {
 
 	id, ts := uint64(1000), uint64(1e9)
 	var fails []state.Failure
-	measure := func(trs ...state.Transfer) float64 {
+	measure := func(trs ...state.Transfer) uint64 {
 		body := encodeTransfers(trs...)
-		return testing.AllocsPerRun(1000, func() {
+		apply := func() {
 			for i := range trs {
 				id++
 				id128(id).PutBytes(body[i*state.TransferSize:])
@@ -530,7 +620,15 @@ func TestApplyDoesNotAllocate(t *testing.T) {
 				t.Fatal(err)
 			}
 			ts += 1e6
-		})
+		}
+		apply()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		for range 1000 {
+			apply()
+		}
+		runtime.ReadMemStats(&after)
+		return after.Mallocs - before.Mallocs
 	}
 	transfer := state.Transfer{DebitAccountID: id128(1), CreditAccountID: id128(2), Amount: id128(1), Ledger: 1, Code: 1}
 	pending := transfer

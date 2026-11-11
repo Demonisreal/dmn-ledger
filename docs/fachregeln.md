@@ -61,30 +61,36 @@ pending transfer and the amount actually posted (for void: the pending amount).
 
 `Apply(op, batchTimestamp, body, dst)` takes one operation (`CreateAccounts` or `CreateTransfers`)
 and a body of fixed-size big-endian records (96 bytes per account, 100 per transfer, fields in the
-order of the tables above). It appends the failures to `dst` and returns it, so a caller that reuses
-the slice gets through a batch without allocating, even when events fail.
+order of the tables above). Big-endian, so that comparing two IDs byte by byte gives the same order
+as comparing them as numbers. It appends the failures to `dst` and returns it, so a caller that
+reuses the slice gets through a batch without allocating, even when events fail.
 
 The whole batch is rejected with `ErrMalformedBatch`, before anything changes, when:
 
 - the op is unknown,
 - the body is not a whole number of records, or
-- a timestamp would reach 2^63: `batchTimestamp >= 2^63` or `max(batchTimestamp, last + 1) + n > 2^63`
-  for `n` events. Below that bound neither the timestamps nor `Timestamp + Timeout * 10^9` (at most
-  about 4.3·10^18) can overflow uint64.
+- a timestamp would reach 2^63: `batchTimestamp >= 2^63` or
+  `max(batchTimestamp, last + 1) + max(n, 1) > 2^63` for `n` events. Below that bound neither the
+  timestamps nor `Timestamp + Timeout * 10^9` (at most about 4.3·10^18) can overflow uint64. An
+  empty batch counts as one event here because it moves `last` (step 1).
 
 Otherwise:
 
-1. Event `i` gets the timestamp `now + i` with `now = max(batchTimestamp, last + 1)`, where `last` is
-   the highest timestamp handed out so far. Timestamps are unique and strictly increasing, even when
-   the leader's clock goes backwards. An empty batch hands out no timestamp.
-2. Pending transfers with `Timestamp + Timeout * 10^9 <= now` expire, in order of expiry time, then
-   ID. Their amounts leave `*Pending`; they can no longer be posted or voided. This runs for empty
-   batches too.
+1. `now = max(batchTimestamp, last + 1)`, and `last` becomes `now`. Event `i` gets the timestamp
+   `now + i`, and `last` follows the last event. Timestamps are unique and strictly increasing, even
+   when the leader's clock goes backwards. An empty batch hands out no timestamp to an event but
+   still moves `last` to `now`, so every batch has its own point in time and no later event gets a
+   timestamp before a sweep that already ran.
+2. Pending transfers with `Timestamp + Timeout * 10^9 <= now` expire. Their amounts leave
+   `*Pending`; they can no longer be posted or voided. This runs for empty batches too, which is how
+   a quiet cluster lets deadlines pass. Expiring only releases amounts and nothing records it, so the
+   order among transfers expiring in the same sweep is not part of the contract.
 3. Events run in order. The result lists only the events that failed, as `(index, reason)` in index
    order; an empty list means every event succeeded.
 
 A pending transfer is also treated as expired when a post or void runs at a timestamp at or after
-its expiry, even if the sweep in step 2 has not removed it yet.
+its expiry, even if the sweep in step 2 has not removed it yet. Its amount stays reserved until the
+next batch sweeps it, so a transfer later in the same batch is still checked against it.
 
 ### Chains
 
@@ -219,15 +225,34 @@ The numbers are fixed. New reasons are only appended.
 | 37 | `ExceedsCredits` |
 | 38 | `ExceedsDebits` |
 
+## Lookups
+
+`LookupAccounts(ids, dst)` and `LookupTransfers(ids, dst)` append the records found, in the order of
+`ids`, to `dst`. Unknown IDs are skipped; every record carries its ID, so the caller can match them.
+`Last` returns `last`, the point in time of the latest batch.
+
 ## Invariants
 
-`CheckInvariants` verifies after any batch:
+No transfer is ever deleted, so the whole state follows from the stored transfers. `CheckInvariants`
+recomputes it after any batch and fails on the first difference:
 
+- `last < 2^63`, no undo entries left, every account and transfer reachable through its index
+- every account passes the field checks of its creation (ID, flags, ledger, code), posted plus
+  pending fits into u128 on both sides, and the limit flag holds
 - per ledger: Σ `DebitsPosted` = Σ `CreditsPosted` and Σ `DebitsPending` = Σ `CreditsPending`
   (summed without wrap-around)
-- per account: `DebitsPending` and `CreditsPending` equal the sum of its open pending transfers
-- per account: posted plus pending fits into u128 on both sides
-- per account: the limit flag holds
+- every transfer passes the field checks of its creation; both accounts exist, differ and are on
+  the transfer's ledger; only pending transfers have a status
+- an expired transfer has a timeout and its deadline is at most `last`
+- every post or void points to a pending transfer with the matching status, the same accounts and
+  code, an amount it may take (post: at most the pending amount, void: exactly), and a timestamp
+  after the pending transfer and before its deadline; every posted or voided pending transfer has
+  exactly one
+- the expiry queue holds exactly the open pending transfers with a timeout, at their recorded
+  position and in heap order
+- timestamps of accounts and transfers are not 0, unique and at most `last`
+- per account: all four balances equal the sums of its transfers (posted: normal transfers and
+  posts; pending: open pending transfers)
 
 ## Snapshot and digest
 
@@ -241,10 +266,14 @@ not on the order in which it was built:
    status byte: 0 none, 1 pending, 2 posted, 3 voided, 4 expired
 
 All integers are big-endian. Indexes and the expiry queue are not stored; they follow from the
-records. `ReadSnapshot` rejects with `ErrBadSnapshot` anything it could not have written: another
-version, `last >= 2^63`, records out of ID order or newer than `last`, transfers on unknown accounts,
-a status that does not match the `Pending` flag, a post or void without its pending transfer,
-missing or trailing bytes, and any state that fails `CheckInvariants`.
+records. `ReadSnapshot` rejects with `ErrBadSnapshot` every input that `WriteSnapshot` cannot have
+produced: another version, records out of ID order, transfers on unknown accounts, missing or
+trailing bytes, and any state that fails `CheckInvariants`. Since the invariants recompute the
+whole state from the transfers, every rule of this document that the final state can show is
+checked. What only the history could show is not: the snapshot does not record batch boundaries,
+so neither the limit flags at each step in between nor the members of a chain can be replayed. An
+error of the reader itself is returned as it is, not as `ErrBadSnapshot`, so the caller can tell a broken file
+from a failing disk.
 
 `Digest` is SHA-256 over the snapshot bytes. Two replicas with the same digest hold the same
 accounts, transfers, pending states and `last`, so they hand out the same timestamps from then on.

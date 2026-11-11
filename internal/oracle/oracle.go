@@ -21,7 +21,10 @@ const (
 	statusExpired
 )
 
-var limit = new(big.Int).Lsh(big.NewInt(1), 128)
+var (
+	limit = new(big.Int).Lsh(big.NewInt(1), 128)
+	zero  u128.Uint128
+)
 
 type account struct {
 	id        u128.Uint128
@@ -51,6 +54,23 @@ func New() *Ledger {
 	}
 }
 
+func (l *Ledger) Clone() *Ledger {
+	c := &Ledger{
+		accounts:  make(map[u128.Uint128]*account, len(l.accounts)),
+		transfers: make(map[u128.Uint128]*transfer, len(l.transfers)),
+		last:      l.last,
+	}
+	for id, a := range l.accounts {
+		cp := *a
+		c.accounts[id] = &cp
+	}
+	for id, t := range l.transfers {
+		cp := *t
+		c.transfers[id] = &cp
+	}
+	return c
+}
+
 func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Failure, error) {
 	var size int
 	switch op {
@@ -70,15 +90,17 @@ func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Failure, er
 	}
 	n := len(body) / size
 	stamps := make([]uint64, n)
-	next := max(ts, l.last+1)
+	now := max(ts, l.last+1)
+	next := now
 	for i := range stamps {
 		stamps[i] = next
 		next++
 	}
-	if next > 1<<63 {
+	if now >= 1<<63 || next > 1<<63 {
 		return nil, fmt.Errorf("%w: timestamp %d", state.ErrMalformedBatch, ts)
 	}
-	l.expire(max(ts, l.last+1))
+	l.expire(now)
+	l.last = now
 	if n > 0 {
 		l.last = stamps[n-1]
 	}
@@ -154,7 +176,6 @@ func (l *Ledger) createAccount(a state.Account, ts uint64) state.Reason {
 	if a.Code == 0 {
 		return state.CodeMustNotBeZero
 	}
-	zero := u128.Uint128{}
 	if a.DebitsPending != zero || a.DebitsPosted != zero || a.CreditsPending != zero || a.CreditsPosted != zero {
 		return state.BalancesMustBeZero
 	}
@@ -236,7 +257,6 @@ func (x *tx) createTransfer(tr state.Transfer, ts uint64) state.Reason {
 		return x.finishPending(tr, ts)
 	}
 
-	zero := u128.Uint128{}
 	if tr.DebitAccountID == zero {
 		return state.DebitAccountIDMustNotBeZero
 	}
@@ -313,7 +333,6 @@ func (x *tx) createTransfer(tr state.Transfer, ts uint64) state.Reason {
 }
 
 func (x *tx) finishPending(tr state.Transfer, ts uint64) state.Reason {
-	zero := u128.Uint128{}
 	if tr.PendingID == zero {
 		return state.PendingIDMustNotBeZero
 	}
@@ -387,7 +406,6 @@ func (x *tx) finishPending(tr state.Transfer, ts uint64) state.Reason {
 }
 
 func fill(tr, p state.Transfer) state.Transfer {
-	zero := u128.Uint128{}
 	if tr.DebitAccountID == zero {
 		tr.DebitAccountID = p.DebitAccountID
 	}

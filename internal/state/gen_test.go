@@ -55,6 +55,9 @@ func newGen(r *rand.Rand) *gen {
 	if r.IntN(16) == 0 {
 		g.ts = 1<<63 - r.Uint64N(600e9)
 	}
+	if r.IntN(8) == 0 {
+		g.linkedPct = 50 + r.IntN(41)
+	}
 	return g
 }
 

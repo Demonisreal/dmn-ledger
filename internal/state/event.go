@@ -119,7 +119,11 @@ func DecodeTransfer(b []byte) Transfer {
 		Timeout:         binary.BigEndian.Uint32(b[80:]),
 		Ledger:          binary.BigEndian.Uint32(b[84:]),
 		Code:            binary.BigEndian.Uint16(b[88:]),
-		Flags:           TransferFlags(binary.BigEndian.Uint16(b[90:])),
+		Flags:           transferFlags(b),
 		Timestamp:       binary.BigEndian.Uint64(b[92:]),
 	}
+}
+
+func transferFlags(rec []byte) TransferFlags {
+	return TransferFlags(binary.BigEndian.Uint16(rec[90:]))
 }

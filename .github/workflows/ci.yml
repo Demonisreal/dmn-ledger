@@ -24,7 +24,8 @@ jobs:
           go-version-file: go.mod
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
-      - run: go test -race ./...
+      - run: go test ./...
+      - run: go test -short -race ./...
       - run: CGO_ENABLED=0 go build ./...
 
   fuzz:
@@ -39,6 +40,11 @@ jobs:
       - run: go test -run '^$' -fuzz '^FuzzApply$' -fuzztime 30s ./internal/state/
       - run: go test -run '^$' -fuzz '^FuzzApplyRaw$' -fuzztime 30s ./internal/state/
       - run: go test -run '^$' -fuzz '^FuzzReadSnapshot$' -fuzztime 30s ./internal/state/
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-findings
+          path: internal/state/testdata/fuzz
 
   lint:
     runs-on: ubuntu-latest
