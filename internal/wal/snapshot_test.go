@@ -3,6 +3,7 @@ package wal
 import (
 	"bytes"
 	"errors"
+	"io"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,6 +16,27 @@ func snapBody(meta SnapshotMeta) []byte {
 	return bytes.Repeat([]byte{byte(meta.Index)}, int(meta.Index%7)*300)
 }
 
+func saveSnap(fsys disk.FS, meta SnapshotMeta) error {
+	return SaveSnapshot(fsys, dir, meta, func(w io.Writer) error {
+		b := snapBody(meta)
+		if _, err := w.Write(b[:len(b)/2]); err != nil {
+			return err
+		}
+		_, err := w.Write(b[len(b)/2:])
+		return err
+	})
+}
+
+func loadSnap(fsys disk.FS) (SnapshotMeta, []byte, error) {
+	var b []byte
+	meta, err := LoadSnapshot(fsys, dir, func(r io.Reader) error {
+		var err error
+		b, err = io.ReadAll(r)
+		return err
+	})
+	return meta, b, err
+}
+
 func snapFiles(t *testing.T, fsys disk.FS) []string {
 	t.Helper()
 	names, _ := fsys.List(dir)
@@ -23,17 +45,17 @@ func snapFiles(t *testing.T, fsys disk.FS) []string {
 
 func TestSnapshotKeepsNewestTwo(t *testing.T) {
 	sim := newSim(1)
-	if _, _, err := LoadSnapshot(sim, dir); !errors.Is(err, ErrNoSnapshot) {
+	if _, _, err := loadSnap(sim); !errors.Is(err, ErrNoSnapshot) {
 		t.Fatalf("empty dir: %v", err)
 	}
 	for _, meta := range []SnapshotMeta{{10, 1}, {20, 1}, {30, 2}, {40, 2}} {
-		if err := SaveSnapshot(sim, dir, meta, snapBody(meta)); err != nil {
+		if err := saveSnap(sim, meta); err != nil {
 			t.Fatal(err)
 		}
 	}
 	sim.Crash()
 
-	meta, body, err := LoadSnapshot(sim, dir)
+	meta, body, err := loadSnap(sim)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +74,7 @@ func TestSnapshotKeepsNewestTwo(t *testing.T) {
 func TestSnapshotHalfWrittenIsIgnored(t *testing.T) {
 	sim := newSim(1)
 	old := SnapshotMeta{Index: 10, Term: 1}
-	_ = SaveSnapshot(sim, dir, old, snapBody(old))
+	_ = saveSnap(sim, old)
 
 	tmp := filepath.Join(dir, snapshotName(SnapshotMeta{Index: 20, Term: 1})+".tmp")
 	f, _ := sim.Create(tmp)
@@ -60,12 +82,12 @@ func TestSnapshotHalfWrittenIsIgnored(t *testing.T) {
 	_ = f.Sync()
 	_ = sim.SyncDir(dir)
 
-	meta, _, err := LoadSnapshot(sim, dir)
+	meta, _, err := loadSnap(sim)
 	if err != nil || meta != old {
 		t.Fatalf("loaded %+v, %v; want %+v", meta, err, old)
 	}
 	next := SnapshotMeta{Index: 30, Term: 1}
-	_ = SaveSnapshot(sim, dir, next, snapBody(next))
+	_ = saveSnap(sim, next)
 	if got := snapFiles(t, sim); slices.ContainsFunc(got, func(name string) bool { return strings.HasSuffix(name, ".tmp") }) {
 		t.Fatalf("stale temp file left: %v", got)
 	}
@@ -75,9 +97,11 @@ func TestSnapshotCrashDuringSave(t *testing.T) {
 	sim := newSim(2)
 	var done, saving SnapshotMeta
 	checks := 0
-	fsys := hookFS{Sim: sim, after: func() {
+	fsys := hookFS{Sim: sim, after: func(string) {
 		checks++
-		meta, body, err := LoadSnapshot(crashedCopy(sim), dir)
+		c := sim.Clone()
+		c.Crash()
+		meta, body, err := loadSnap(c)
 		switch {
 		case errors.Is(err, ErrNoSnapshot) && done == (SnapshotMeta{}):
 		case err != nil:
@@ -90,7 +114,7 @@ func TestSnapshotCrashDuringSave(t *testing.T) {
 	}}
 	for i := uint64(1); i <= 12; i++ {
 		saving = SnapshotMeta{Index: i * 100, Term: i / 3}
-		if err := SaveSnapshot(fsys, dir, saving, snapBody(saving)); err != nil {
+		if err := saveSnap(fsys, saving); err != nil {
 			t.Fatal(err)
 		}
 		done = saving
@@ -103,7 +127,7 @@ func TestSnapshotCrashDuringSave(t *testing.T) {
 func TestSnapshotCorruptIsReported(t *testing.T) {
 	sim := newSim(3)
 	for _, meta := range []SnapshotMeta{{10, 1}, {20, 1}} {
-		_ = SaveSnapshot(sim, dir, meta, snapBody(meta))
+		_ = saveSnap(sim, meta)
 	}
 	name := filepath.Join(dir, snapshotName(SnapshotMeta{20, 1}))
 	if err := sim.Corrupt(name, 50); err != nil {
@@ -111,7 +135,7 @@ func TestSnapshotCorruptIsReported(t *testing.T) {
 	}
 	sim.Crash()
 	var ce *CorruptError
-	if _, _, err := LoadSnapshot(sim, dir); !errors.As(err, &ce) || ce.File != name {
+	if _, _, err := loadSnap(sim); !errors.As(err, &ce) || ce.File != name {
 		t.Fatalf("load = %v", err)
 	}
 }
@@ -119,9 +143,31 @@ func TestSnapshotCorruptIsReported(t *testing.T) {
 func TestSnapshotNameMustMatchFooter(t *testing.T) {
 	sim := newSim(4)
 	meta := SnapshotMeta{Index: 10, Term: 1}
-	_ = SaveSnapshot(sim, dir, meta, snapBody(meta))
+	_ = saveSnap(sim, meta)
 	_ = sim.Rename(filepath.Join(dir, snapshotName(meta)), filepath.Join(dir, snapshotName(SnapshotMeta{Index: 11, Term: 1})))
-	if _, _, err := LoadSnapshot(sim, dir); !errors.Is(err, ErrCorrupt) {
+	if _, _, err := loadSnap(sim); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("renamed snapshot: %v", err)
+	}
+}
+
+func TestSnapshotLoadMakesRenameDurable(t *testing.T) {
+	sim := newSim(5)
+	old := SnapshotMeta{Index: 10, Term: 1}
+	_ = saveSnap(sim, old)
+	armed := true
+	fsys, frozen := freezeAt(sim, "rename", &armed)
+	next := SnapshotMeta{Index: 20, Term: 1}
+	if err := saveSnap(fsys, next); err != nil {
+		t.Fatal(err)
+	}
+
+	proc := frozen()
+	meta, _, err := loadSnap(proc)
+	if err != nil || meta != next {
+		t.Fatalf("after process crash: %+v, %v", meta, err)
+	}
+	proc.Crash()
+	if meta, _, err = loadSnap(proc); err != nil || meta != next {
+		t.Fatalf("loaded %+v before power loss, %+v after, %v", next, meta, err)
 	}
 }

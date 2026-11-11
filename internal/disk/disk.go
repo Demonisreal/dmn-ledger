@@ -2,17 +2,18 @@ package disk
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 )
 
 type File interface {
-	ReadAt(p []byte, off int64) (int, error)
-	WriteAt(p []byte, off int64) (int, error)
+	io.ReaderAt
+	io.WriterAt
+	io.Closer
 	Sync() error
 	Truncate(size int64) error
 	Size() (int64, error)
-	Close() error
 }
 
 type FS interface {
@@ -85,6 +86,19 @@ func (OS) SyncDir(dir string) error {
 	return errors.Join(d.Sync(), d.Close())
 }
 
-func (OS) MkdirAll(dir string) error {
-	return os.MkdirAll(dir, 0o750)
+func (fsys OS) MkdirAll(dir string) error {
+	dir = filepath.Clean(dir)
+	if _, err := os.Stat(dir); err == nil {
+		return nil
+	}
+	parent := filepath.Dir(dir)
+	if parent != dir {
+		if err := fsys.MkdirAll(parent); err != nil {
+			return err
+		}
+	}
+	if err := os.Mkdir(dir, 0o750); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	return fsys.SyncDir(parent)
 }

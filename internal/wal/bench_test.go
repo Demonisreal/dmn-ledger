@@ -38,7 +38,7 @@ func BenchmarkAppendSync(b *testing.B) {
 					b.Fatal(err)
 				}
 				ops++
-				if next-w.FirstIndex() > 1<<20 {
+				if first, _ := w.FirstIndex(); next-first > 1<<20 {
 					b.StopTimer()
 					if err := w.CompactBefore(next); err != nil {
 						b.Fatal(err)
@@ -59,7 +59,10 @@ func BenchmarkCommitter(b *testing.B) {
 				b.Fatal(err)
 			}
 			defer func() { _ = w.Close() }()
-			c := NewCommitter(w, 8190, 8<<20)
+			c, err := NewCommitter(w, CommitterOptions{MaxEntries: 8190, MaxBytes: 8 << 20, Queue: 8190})
+			if err != nil {
+				b.Fatal(err)
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
 			go func() { done <- c.Run(ctx) }()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -48,26 +49,39 @@ func parseSnapshotName(name string) (SnapshotMeta, bool) {
 	return meta, err1 == nil && err2 == nil
 }
 
-func snapshotFooter(meta SnapshotMeta, body []byte) [snapFooterLen]byte {
+func snapshotFooter(meta SnapshotMeta, bodyCRC uint32) [snapFooterLen]byte {
 	var ftr [snapFooterLen]byte
 	binary.LittleEndian.PutUint64(ftr[0:], meta.Index)
 	binary.LittleEndian.PutUint64(ftr[8:], meta.Term)
-	crc := crc32.Update(crc32.Checksum(body, castagnoli), castagnoli, ftr[:16])
-	binary.LittleEndian.PutUint32(ftr[16:], crc)
+	binary.LittleEndian.PutUint32(ftr[16:], crc32.Update(bodyCRC, castagnoli, ftr[:16]))
 	return ftr
 }
 
-func SaveSnapshot(fsys disk.FS, dir string, meta SnapshotMeta, body []byte) error {
+type snapWriter struct {
+	f   disk.File
+	off int64
+	crc uint32
+}
+
+func (sw *snapWriter) Write(p []byte) (int, error) {
+	n, err := sw.f.WriteAt(p, sw.off)
+	sw.crc = crc32.Update(sw.crc, castagnoli, p[:n])
+	sw.off += int64(n)
+	return n, err
+}
+
+func SaveSnapshot(fsys disk.FS, dir string, meta SnapshotMeta, write func(io.Writer) error) error {
 	name := filepath.Join(dir, snapshotName(meta))
 	tmp := name + ".tmp"
 	f, err := fsys.Create(tmp)
 	if err != nil {
 		return err
 	}
-	ftr := snapshotFooter(meta, body)
-	_, err = f.WriteAt(body, 0)
+	sw := &snapWriter{f: f}
+	err = write(sw)
 	if err == nil {
-		_, err = f.WriteAt(ftr[:], int64(len(body)))
+		ftr := snapshotFooter(meta, sw.crc)
+		_, err = f.WriteAt(ftr[:], sw.off)
 	}
 	if err == nil {
 		err = f.Sync()
@@ -113,45 +127,51 @@ func pruneSnapshots(fsys disk.FS, dir string) error {
 	return fsys.SyncDir(dir)
 }
 
-func LoadSnapshot(fsys disk.FS, dir string) (SnapshotMeta, []byte, error) {
+func LoadSnapshot(fsys disk.FS, dir string, read func(io.Reader) error) (SnapshotMeta, error) {
 	names, err := fsys.List(dir)
 	if err != nil {
-		return SnapshotMeta{}, nil, err
+		return SnapshotMeta{}, err
+	}
+	if err := fsys.SyncDir(dir); err != nil {
+		return SnapshotMeta{}, err
 	}
 	for i := len(names) - 1; i >= 0; i-- {
 		meta, ok := parseSnapshotName(names[i])
 		if !ok {
 			continue
 		}
-		body, err := readSnapshot(fsys, filepath.Join(dir, names[i]), meta)
-		if err != nil {
-			return SnapshotMeta{}, nil, err
+		if err := readSnapshot(fsys, filepath.Join(dir, names[i]), meta, read); err != nil {
+			return SnapshotMeta{}, err
 		}
-		return meta, body, nil
+		return meta, nil
 	}
-	return SnapshotMeta{}, nil, ErrNoSnapshot
+	return SnapshotMeta{}, ErrNoSnapshot
 }
 
-func readSnapshot(fsys disk.FS, path string, meta SnapshotMeta) ([]byte, error) {
+func readSnapshot(fsys disk.FS, path string, meta SnapshotMeta, read func(io.Reader) error) error {
 	f, err := fsys.Open(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = f.Close() }()
 	size, err := f.Size()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if size < snapFooterLen {
-		return nil, &CorruptError{File: path, Offset: 0}
+		return &CorruptError{File: path, Offset: 0}
 	}
-	raw := make([]byte, size)
-	if _, err := f.ReadAt(raw, 0); err != nil {
-		return nil, err
+	bodyLen := size - snapFooterLen
+	h := crc32.New(castagnoli)
+	if _, err := io.Copy(h, io.NewSectionReader(f, 0, bodyLen)); err != nil {
+		return err
 	}
-	body := raw[:size-snapFooterLen]
-	if snapshotFooter(meta, body) != [snapFooterLen]byte(raw[len(body):]) {
-		return nil, &CorruptError{File: path, Offset: int64(len(body))}
+	var ftr [snapFooterLen]byte
+	if _, err := f.ReadAt(ftr[:], bodyLen); err != nil {
+		return err
 	}
-	return body, nil
+	if ftr != snapshotFooter(meta, h.Sum32()) {
+		return &CorruptError{File: path, Offset: bodyLen}
+	}
+	return read(io.NewSectionReader(f, 0, bodyLen))
 }

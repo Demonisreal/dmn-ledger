@@ -2,7 +2,10 @@ package wal
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
+	"math"
 	"math/rand/v2"
 	"path/filepath"
 	"strings"
@@ -12,10 +15,19 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 )
 
-const dir = "/data/wal"
+const (
+	dir     = "/data/wal"
+	noLimit = math.MaxInt64
+)
 
 func newSim(seed uint64) *disk.Sim {
-	return disk.NewSim(rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)))
+	sim := disk.NewSim(rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)))
+	_ = sim.MkdirAll(dir)
+	return sim
+}
+
+func opts(segSize int64) Options {
+	return Options{SegmentSize: segSize, Nonces: rand.NewChaCha8([32]byte{7})}
 }
 
 func body(i, term uint64) []byte {
@@ -27,7 +39,7 @@ func body(i, term uint64) []byte {
 }
 
 func ent(i, term uint64) Entry {
-	return Entry{Index: i, Term: term, Kind: uint8(i % 3), Body: body(i, term)}
+	return Entry{Index: i, Term: term, Kind: Kind(i % 3), Body: body(i, term)}
 }
 
 func span(lo, hi, term uint64) []Entry {
@@ -38,9 +50,9 @@ func span(lo, hi, term uint64) []Entry {
 	return ents
 }
 
-func mustOpen(t *testing.T, fsys disk.FS, opts Options) *WAL {
+func mustOpen(t *testing.T, fsys disk.FS, o Options) *WAL {
 	t.Helper()
-	w, err := Open(fsys, dir, opts)
+	w, err := Open(fsys, dir, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,13 +69,32 @@ func mustAppend(t *testing.T, w *WAL, ents ...Entry) {
 	}
 }
 
+func bounds(t *testing.T, w *WAL) (uint64, uint64) {
+	t.Helper()
+	first, err := w.FirstIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := w.LastIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return first, last
+}
+
+func lastIndex(t *testing.T, w *WAL) uint64 {
+	t.Helper()
+	_, last := bounds(t, w)
+	return last
+}
+
 func checkTerms(t *testing.T, w *WAL, lo uint64, terms ...uint64) {
 	t.Helper()
 	hi := lo + uint64(len(terms))
-	if w.FirstIndex() != lo || w.LastIndex() != hi-1 {
-		t.Fatalf("log is [%d, %d], want [%d, %d]", w.FirstIndex(), w.LastIndex(), lo, hi-1)
+	if first, last := bounds(t, w); first != lo || last != hi-1 {
+		t.Fatalf("log is [%d, %d], want [%d, %d]", first, last, lo, hi-1)
 	}
-	got, err := w.Entries(lo, hi)
+	got, err := w.Entries(lo, hi, noLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,8 +137,8 @@ func segments(t *testing.T, fsys disk.FS) []string {
 
 func TestAppendReopen(t *testing.T) {
 	sim := newSim(1)
-	opts := Options{SegmentSize: 512}
-	w := mustOpen(t, sim, opts)
+	o := opts(512)
+	w := mustOpen(t, sim, o)
 	for lo := uint64(1); lo <= 200; lo += 7 {
 		mustAppend(t, w, span(lo, lo+7, 3)...)
 	}
@@ -122,7 +153,7 @@ func TestAppendReopen(t *testing.T) {
 		t.Fatalf("first segment %q", got)
 	}
 
-	w = mustOpen(t, sim, opts)
+	w = mustOpen(t, sim, o)
 	checkTerms(t, w, 1, repeat(3, 203)...)
 	mustAppend(t, w, ent(204, 4))
 	checkTerms(t, w, 1, append(repeat(3, 203), 4)...)
@@ -134,10 +165,11 @@ func TestAppendRejects(t *testing.T) {
 		"duplicate": {ent(5, 1)},
 		"not dense": {ent(6, 1), ent(8, 1)},
 		"too large": {{Index: 6, Term: 1, Body: make([]byte, MaxBodySize+1)}},
+		"term back": {ent(6, 2), ent(7, 1)},
 	}
 	for name, ents := range cases {
 		t.Run(name, func(t *testing.T) {
-			w := mustOpen(t, newSim(1), Options{})
+			w := mustOpen(t, newSim(1), opts(0))
 			mustAppend(t, w, span(1, 6, 1)...)
 			err := w.Append(ents...)
 			if !errors.Is(err, ErrOutOfOrder) && !errors.Is(err, ErrTooLarge) {
@@ -148,7 +180,7 @@ func TestAppendRejects(t *testing.T) {
 		})
 	}
 
-	w := mustOpen(t, newSim(1), Options{})
+	w := mustOpen(t, newSim(1), opts(0))
 	if err := w.Append(ent(0, 1)); !errors.Is(err, ErrOutOfOrder) {
 		t.Fatalf("index 0: %v", err)
 	}
@@ -156,26 +188,48 @@ func TestAppendRejects(t *testing.T) {
 
 func TestEmptyLogAcceptsAnyStart(t *testing.T) {
 	sim := newSim(1)
-	w := mustOpen(t, sim, Options{})
-	if w.FirstIndex() != 0 || w.LastIndex() != 0 {
-		t.Fatalf("empty log is [%d, %d]", w.FirstIndex(), w.LastIndex())
+	w := mustOpen(t, sim, opts(0))
+	if first, last := bounds(t, w); first != 0 || last != 0 {
+		t.Fatalf("empty log is [%d, %d]", first, last)
 	}
 	mustAppend(t, w, span(1000, 1003, 9)...)
 	_ = w.Close()
-	w = mustOpen(t, sim, Options{})
+	w = mustOpen(t, sim, opts(0))
 	checkTerms(t, w, 1000, 9, 9, 9)
 }
 
+func TestSegmentNames(t *testing.T) {
+	cases := map[string]uint64{
+		"wal-00000000000000000001.log":  1,
+		"wal-18446744073709551615.log":  math.MaxUint64,
+		"wal-00000000000000000000.log":  0,
+		"wal-0000000000000000001.log":   0,
+		"wal-000000000000000000001.log": 0,
+		"wal-0000000000000000000x.log":  0,
+		"wal-00000000000000000001.tmp":  0,
+		"snap-00000000000000000001.log": 0,
+	}
+	for name, want := range cases {
+		first, ok := parseSegmentName(name)
+		if ok != (want > 0) || first != want {
+			t.Errorf("%s: %d, %v", name, first, ok)
+		}
+	}
+	if got := segmentName(42); got != "wal-00000000000000000042.log" {
+		t.Errorf("segmentName(42) = %s", got)
+	}
+}
+
 func TestRangeErrors(t *testing.T) {
-	w := mustOpen(t, newSim(1), Options{SegmentSize: 256})
-	if _, err := w.Entries(1, 2); !errors.Is(err, ErrUnavailable) {
+	w := mustOpen(t, newSim(1), opts(256))
+	if _, err := w.Entries(1, 2, noLimit); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("empty log: %v", err)
 	}
 	mustAppend(t, w, span(1, 40, 1)...)
 	if err := w.CompactBefore(20); err != nil {
 		t.Fatal(err)
 	}
-	first := w.FirstIndex()
+	first, _ := bounds(t, w)
 	if first <= 1 || first > 20 {
 		t.Fatalf("first after compaction = %d", first)
 	}
@@ -189,7 +243,7 @@ func TestRangeErrors(t *testing.T) {
 		{40, 41, ErrUnavailable},
 	}
 	for _, c := range cases {
-		if _, err := w.Entries(c.lo, c.hi); !errors.Is(err, c.want) {
+		if _, err := w.Entries(c.lo, c.hi, noLimit); !errors.Is(err, c.want) {
 			t.Errorf("Entries(%d, %d) = %v, want %v", c.lo, c.hi, err, c.want)
 		}
 	}
@@ -199,7 +253,7 @@ func TestRangeErrors(t *testing.T) {
 	if _, err := w.Term(40); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("Term(40) = %v", err)
 	}
-	if ents, err := w.Entries(5, 5); err != nil || len(ents) != 0 {
+	if ents, err := w.Entries(5, 5, noLimit); err != nil || len(ents) != 0 {
 		t.Errorf("empty range = %v, %v", ents, err)
 	}
 }
@@ -215,20 +269,20 @@ func TestTruncateAfter(t *testing.T) {
 	for name, i := range cases {
 		t.Run(name, func(t *testing.T) {
 			sim := newSim(1)
-			opts := Options{SegmentSize: 400}
-			w := mustOpen(t, sim, opts)
+			o := opts(400)
+			w := mustOpen(t, sim, o)
 			mustAppend(t, w, span(1, 61, 1)...)
 			if err := w.TruncateAfter(i); err != nil {
 				t.Fatal(err)
 			}
-			if w.LastIndex() != i {
-				t.Fatalf("last = %d, want %d", w.LastIndex(), i)
+			if last := lastIndex(t, w); last != i {
+				t.Fatalf("last = %d, want %d", last, i)
 			}
 			mustAppend(t, w, span(i+1, i+4, 2)...)
 			_ = w.Close()
 
 			sim.Crash()
-			w = mustOpen(t, sim, opts)
+			w = mustOpen(t, sim, o)
 			checkTerms(t, w, 1, append(repeat(1, int(i)), 2, 2, 2)...)
 		})
 	}
@@ -236,15 +290,15 @@ func TestTruncateAfter(t *testing.T) {
 
 func TestCompactBefore(t *testing.T) {
 	sim := newSim(1)
-	opts := Options{SegmentSize: 400}
-	w := mustOpen(t, sim, opts)
+	o := opts(400)
+	w := mustOpen(t, sim, o)
 	mustAppend(t, w, span(1, 61, 1)...)
 	before := len(segments(t, sim))
 
 	if err := w.CompactBefore(30); err != nil {
 		t.Fatal(err)
 	}
-	first := w.FirstIndex()
+	first, _ := bounds(t, w)
 	if first > 30 || first == 1 {
 		t.Fatalf("first = %d", first)
 	}
@@ -252,18 +306,18 @@ func TestCompactBefore(t *testing.T) {
 		t.Fatalf("segments %d -> %d", before, after)
 	}
 	sim.Crash()
-	w = mustOpen(t, sim, opts)
+	w = mustOpen(t, sim, o)
 	checkTerms(t, w, first, repeat(1, int(61-first))...)
 
 	if err := w.CompactBefore(61); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(segments(t, sim)); n != 0 || w.LastIndex() != 0 {
-		t.Fatalf("after full compaction: %d segments, last %d", n, w.LastIndex())
+	if n := len(segments(t, sim)); n != 0 || lastIndex(t, w) != 0 {
+		t.Fatalf("after full compaction: %d segments, last %d", n, lastIndex(t, w))
 	}
 	mustAppend(t, w, span(500, 502, 4)...)
 	sim.Crash()
-	w = mustOpen(t, sim, opts)
+	w = mustOpen(t, sim, o)
 	checkTerms(t, w, 500, 4, 4)
 }
 
@@ -278,67 +332,60 @@ func lastSegment(t *testing.T, sim *disk.Sim) disk.File {
 }
 
 func TestTornTailIsCut(t *testing.T) {
-	cases := map[string]func(t *testing.T, f disk.File, size int64){
-		"half frame": func(t *testing.T, f disk.File, size int64) {
-			_ = f.Truncate(size - 5)
-		},
-		"half header": func(t *testing.T, f disk.File, size int64) {
-			_ = f.Truncate(size - int64(frameSize(ent(10, 1))) + 3)
-		},
-		"zeros after": func(t *testing.T, f disk.File, size int64) {
-			_, _ = f.WriteAt(make([]byte, 700), size)
-		},
-		"garbage after": func(t *testing.T, f disk.File, size int64) {
-			_, _ = f.WriteAt(bytes.Repeat([]byte{0xa5}, 700), size)
-		},
+	cases := map[string]struct {
+		tear func(f disk.File, size int64)
+		last uint64
+	}{
+		"half frame":    {func(f disk.File, size int64) { _ = f.Truncate(size - 5) }, 9},
+		"half header":   {func(f disk.File, size int64) { _ = f.Truncate(size - int64(frameSize(ent(10, 1))) + 3) }, 9},
+		"zeros after":   {func(f disk.File, size int64) { _, _ = f.WriteAt(make([]byte, 700), size) }, 10},
+		"garbage after": {func(f disk.File, size int64) { _, _ = f.WriteAt(bytes.Repeat([]byte{0xa5}, 700), size) }, 10},
 	}
-	for name, tear := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			sim := newSim(1)
-			w := mustOpen(t, sim, Options{})
+			w := mustOpen(t, sim, opts(0))
 			mustAppend(t, w, span(1, 11, 1)...)
 			_ = w.Close()
 
 			f := lastSegment(t, sim)
 			size, _ := f.Size()
-			tear(t, f, size)
+			tc.tear(f, size)
 			_ = f.Sync()
 			_ = f.Close()
 
-			w = mustOpen(t, sim, Options{})
-			last := w.LastIndex()
-			if last != 9 && last != 10 {
-				t.Fatalf("last = %d", last)
-			}
-			checkTerms(t, w, 1, repeat(1, int(last))...)
-			mustAppend(t, w, ent(last+1, 2))
+			w = mustOpen(t, sim, opts(0))
+			checkTerms(t, w, 1, repeat(1, int(tc.last))...)
+			mustAppend(t, w, ent(tc.last+1, 2))
 			_ = w.Close()
 
-			w = mustOpen(t, sim, Options{})
-			checkTerms(t, w, 1, append(repeat(1, int(last)), 2)...)
+			w = mustOpen(t, sim, opts(0))
+			checkTerms(t, w, 1, append(repeat(1, int(tc.last)), 2)...)
 		})
 	}
 }
 
 func TestTornFirstFrameEmptiesLog(t *testing.T) {
-	sim := newSim(1)
-	w := mustOpen(t, sim, Options{})
-	mustAppend(t, w, ent(1, 1))
-	_ = w.Close()
-	f := lastSegment(t, sim)
-	_ = f.Truncate(10)
-	_ = f.Sync()
+	for _, cut := range []int64{0, 10, segHdrLen, segHdrLen + 10} {
+		sim := newSim(1)
+		w := mustOpen(t, sim, opts(0))
+		mustAppend(t, w, ent(1, 1))
+		_ = w.Close()
+		f := lastSegment(t, sim)
+		_ = f.Truncate(cut)
+		_ = f.Sync()
 
-	w = mustOpen(t, sim, Options{})
-	if w.LastIndex() != 0 || len(segments(t, sim)) != 0 {
-		t.Fatalf("last %d, segments %v", w.LastIndex(), segments(t, sim))
+		w = mustOpen(t, sim, opts(0))
+		if lastIndex(t, w) != 0 || len(segments(t, sim)) != 0 {
+			t.Fatalf("cut at %d: last %d, segments %v", cut, lastIndex(t, w), segments(t, sim))
+		}
+		mustAppend(t, w, ent(7, 2))
+		checkTerms(t, w, 7, 2)
 	}
-	mustAppend(t, w, ent(7, 2))
-	checkTerms(t, w, 7, 2)
 }
 
 func frameOffset(lo, i, term uint64) int64 {
-	var off int64
+	off := int64(segHdrLen)
 	for k := lo; k < i; k++ {
 		off += int64(frameSize(ent(k, term)))
 	}
@@ -366,22 +413,22 @@ func wantCorrupt(t *testing.T, err error, seg string, off int64) {
 
 func TestBitFlipBeforeLaterSyncIsCorrupt(t *testing.T) {
 	sim := newSim(1)
-	w := mustOpen(t, sim, Options{})
+	w := mustOpen(t, sim, opts(0))
 	mustAppend(t, w, span(1, 11, 1)...)
 	mustAppend(t, w, span(11, 21, 1)...)
 	_ = w.Close()
 
 	seg := segments(t, sim)[0]
 	off := frameOffset(1, 5, 1)
-	corruptAt(t, sim, seg, off+hdrSize+2)
-	_, err := Open(sim, dir, Options{})
+	corruptAt(t, sim, seg, off+frameHdrLen+2)
+	_, err := Open(sim, dir, opts(0))
 	wantCorrupt(t, err, seg, off)
 }
 
 func TestBitFlipInOlderSegmentIsCorrupt(t *testing.T) {
 	sim := newSim(1)
-	opts := Options{SegmentSize: 400}
-	w := mustOpen(t, sim, opts)
+	o := opts(400)
+	w := mustOpen(t, sim, o)
 	mustAppend(t, w, span(1, 41, 1)...)
 	_ = w.Close()
 
@@ -395,38 +442,38 @@ func TestBitFlipInOlderSegmentIsCorrupt(t *testing.T) {
 		t.Fatalf("offset %d beyond segment size %d", off, size)
 	}
 	corruptAt(t, sim, segs[1], off+1)
-	_, err := Open(sim, dir, opts)
+	_, err := Open(sim, dir, o)
 	wantCorrupt(t, err, segs[1], off)
 }
 
 func TestMissingSegmentIsCorrupt(t *testing.T) {
 	sim := newSim(1)
-	opts := Options{SegmentSize: 400}
-	w := mustOpen(t, sim, opts)
+	o := opts(400)
+	w := mustOpen(t, sim, o)
 	mustAppend(t, w, span(1, 41, 1)...)
 	_ = w.Close()
 
 	segs := segments(t, sim)
 	_ = sim.Remove(filepath.Join(dir, segs[2]))
-	_, err := Open(sim, dir, opts)
+	_, err := Open(sim, dir, o)
 	wantCorrupt(t, err, segs[3], 0)
 }
 
 func TestBitFlipInLastSyncedBatchLooksTorn(t *testing.T) {
 	sim := newSim(1)
-	w := mustOpen(t, sim, Options{})
+	w := mustOpen(t, sim, opts(0))
 	mustAppend(t, w, span(1, 11, 1)...)
 	mustAppend(t, w, span(11, 21, 1)...)
 	_ = w.Close()
 
-	corruptAt(t, sim, segments(t, sim)[0], frameOffset(1, 15, 1)+hdrSize)
-	w = mustOpen(t, sim, Options{})
+	corruptAt(t, sim, segments(t, sim)[0], frameOffset(1, 15, 1)+frameHdrLen)
+	w = mustOpen(t, sim, opts(0))
 	checkTerms(t, w, 1, repeat(1, 14)...)
 }
 
 func TestSyncErrorIsSticky(t *testing.T) {
 	sim := newSim(1)
-	w := mustOpen(t, sim, Options{})
+	w := mustOpen(t, sim, opts(0))
 	mustAppend(t, w, span(1, 6, 1)...)
 
 	sim.SyncErrRate = 1
@@ -446,31 +493,32 @@ func TestSyncErrorIsSticky(t *testing.T) {
 	_ = w.Close()
 
 	sim.Crash()
-	w = mustOpen(t, sim, Options{})
-	if w.LastIndex() < 5 {
-		t.Fatalf("synced entries lost: last %d", w.LastIndex())
+	w = mustOpen(t, sim, opts(0))
+	last := lastIndex(t, w)
+	if last < 5 {
+		t.Fatalf("synced entries lost: last %d", last)
 	}
-	checkTerms(t, w, 1, repeat(1, int(w.LastIndex()))...)
+	checkTerms(t, w, 1, repeat(1, int(last))...)
 }
 
 func TestOpenSyncsWhatItRead(t *testing.T) {
 	sim := newSim(1)
-	w := mustOpen(t, sim, Options{})
+	w := mustOpen(t, sim, opts(0))
 	if err := w.Append(span(1, 30, 1)...); err != nil {
 		t.Fatal(err)
 	}
 	_ = w.Close()
-	w = mustOpen(t, sim, Options{})
+	w = mustOpen(t, sim, opts(0))
 	_ = w.Close()
 
 	sim.Crash()
-	w = mustOpen(t, sim, Options{})
+	w = mustOpen(t, sim, opts(0))
 	checkTerms(t, w, 1, repeat(1, 29)...)
 }
 
 func TestHoleInUnsyncedTailIsTorn(t *testing.T) {
 	sim := newSim(1)
-	w := mustOpen(t, sim, Options{})
+	w := mustOpen(t, sim, opts(0))
 	mustAppend(t, w, span(1, 11, 1)...)
 	if err := w.Append(span(11, 21, 1)...); err != nil {
 		t.Fatal(err)
@@ -481,8 +529,260 @@ func TestHoleInUnsyncedTailIsTorn(t *testing.T) {
 	_, _ = f.WriteAt(make([]byte, 40), frameOffset(1, 12, 1))
 	_ = f.Sync()
 
-	w = mustOpen(t, sim, Options{})
+	w = mustOpen(t, sim, opts(0))
 	checkTerms(t, w, 1, repeat(1, 11)...)
+}
+
+func TestUnknownVersionIsReported(t *testing.T) {
+	sim := newSim(1)
+	w := mustOpen(t, sim, opts(0))
+	mustAppend(t, w, span(1, 4, 1)...)
+	_ = w.Close()
+
+	f := lastSegment(t, sim)
+	hdr := make([]byte, segHdrLen)
+	_, _ = f.ReadAt(hdr, 0)
+	binary.LittleEndian.PutUint16(hdr[segOffVersion:], segVersion+1)
+	binary.LittleEndian.PutUint32(hdr[segOffCRC:], crc32.Checksum(hdr[:segOffCRC], castagnoli))
+	_, _ = f.WriteAt(hdr, 0)
+
+	if _, err := Open(sim, dir, opts(0)); !errors.Is(err, ErrVersion) {
+		t.Fatalf("open = %v, want ErrVersion", err)
+	}
+}
+
+func TestFramesFromOtherSegmentsProveNothing(t *testing.T) {
+	for _, foreign := range []bool{true, false} {
+		sim := newSim(1)
+		w := mustOpen(t, sim, opts(0))
+		mustAppend(t, w, span(1, 11, 1)...)
+		seed := w.segs[0].seed
+		_ = w.Close()
+
+		if foreign {
+			other := mustOpen(t, newSim(2), Options{Nonces: rand.NewChaCha8([32]byte{8})})
+			mustAppend(t, other, ent(1, 1))
+			seed = other.segs[0].seed
+			_ = other.Close()
+		}
+		off := frameOffset(1, 11, 1)
+		forged := appendFrame(make([]byte, 40), Entry{Index: 12, Term: 1}, 11, seed)
+		f := lastSegment(t, sim)
+		_, _ = f.WriteAt(forged, off)
+		_ = f.Sync()
+
+		_, err := Open(sim, dir, opts(0))
+		switch {
+		case foreign && err != nil:
+			t.Fatalf("frame with foreign nonce counted as proof: %v", err)
+		case !foreign:
+			wantCorrupt(t, err, segments(t, sim)[0], off)
+		}
+	}
+}
+
+func TestTermGoingBackIsCorrupt(t *testing.T) {
+	high, low := newSim(1), newSim(2)
+	for _, c := range []struct {
+		sim  *disk.Sim
+		term uint64
+	}{{high, 5}, {low, 1}} {
+		w := mustOpen(t, c.sim, opts(1))
+		mustAppend(t, w, span(1, 4, c.term)...)
+		_ = w.Close()
+	}
+	name := segments(t, low)[2]
+	src, _ := low.Open(filepath.Join(dir, name))
+	size, _ := src.Size()
+	raw := make([]byte, size)
+	_, _ = src.ReadAt(raw, 0)
+	dst, _ := high.Create(filepath.Join(dir, name))
+	_, _ = dst.WriteAt(raw, 0)
+
+	_, err := Open(high, dir, opts(1))
+	wantCorrupt(t, err, name, segHdrLen)
+}
+
+func TestOversizedSegmentIsCorrupt(t *testing.T) {
+	sim := newSim(1)
+	w := mustOpen(t, sim, opts(0))
+	mustAppend(t, w, span(1, 4, 1)...)
+	_ = w.Close()
+	f := lastSegment(t, sim)
+	limit := int64(DefaultSegmentSize + segHdrLen + frameHdrLen + MaxBodySize)
+	_ = f.Truncate(limit + 1)
+
+	_, err := Open(sim, dir, opts(0))
+	wantCorrupt(t, err, segments(t, sim)[0], limit)
+}
+
+func TestFailedAppendHidesUnwrittenEntries(t *testing.T) {
+	sim := newSim(1)
+	w := mustOpen(t, sim, opts(0))
+	mustAppend(t, w, span(1, 4, 1)...)
+	sim.WriteErrRate = 1
+	if err := w.Append(span(4, 8, 1)...); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("append = %v", err)
+	}
+	if _, err := w.LastIndex(); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("LastIndex = %v", err)
+	}
+	if _, err := w.Term(5); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("Term = %v", err)
+	}
+	if _, err := w.Entries(1, 4, noLimit); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("Entries = %v", err)
+	}
+	if n := len(w.segs[0].terms); n != 3 {
+		t.Fatalf("index holds %d entries, 3 were written", n)
+	}
+
+	w = mustOpen(t, newSim(2), opts(0))
+	_ = w.Close()
+	if _, err := w.Entries(1, 2, noLimit); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Entries after close = %v", err)
+	}
+}
+
+func TestEntriesMaxBytes(t *testing.T) {
+	w := mustOpen(t, newSim(1), opts(300))
+	var ents []Entry
+	for i := uint64(1); i <= 20; i++ {
+		ents = append(ents, Entry{Index: i, Term: 1, Body: make([]byte, 63)})
+	}
+	mustAppend(t, w, ents...)
+	const size = frameHdrLen + 63
+
+	cases := []struct {
+		lo, hi   uint64
+		maxBytes int64
+		want     int
+	}{
+		{1, 21, noLimit, 20},
+		{1, 21, 0, 1},
+		{1, 21, size - 1, 1},
+		{1, 21, size, 1},
+		{1, 21, 3*size + 5, 3},
+		{2, 21, 10 * size, 10},
+		{18, 21, 10 * size, 3},
+	}
+	for _, c := range cases {
+		got, err := w.Entries(c.lo, c.hi, c.maxBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != c.want || got[0].Index != c.lo || got[len(got)-1].Index != c.lo+uint64(c.want)-1 {
+			t.Errorf("Entries(%d, %d, %d) = %d entries, want %d", c.lo, c.hi, c.maxBytes, len(got), c.want)
+		}
+	}
+}
+
+func freezeAt(sim *disk.Sim, op string, armed *bool) (hookFS, func() *disk.Sim) {
+	var frozen *disk.Sim
+	fsys := hookFS{Sim: sim, after: func(got string) {
+		if *armed && got == op && frozen == nil {
+			frozen = sim.Clone()
+		}
+	}}
+	return fsys, func() *disk.Sim { return frozen }
+}
+
+func TestProcessCrashInRollKeepsAckedEntries(t *testing.T) {
+	sim := newSim(1)
+	armed := false
+	fsys, frozen := freezeAt(sim, "create", &armed)
+	w := mustOpen(t, fsys, opts(300))
+	mustAppend(t, w, span(1, 6, 1)...)
+	armed = true
+	for i := uint64(6); frozen() == nil; i++ {
+		mustAppend(t, w, ent(i, 1))
+	}
+
+	proc := frozen()
+	w = mustOpen(t, proc, opts(300))
+	last := lastIndex(t, w)
+	mustAppend(t, w, span(last+1, last+4, 2)...)
+	_ = w.Close()
+
+	proc.Crash()
+	w = mustOpen(t, proc, opts(300))
+	if got := lastIndex(t, w); got != last+3 {
+		t.Fatalf("acknowledged up to %d, after power loss %d", last+3, got)
+	}
+}
+
+func TestProcessCrashInTruncateDoesNotResurrect(t *testing.T) {
+	sim := newSim(1)
+	armed := false
+	fsys, frozen := freezeAt(sim, "remove", &armed)
+	w := mustOpen(t, fsys, opts(400))
+	for i := uint64(1); i <= 3; i++ {
+		mustAppend(t, w, Entry{Index: i, Term: 1, Body: make([]byte, 50)})
+	}
+	mustAppend(t, w, Entry{Index: 4, Term: 2, Body: make([]byte, 200)})
+	if n := len(segments(t, sim)); n != 2 {
+		t.Fatalf("%d segments, want 2", n)
+	}
+	armed = true
+	if err := w.TruncateAfter(3); err != nil {
+		t.Fatal(err)
+	}
+
+	proc := frozen()
+	w = mustOpen(t, proc, opts(400))
+	if err := w.TruncateAfter(2); err != nil {
+		t.Fatal(err)
+	}
+	mustAppend(t, w, Entry{Index: 3, Term: 3})
+	_ = w.Close()
+
+	proc.Crash()
+	w, err := Open(proc, dir, opts(400))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, last := bounds(t, w); last != 3 {
+		t.Fatalf("last = %d after power loss, removed segment came back", last)
+	}
+	if term, _ := w.Term(3); term != 3 {
+		t.Fatalf("term at 3 = %d", term)
+	}
+}
+
+func TestOpenRewritesPagesAfterFailedSync(t *testing.T) {
+	dropped := 0
+	for seed := range uint64(30) {
+		sim := newSim(seed)
+		w := mustOpen(t, sim, opts(0))
+		mustAppend(t, w, span(1, 6, 1)...)
+		if err := w.Append(span(6, 9, 1)...); err != nil {
+			t.Fatal(err)
+		}
+		sim.SyncErrRate = 1
+		if err := w.Sync(); !errors.Is(err, syscall.EIO) {
+			t.Fatalf("sync = %v", err)
+		}
+		sim.SyncErrRate = 0
+		_ = w.Close()
+
+		c := sim.Clone()
+		c.Crash()
+		if w, err := Open(c, dir, opts(0)); err == nil && lastIndex(t, w) == 5 {
+			dropped++
+		}
+
+		w = mustOpen(t, sim, opts(0))
+		acked := lastIndex(t, w)
+		_ = w.Close()
+		sim.Crash()
+		w = mustOpen(t, sim, opts(0))
+		if got := lastIndex(t, w); got != acked {
+			t.Fatalf("seed %d: open reported %d entries, after power loss %d", seed, acked, got)
+		}
+	}
+	if dropped == 0 {
+		t.Fatal("failed sync never dropped the dirty pages")
+	}
 }
 
 func FuzzOpen(f *testing.F) {
@@ -492,8 +792,8 @@ func FuzzOpen(f *testing.F) {
 	f.Add(uint8(3), uint16(300), make([]byte, 64), uint16(0))
 	f.Fuzz(func(t *testing.T, which uint8, off uint16, xor []byte, cut uint16) {
 		sim := newSim(1)
-		opts := Options{SegmentSize: 512}
-		w := mustOpen(t, sim, opts)
+		o := opts(512)
+		w := mustOpen(t, sim, o)
 		for lo := uint64(1); lo < 31; lo += 10 {
 			mustAppend(t, w, span(lo, lo+10, 1)...)
 		}
@@ -515,20 +815,20 @@ func FuzzOpen(f *testing.F) {
 			_ = seg.Truncate(size - int64(cut)%size)
 		}
 
-		w, err = Open(sim, dir, opts)
+		w, err = Open(sim, dir, o)
 		if err != nil {
-			if !errors.Is(err, ErrCorrupt) {
+			if !errors.Is(err, ErrCorrupt) && !errors.Is(err, ErrVersion) {
 				t.Fatalf("open = %v, want ErrCorrupt", err)
 			}
 			return
 		}
 		defer func() { _ = w.Close() }()
-		last := w.LastIndex()
+		first, last := bounds(t, w)
 		if last == 0 {
 			return
 		}
-		if w.FirstIndex() != 1 {
-			t.Fatalf("first = %d", w.FirstIndex())
+		if first != 1 {
+			t.Fatalf("first = %d", first)
 		}
 		checkTerms(t, w, 1, repeat(1, int(last))...)
 	})

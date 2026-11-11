@@ -17,7 +17,7 @@ import (
 func backends(t *testing.T) map[string]func() (disk.FS, string) {
 	return map[string]func() (disk.FS, string){
 		"os":  func() (disk.FS, string) { return disk.OS{}, t.TempDir() },
-		"sim": func() (disk.FS, string) { return disk.NewSim(rand.New(rand.NewPCG(1, 2))), "/d" },
+		"sim": func() (disk.FS, string) { return disk.NewSim(rand.New(rand.NewPCG(1, 2))), "/d/e" },
 	}
 }
 
@@ -103,7 +103,9 @@ func TestFileContract(t *testing.T) {
 }
 
 func newSim(seed uint64) *disk.Sim {
-	return disk.NewSim(rand.New(rand.NewPCG(seed, seed)))
+	sim := disk.NewSim(rand.New(rand.NewPCG(seed, seed)))
+	_ = sim.MkdirAll("/d")
+	return sim
 }
 
 func write(t *testing.T, f disk.File, p []byte, off int64) {
@@ -182,35 +184,39 @@ func TestSimNamespaceNeedsSyncDir(t *testing.T) {
 }
 
 func TestSimTornWriteBySector(t *testing.T) {
-	const sectors = 64
-	sawOld, sawNew := false, false
-	for seed := range uint64(20) {
-		sim := newSim(seed)
-		f, _ := sim.Create("/d/a")
-		_ = sim.SyncDir("/d")
-		write(t, f, bytes.Repeat([]byte{1}, sectors*disk.SectorSize), 0)
-		_ = f.Sync()
-		write(t, f, bytes.Repeat([]byte{2}, sectors*disk.SectorSize), 0)
-		sim.Crash()
+	for _, sector := range []int{disk.SectorSize, 4096} {
+		const sectors = 16
+		size := sectors * sector
+		sawOld, sawNew := false, false
+		for seed := range uint64(20) {
+			sim := newSim(seed)
+			sim.Sector = int64(sector)
+			f, _ := sim.Create("/d/a")
+			_ = sim.SyncDir("/d")
+			write(t, f, bytes.Repeat([]byte{1}, size), 0)
+			_ = f.Sync()
+			write(t, f, bytes.Repeat([]byte{2}, size), 0)
+			sim.Crash()
 
-		got := contents(t, sim, "/d/a")
-		if len(got) != sectors*disk.SectorSize {
-			t.Fatalf("size = %d", len(got))
-		}
-		for sec := range sectors {
-			s := got[sec*disk.SectorSize : (sec+1)*disk.SectorSize]
-			switch {
-			case bytes.Equal(s, bytes.Repeat([]byte{1}, disk.SectorSize)):
-				sawOld = true
-			case bytes.Equal(s, bytes.Repeat([]byte{2}, disk.SectorSize)):
-				sawNew = true
-			default:
-				t.Fatalf("seed %d: sector %d mixed inside", seed, sec)
+			got := contents(t, sim, "/d/a")
+			if len(got) != size {
+				t.Fatalf("size = %d", len(got))
+			}
+			for sec := range sectors {
+				s := got[sec*sector : (sec+1)*sector]
+				switch {
+				case bytes.Equal(s, bytes.Repeat([]byte{1}, sector)):
+					sawOld = true
+				case bytes.Equal(s, bytes.Repeat([]byte{2}, sector)):
+					sawNew = true
+				default:
+					t.Fatalf("sector size %d, seed %d: sector %d mixed inside", sector, seed, sec)
+				}
 			}
 		}
-	}
-	if !sawOld || !sawNew {
-		t.Fatalf("torn writes never mixed sectors: old %v new %v", sawOld, sawNew)
+		if !sawOld || !sawNew {
+			t.Fatalf("sector size %d: old %v new %v", sector, sawOld, sawNew)
+		}
 	}
 }
 
@@ -223,7 +229,7 @@ func TestSimTornAppendLeavesZeros(t *testing.T) {
 		sim.Crash()
 
 		got := contents(t, sim, "/d/a")
-		if len(got) != 0 && len(got) != 4*disk.SectorSize {
+		if len(got) > 4*disk.SectorSize {
 			t.Fatalf("seed %d: size %d", seed, len(got))
 		}
 		for _, b := range got {
@@ -299,18 +305,129 @@ func TestSimCorruptFlipsOneBit(t *testing.T) {
 
 func TestSimInjectedErrors(t *testing.T) {
 	sim := newSim(9)
-	sim.WriteErrRate, sim.SyncErrRate = 0.5, 0.5
 	f, _ := sim.Create("/d/a")
-	var writes, syncs int
+	sim.WriteErrRate, sim.SyncErrRate, sim.MetaErrRate, sim.ReadErrRate = 0.5, 0.5, 0.5, 0.5
+	counts := map[string]int{}
 	for range 200 {
 		if _, err := f.WriteAt([]byte("x"), 0); errors.Is(err, syscall.EIO) {
-			writes++
+			counts["write"]++
 		}
 		if err := f.Sync(); errors.Is(err, syscall.EIO) {
-			syncs++
+			counts["sync"]++
+		}
+		if _, err := f.ReadAt(make([]byte, 1), 0); errors.Is(err, syscall.EIO) {
+			counts["read"]++
+		}
+		if err := f.Truncate(1); errors.Is(err, syscall.EIO) {
+			counts["truncate"]++
+		}
+		if err := sim.SyncDir("/d"); errors.Is(err, syscall.EIO) {
+			counts["syncdir"]++
+		}
+		if _, err := sim.Create("/d/b"); errors.Is(err, syscall.EIO) {
+			counts["create"]++
 		}
 	}
-	if writes < 50 || writes > 150 || syncs < 50 || syncs > 150 {
-		t.Fatalf("EIO writes %d syncs %d out of 200", writes, syncs)
+	for op, n := range counts {
+		if n < 50 || n > 150 {
+			t.Errorf("%s: EIO %d out of 200", op, n)
+		}
+	}
+	if len(counts) != 6 {
+		t.Fatalf("injected errors: %v", counts)
+	}
+}
+
+func TestSimShortWrite(t *testing.T) {
+	short := false
+	for seed := range uint64(20) {
+		sim := newSim(seed)
+		f, _ := sim.Create("/d/a")
+		sim.WriteErrRate = 1
+		n, err := f.WriteAt(bytes.Repeat([]byte{1}, 100), 0)
+		if !errors.Is(err, syscall.EIO) {
+			t.Fatalf("write = %v", err)
+		}
+		if size, _ := f.Size(); size != int64(n) {
+			t.Fatalf("wrote %d, size %d", n, size)
+		}
+		short = short || (n > 0 && n < 100)
+	}
+	if !short {
+		t.Fatal("never a short write")
+	}
+}
+
+func TestSimFailedSyncDropsDirtyPages(t *testing.T) {
+	lost := 0
+	for seed := range uint64(40) {
+		sim := newSim(seed)
+		f, _ := sim.Create("/d/a")
+		_ = sim.SyncDir("/d")
+		write(t, f, []byte("old"), 0)
+		_ = f.Sync()
+		write(t, f, []byte("new"), 0)
+		sim.SyncErrRate = 1
+		if err := f.Sync(); !errors.Is(err, syscall.EIO) {
+			t.Fatalf("sync = %v", err)
+		}
+		sim.SyncErrRate = 0
+		if err := f.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if got := contents(t, sim, "/d/a"); string(got) != "new" {
+			t.Fatalf("page cache shows %q", got)
+		}
+		sim.Crash()
+		if string(contents(t, sim, "/d/a")) == "old" {
+			lost++
+		}
+	}
+	if lost == 0 || lost == 40 {
+		t.Fatalf("second sync after EIO lost the write in %d of 40 runs", lost)
+	}
+}
+
+func TestSimNeedsDirectory(t *testing.T) {
+	sim := disk.NewSim(rand.New(rand.NewPCG(1, 1)))
+	if _, err := sim.Create("/x/a"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("create without dir: %v", err)
+	}
+	if err := sim.SyncDir("/x"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("syncdir without dir: %v", err)
+	}
+	if err := sim.MkdirAll("/x/y"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := sim.Create("/x/y/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Sync()
+	_ = sim.SyncDir("/x/y")
+	sim.Crash()
+	if names, _ := sim.List("/x/y"); !slices.Equal(names, []string{"a"}) {
+		t.Fatalf("after crash %v", names)
+	}
+}
+
+func TestSimCrashLengthAnywhereBetween(t *testing.T) {
+	seen := map[int]bool{}
+	for seed := range uint64(60) {
+		sim := newSim(seed)
+		f, _ := sim.Create("/d/a")
+		_ = sim.SyncDir("/d")
+		write(t, f, make([]byte, 10), 0)
+		_ = f.Sync()
+		write(t, f, make([]byte, 10), 10)
+		sim.Crash()
+		n := len(contents(t, sim, "/d/a"))
+		if n < 10 || n > 20 {
+			t.Fatalf("length %d", n)
+		}
+		seen[n] = true
+	}
+	if len(seen) < 5 {
+		t.Fatalf("lengths after crash: %v", seen)
 	}
 }

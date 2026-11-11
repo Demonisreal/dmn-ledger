@@ -43,6 +43,15 @@ func (f slowSyncFile) Sync() error {
 	return f.File.Sync()
 }
 
+func mustCommitter(t *testing.T, w *WAL, maxEntries, maxBytes, queue int) *Committer {
+	t.Helper()
+	c, err := NewCommitter(w, CommitterOptions{MaxEntries: maxEntries, MaxBytes: maxBytes, Queue: queue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 func startCommitter(t *testing.T, c *Committer) (stop func() error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -59,7 +68,7 @@ func TestCommitterGroupsSyncs(t *testing.T) {
 	fsys := slowSyncFS{Sim: newSim(1), delay: 2 * time.Millisecond, syncs: syncs}
 	w := mustOpen(t, fsys, Options{})
 	defer func() { _ = w.Close() }()
-	c := NewCommitter(w, 1024, 1<<20)
+	c := mustCommitter(t, w, 1024, 1<<20, 64)
 	stop := startCommitter(t, c)
 
 	const writers, perWriter = 8, 40
@@ -101,7 +110,7 @@ func TestCommitterRoundLimits(t *testing.T) {
 		name                 string
 		maxEntries, maxBytes int
 		subs, perSub         int
-		wantSyncs            int64
+		rounds               int64
 	}{
 		{"entries", 6, 1 << 20, 6, 2, 2},
 		{"bytes", 100, 3 * frameSize(fixed(1)), 9, 1, 3},
@@ -112,7 +121,7 @@ func TestCommitterRoundLimits(t *testing.T) {
 			syncs := new(atomic.Int64)
 			w := mustOpen(t, slowSyncFS{Sim: newSim(1), syncs: syncs}, Options{})
 			defer func() { _ = w.Close() }()
-			c := NewCommitter(w, tc.maxEntries, tc.maxBytes)
+			c := mustCommitter(t, w, tc.maxEntries, tc.maxBytes, tc.subs)
 
 			var waits []<-chan error
 			next := uint64(1)
@@ -137,8 +146,9 @@ func TestCommitterRoundLimits(t *testing.T) {
 			if err := stop(); err != nil {
 				t.Fatal(err)
 			}
-			if got := syncs.Load(); got != tc.wantSyncs {
-				t.Fatalf("%d syncs, want %d", got, tc.wantSyncs)
+			const headerSyncs = 1
+			if got := syncs.Load() - headerSyncs; got != tc.rounds {
+				t.Fatalf("%d rounds, want %d", got, tc.rounds)
 			}
 		})
 	}
@@ -148,7 +158,7 @@ func TestCommitterFailStop(t *testing.T) {
 	sim := newSim(1)
 	w := mustOpen(t, sim, Options{})
 	defer func() { _ = w.Close() }()
-	c := NewCommitter(w, 64, 1<<20)
+	c := mustCommitter(t, w, 64, 1<<20, 64)
 	stop := startCommitter(t, c)
 
 	errc, err := c.Submit(context.Background(), ent(1, 1))
@@ -171,34 +181,56 @@ func TestCommitterFailStop(t *testing.T) {
 	}
 }
 
-func TestCommitterRejectsBadSubmissionOnly(t *testing.T) {
+func TestCommitterStopsOnBadSubmission(t *testing.T) {
 	w := mustOpen(t, newSim(1), Options{})
 	defer func() { _ = w.Close() }()
-	c := NewCommitter(w, 64, 1<<20)
+	c := mustCommitter(t, w, 64, 1<<20, 64)
 
 	good, _ := c.Submit(context.Background(), ent(1, 1))
 	bad, _ := c.Submit(context.Background(), ent(5, 1))
 	after, _ := c.Submit(context.Background(), ent(2, 1))
 	stop := startCommitter(t, c)
-	if err := <-good; err != nil {
+	for _, errc := range []<-chan error{good, bad, after} {
+		if err := <-errc; !errors.Is(err, ErrOutOfOrder) {
+			t.Fatalf("round with gap = %v", err)
+		}
+	}
+	if err := stop(); !errors.Is(err, ErrOutOfOrder) {
+		t.Fatalf("Run = %v", err)
+	}
+	if _, err := c.Submit(context.Background(), ent(2, 1)); !errors.Is(err, ErrOutOfOrder) {
+		t.Fatalf("submit after bad round = %v", err)
+	}
+}
+
+func TestCommitterOptions(t *testing.T) {
+	w := mustOpen(t, newSim(1), Options{})
+	defer func() { _ = w.Close() }()
+	for _, o := range []CommitterOptions{
+		{MaxEntries: 0, MaxBytes: 1, Queue: 1},
+		{MaxEntries: 1, MaxBytes: -1, Queue: 1},
+		{MaxEntries: 1, MaxBytes: 1, Queue: 0},
+	} {
+		if _, err := NewCommitter(w, o); err == nil {
+			t.Errorf("%+v accepted", o)
+		}
+	}
+
+	c := mustCommitter(t, w, 1, 1, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-bad; !errors.Is(err, ErrOutOfOrder) {
-		t.Fatalf("gap = %v", err)
+	if err := c.Run(ctx); !errors.Is(err, ErrStarted) {
+		t.Fatalf("second Run = %v", err)
 	}
-	if err := <-after; err != nil {
-		t.Fatal(err)
-	}
-	if err := stop(); err != nil {
-		t.Fatal(err)
-	}
-	checkTerms(t, w, 1, 1, 1)
 }
 
 func TestCommitterStopAnswersEveryone(t *testing.T) {
 	w := mustOpen(t, newSim(1), Options{})
 	defer func() { _ = w.Close() }()
-	c := NewCommitter(w, 16, 1<<20)
+	c := mustCommitter(t, w, 16, 1<<20, 16)
 
 	var waits []<-chan error
 	for i := uint64(1); i <= 16; i++ {
@@ -231,7 +263,7 @@ func TestCommitterStopAnswersEveryone(t *testing.T) {
 func TestCommitterSubmitHonoursContext(t *testing.T) {
 	w := mustOpen(t, newSim(1), Options{})
 	defer func() { _ = w.Close() }()
-	c := NewCommitter(w, 1, 1<<20)
+	c := mustCommitter(t, w, 1, 1<<20, 1)
 	if _, err := c.Submit(context.Background(), ent(1, 1)); err != nil {
 		t.Fatal(err)
 	}
@@ -239,5 +271,60 @@ func TestCommitterSubmitHonoursContext(t *testing.T) {
 	defer cancel()
 	if _, err := c.Submit(ctx, ent(2, 1)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("submit into full queue = %v", err)
+	}
+}
+
+func TestCommitterStopUnderLoad(t *testing.T) {
+	rounds := 300
+	if testing.Short() {
+		rounds = 30
+	}
+	for r := range rounds {
+		w := mustOpen(t, newSim(uint64(r)), Options{})
+		c := mustCommitter(t, w, 16, 1<<20, 8)
+		ctx, cancel := context.WithCancel(context.Background())
+		runErr := make(chan error, 1)
+		go func() { runErr <- c.Run(ctx) }()
+
+		var mu sync.Mutex
+		next := uint64(1)
+		var accepted []<-chan error
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Go(func() {
+				for {
+					mu.Lock()
+					errc, err := c.Submit(context.Background(), ent(next, 1))
+					if err == nil {
+						next++
+						accepted = append(accepted, errc)
+					}
+					mu.Unlock()
+					if err == nil {
+						err = <-errc
+					}
+					if err != nil {
+						if !errors.Is(err, ErrStopped) {
+							t.Error(err)
+						}
+						return
+					}
+				}
+			})
+		}
+		time.Sleep(time.Duration(r%7) * 100 * time.Microsecond)
+		cancel()
+		wg.Wait()
+		if err := <-runErr; err != nil {
+			t.Fatal(err)
+		}
+		for _, errc := range accepted {
+			select {
+			case err := <-errc:
+				t.Fatalf("round %d: submission answered twice, second %v", r, err)
+			default:
+			}
+		}
+		_ = w.Close()
 	}
 }

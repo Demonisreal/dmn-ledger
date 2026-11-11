@@ -2,11 +2,14 @@ package wal
 
 import (
 	"cmp"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
+	"io"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -17,11 +20,14 @@ const DefaultSegmentSize = 64 << 20
 
 var (
 	ErrCorrupt     = errors.New("wal: corrupt")
+	ErrVersion     = errors.New("wal: unknown segment version")
 	ErrCompacted   = errors.New("wal: index compacted")
 	ErrUnavailable = errors.New("wal: index unavailable")
-	ErrOutOfOrder  = errors.New("wal: index out of order")
+	ErrOutOfOrder  = errors.New("wal: entry out of order")
 	ErrTooLarge    = errors.New("wal: entry too large")
 	ErrClosed      = errors.New("wal: closed")
+
+	errNoHeader = errors.New("wal: segment without header")
 )
 
 type CorruptError struct {
@@ -39,22 +45,29 @@ func (e *CorruptError) Is(target error) bool {
 
 type Options struct {
 	SegmentSize int64
+	Nonces      io.Reader
 }
 
 type WAL struct {
 	fs      disk.FS
 	dir     string
 	segSize int64
+	nonces  io.Reader
 	segs    []*segment
 	synced  uint64
-	enc     []byte
+	term    uint64
 	err     error
+
+	enc      []byte
+	encOffs  []int64
+	encTerms []uint64
 }
 
 type segment struct {
 	name  string
 	f     disk.File
 	first uint64
+	seed  uint32
 	offs  []int64
 	terms []uint64
 	size  int64
@@ -85,11 +98,16 @@ func parseSegmentName(name string) (uint64, bool) {
 		return 0, false
 	}
 	first, err := strconv.ParseUint(digits, 10, 64)
-	return first, err == nil
+	return first, err == nil && first > 0
 }
 
 func Open(fsys disk.FS, dir string, opts Options) (_ *WAL, err error) {
-	w := &WAL{fs: fsys, dir: dir, segSize: cmp.Or(opts.SegmentSize, DefaultSegmentSize)}
+	w := &WAL{
+		fs:      fsys,
+		dir:     dir,
+		segSize: cmp.Or(opts.SegmentSize, DefaultSegmentSize),
+		nonces:  cmp.Or[io.Reader](opts.Nonces, rand.Reader),
+	}
 	defer func() {
 		if err != nil {
 			_ = w.Close()
@@ -114,24 +132,46 @@ func Open(fsys disk.FS, dir string, opts Options) (_ *WAL, err error) {
 		w.segs = append(w.segs, &segment{name: name, f: f, first: first})
 	}
 
-	var raw []byte
+	limit := max(w.segSize, DefaultSegmentSize) + segHdrLen + frameHdrLen + MaxBodySize
+	var raw, tail []byte
 	for i, seg := range w.segs {
+		last := i == len(w.segs)-1
 		size, err := seg.f.Size()
 		if err != nil {
 			return nil, err
+		}
+		if size > limit {
+			return nil, &CorruptError{File: seg.name, Offset: limit}
 		}
 		raw = slices.Grow(raw[:0], int(size))[:size]
 		if _, err := seg.f.ReadAt(raw, 0); err != nil {
 			return nil, err
 		}
+		err = seg.readHeader(raw)
+		if errors.Is(err, errNoHeader) && last {
+			if err := w.removeSegment(seg); err != nil {
+				return nil, err
+			}
+			w.segs, tail = w.segs[:i], nil
+			break
+		}
+		if errors.Is(err, errNoHeader) {
+			return nil, &CorruptError{File: seg.name, Offset: 0}
+		}
+		if err != nil {
+			return nil, err
+		}
 		if i > 0 && seg.first != w.segs[i-1].last()+1 {
 			return nil, &CorruptError{File: seg.name, Offset: 0}
 		}
-		seg.scan(raw)
+		if w.term, err = seg.scan(raw, w.term); err != nil {
+			return nil, err
+		}
+		tail = raw[:seg.size]
 		if seg.size == size {
 			continue
 		}
-		if i < len(w.segs)-1 || provenSynced(raw[seg.size:], seg.last()+1) {
+		if !last || provenSynced(raw[seg.size:], seg.last()+1, seg.seed) {
 			return nil, &CorruptError{File: seg.name, Offset: seg.size}
 		}
 		if err := seg.f.Truncate(seg.size); err != nil {
@@ -143,29 +183,55 @@ func Open(fsys disk.FS, dir string, opts Options) (_ *WAL, err error) {
 		if err := w.removeSegment(w.segs[0]); err != nil {
 			return nil, err
 		}
-		w.segs = nil
+		w.segs, tail = nil, nil
 	}
-	if seg := w.active(); seg != nil {
+	if seg := w.active(); seg != nil && tail != nil {
+		if _, err := seg.f.WriteAt(tail, 0); err != nil {
+			return nil, err
+		}
 		if err := seg.f.Sync(); err != nil {
 			return nil, err
 		}
 	}
-	w.synced = w.LastIndex()
+	if err := fsys.SyncDir(dir); err != nil {
+		return nil, err
+	}
+	w.synced = w.last()
 	return w, nil
 }
 
-func (s *segment) scan(raw []byte) {
-	off := 0
+func (s *segment) readHeader(raw []byte) error {
+	if len(raw) < segHdrLen || [segHdrLen]byte(raw) == [segHdrLen]byte{} {
+		return errNoHeader
+	}
+	if binary.LittleEndian.Uint32(raw[segOffCRC:]) != crc32.Checksum(raw[:segOffCRC], castagnoli) ||
+		binary.LittleEndian.Uint32(raw) != segMagic {
+		return &CorruptError{File: s.name, Offset: 0}
+	}
+	if v := binary.LittleEndian.Uint16(raw[segOffVersion:]); v != segVersion {
+		return fmt.Errorf("%w: %s has version %d", ErrVersion, s.name, v)
+	}
+	s.seed = seedOf(binary.LittleEndian.Uint64(raw[segOffNonce:]))
+	return nil
+}
+
+func (s *segment) scan(raw []byte, term uint64) (uint64, error) {
+	off := segHdrLen
 	for off < len(raw) {
-		fr, ok := decodeFrame(raw[off:])
+		fr, ok := decodeFrame(raw[off:], s.seed)
 		if !ok || fr.Index != s.first+uint64(len(s.terms)) {
 			break
 		}
+		if fr.Term < term {
+			return 0, &CorruptError{File: s.name, Offset: int64(off)}
+		}
+		term = fr.Term
 		s.offs = append(s.offs, int64(off))
 		s.terms = append(s.terms, fr.Term)
 		off += fr.size
 	}
 	s.size = int64(off)
+	return term, nil
 }
 
 func (w *WAL) active() *segment {
@@ -175,18 +241,26 @@ func (w *WAL) active() *segment {
 	return w.segs[len(w.segs)-1]
 }
 
-func (w *WAL) FirstIndex() uint64 {
+func (w *WAL) first() uint64 {
 	if len(w.segs) == 0 {
 		return 0
 	}
 	return w.segs[0].first
 }
 
-func (w *WAL) LastIndex() uint64 {
+func (w *WAL) last() uint64 {
 	if len(w.segs) == 0 {
 		return 0
 	}
 	return w.active().last()
+}
+
+func (w *WAL) FirstIndex() (uint64, error) {
+	return w.first(), w.err
+}
+
+func (w *WAL) LastIndex() (uint64, error) {
+	return w.last(), w.err
 }
 
 func (w *WAL) Append(ents ...Entry) error {
@@ -196,45 +270,45 @@ func (w *WAL) Append(ents ...Entry) error {
 	if len(ents) == 0 {
 		return nil
 	}
-	next := ents[0].Index
+	next, term := ents[0].Index, w.term
 	if len(w.segs) > 0 {
-		next = w.LastIndex() + 1
+		next = w.last() + 1
 	}
 	if next == 0 {
 		return fmt.Errorf("%w: index 0", ErrOutOfOrder)
 	}
 	for i, e := range ents {
 		if want := next + uint64(i); e.Index != want {
-			return fmt.Errorf("%w: got %d, want %d", ErrOutOfOrder, e.Index, want)
+			return fmt.Errorf("%w: index %d, want %d", ErrOutOfOrder, e.Index, want)
+		}
+		if e.Term < term {
+			return fmt.Errorf("%w: term %d at index %d after term %d", ErrOutOfOrder, e.Term, e.Index, term)
 		}
 		if len(e.Body) > MaxBodySize {
 			return fmt.Errorf("%w: index %d has %d bytes", ErrTooLarge, e.Index, len(e.Body))
 		}
+		term = e.Term
 	}
 
 	for _, e := range ents {
-		seg := w.active()
-		if pos := w.pos(); seg == nil || (pos > 0 && pos+int64(frameSize(e)) > w.segSize) {
+		if w.active() == nil || (w.pos() > segHdrLen && w.pos()+int64(frameSize(e)) > w.segSize) {
 			if err := w.roll(e.Index); err != nil {
 				return w.fail(err)
 			}
-			seg = w.active()
 		}
-		seg.offs = append(seg.offs, w.pos())
-		seg.terms = append(seg.terms, e.Term)
-		w.enc = appendFrame(w.enc, e, w.synced)
+		w.encOffs = append(w.encOffs, w.pos())
+		w.encTerms = append(w.encTerms, e.Term)
+		w.enc = appendFrame(w.enc, e, w.synced, w.active().seed)
 	}
 	if err := w.flush(); err != nil {
 		return w.fail(err)
 	}
+	w.term = term
 	return nil
 }
 
 func (w *WAL) pos() int64 {
-	if seg := w.active(); seg != nil {
-		return seg.size + int64(len(w.enc))
-	}
-	return 0
+	return w.active().size + int64(len(w.enc))
 }
 
 func (w *WAL) flush() error {
@@ -246,7 +320,9 @@ func (w *WAL) flush() error {
 		return err
 	}
 	seg.size += int64(len(w.enc))
-	w.enc = w.enc[:0]
+	seg.offs = append(seg.offs, w.encOffs...)
+	seg.terms = append(seg.terms, w.encTerms...)
+	w.enc, w.encOffs, w.encTerms = w.enc[:0], w.encOffs[:0], w.encTerms[:0]
 	return nil
 }
 
@@ -260,26 +336,42 @@ func (w *WAL) roll(first uint64) error {
 		}
 		w.synced = seg.last()
 	}
+	var nonce [8]byte
+	if _, err := io.ReadFull(w.nonces, nonce[:]); err != nil {
+		return err
+	}
 	name := segmentName(first)
 	f, err := w.fs.Create(filepath.Join(w.dir, name))
 	if err != nil {
 		return err
 	}
-	w.segs = append(w.segs, &segment{name: name, f: f, first: first})
-	return w.fs.SyncDir(w.dir)
+	n := binary.LittleEndian.Uint64(nonce[:])
+	_, err = f.WriteAt(appendSegmentHeader(nil, n), 0)
+	if err == nil {
+		err = f.Sync()
+	}
+	if err == nil {
+		err = w.fs.SyncDir(w.dir)
+	}
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	w.segs = append(w.segs, &segment{name: name, f: f, first: first, seed: seedOf(n), size: segHdrLen})
+	return nil
 }
 
 func (w *WAL) Sync() error {
 	if w.err != nil {
 		return w.err
 	}
-	if w.synced == w.LastIndex() {
+	if w.synced == w.last() {
 		return nil
 	}
 	if err := w.active().f.Sync(); err != nil {
 		return w.fail(err)
 	}
-	w.synced = w.LastIndex()
+	w.synced = w.last()
 	return nil
 }
 
@@ -290,12 +382,14 @@ func (w *WAL) fail(err error) error {
 
 func (w *WAL) checkRange(lo, hi uint64) error {
 	switch {
+	case w.err != nil:
+		return w.err
 	case lo > hi:
 		return fmt.Errorf("wal: invalid range [%d, %d)", lo, hi)
-	case lo < w.FirstIndex():
-		return fmt.Errorf("%w: %d < first %d", ErrCompacted, lo, w.FirstIndex())
-	case len(w.segs) == 0 || hi > w.LastIndex()+1:
-		return fmt.Errorf("%w: %d > last %d", ErrUnavailable, hi-1, w.LastIndex())
+	case lo < w.first():
+		return fmt.Errorf("%w: %d < first %d", ErrCompacted, lo, w.first())
+	case len(w.segs) == 0 || hi > w.last()+1:
+		return fmt.Errorf("%w: %d > last %d", ErrUnavailable, hi-1, w.last())
 	}
 	return nil
 }
@@ -304,35 +398,57 @@ func (w *WAL) Term(i uint64) (uint64, error) {
 	if err := w.checkRange(i, i+1); err != nil {
 		return 0, err
 	}
-	seg := w.segs[sort.Search(len(w.segs), func(k int) bool { return w.segs[k].first > i })-1]
+	k, found := slices.BinarySearchFunc(w.segs, i, func(s *segment, i uint64) int { return cmp.Compare(s.first, i) })
+	if !found {
+		k--
+	}
+	seg := w.segs[k]
 	return seg.terms[i-seg.first], nil
 }
 
-func (w *WAL) Entries(lo, hi uint64) ([]Entry, error) {
+func (w *WAL) Entries(lo, hi uint64, maxBytes int64) ([]Entry, error) {
+	if w.err != nil {
+		return nil, w.err
+	}
 	if lo == hi {
 		return nil, nil
 	}
 	if err := w.checkRange(lo, hi); err != nil {
 		return nil, err
 	}
-	ents := make([]Entry, 0, hi-lo)
+	var ents []Entry
+	var size int64
 	for _, seg := range w.segs {
 		from, to := max(lo, seg.first), min(hi, seg.last()+1)
 		if from >= to {
 			continue
 		}
-		start, end := seg.offs[from-seg.first], seg.end(to-seg.first)
-		raw := make([]byte, end-start)
-		if _, err := seg.f.ReadAt(raw, start); err != nil {
-			return nil, err
-		}
-		for off := 0; off < len(raw); {
-			fr, ok := decodeFrame(raw[off:])
-			if !ok || fr.Index != lo+uint64(len(ents)) {
-				return nil, &CorruptError{File: seg.name, Offset: start + int64(off)}
+		a, b, full := from-seg.first, from-seg.first, false
+		for ; b < to-seg.first; b++ {
+			n := seg.end(b+1) - seg.offs[b]
+			if size+n > maxBytes && (len(ents) > 0 || b > a) {
+				full = true
+				break
 			}
-			ents = append(ents, fr.Entry)
-			off += fr.size
+			size += n
+		}
+		if b > a {
+			start := seg.offs[a]
+			raw := make([]byte, seg.end(b)-start)
+			if _, err := seg.f.ReadAt(raw, start); err != nil {
+				return nil, err
+			}
+			for off := 0; off < len(raw); {
+				fr, ok := decodeFrame(raw[off:], seg.seed)
+				if !ok || fr.Index != lo+uint64(len(ents)) {
+					return nil, &CorruptError{File: seg.name, Offset: start + int64(off)}
+				}
+				ents = append(ents, fr.Entry)
+				off += fr.size
+			}
+		}
+		if full {
+			break
 		}
 	}
 	return ents, nil
@@ -342,7 +458,7 @@ func (w *WAL) TruncateAfter(i uint64) error {
 	if w.err != nil {
 		return w.err
 	}
-	if i >= w.LastIndex() {
+	if i >= w.last() {
 		return nil
 	}
 	for seg := w.active(); seg != nil && seg.first > i; seg = w.active() {
@@ -353,7 +469,7 @@ func (w *WAL) TruncateAfter(i uint64) error {
 	}
 	seg := w.active()
 	if seg == nil {
-		w.synced = 0
+		w.synced, w.term = 0, 0
 		return nil
 	}
 	if i < seg.last() {
@@ -367,7 +483,7 @@ func (w *WAL) TruncateAfter(i uint64) error {
 		}
 		seg.offs, seg.terms, seg.size = seg.offs[:keep], seg.terms[:keep], end
 	}
-	w.synced = i
+	w.synced, w.term = i, seg.terms[len(seg.terms)-1]
 	return nil
 }
 
