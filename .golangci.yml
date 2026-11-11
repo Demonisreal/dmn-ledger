@@ -10,7 +10,29 @@ linters:
     - ineffassign
     - unused
     - revive
+    - depguard
   settings:
+    depguard:
+      rules:
+        deterministic:
+          files:
+            - "**/internal/raft/*.go"
+            - "**/internal/sim/*.go"
+            - "**/internal/state/*.go"
+            - "**/internal/replica/*.go"
+            - "**/internal/client/*.go"
+            - "!$test"
+          deny:
+            - pkg: time
+              desc: deterministic core, time comes from ticks
+            - pkg: net
+              desc: deterministic core, no network
+            - pkg: os
+              desc: deterministic core, no file system
+            - pkg: sync
+              desc: deterministic core, single thread
+            - pkg: crypto/rand
+              desc: deterministic core, randomness is passed in
     gosec:
       excludes:
         - G104
