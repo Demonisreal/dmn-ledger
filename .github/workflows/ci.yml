@@ -15,6 +15,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -23,13 +24,26 @@ jobs:
         with:
           go-version-file: go.mod
       - run: test -z "$(gofmt -l .)"
+      - run: go mod tidy -diff
       - run: go vet ./...
       - run: go test ./...
-      - run: go test -short -race ./...
       - run: CGO_ENABLED=0 go build ./...
+
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test -short -race ./...
 
   sim:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,9 +59,20 @@ jobs:
           from=$((1000000 + GITHUB_RUN_NUMBER * 2000))
           echo "first seed $from"
           "$RUNNER_TEMP/sim" -seeds 2000 -from "$from" -profile all
+      - name: crashes only
+        run: '"$RUNNER_TEMP/sim" -seeds 1000 -profile crash'
+      - name: session eviction
+        run: '"$RUNNER_TEMP/sim" -seeds 1000 -profile evict'
+      - name: leader crashes
+        run: '"$RUNNER_TEMP/sim" -seeds 1000 -profile leaders'
+      - name: partitions
+        run: '"$RUNNER_TEMP/sim" -seeds 1000 -profile split'
+      - name: five nodes
+        run: '"$RUNNER_TEMP/sim" -seeds 500 -nodes 5 -profile all'
 
   simbug:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,6 +85,19 @@ jobs:
 
   fuzz:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { pkg: ./internal/state, target: FuzzApply }
+          - { pkg: ./internal/state, target: FuzzApplyRaw }
+          - { pkg: ./internal/state, target: FuzzReadSnapshot }
+          - { pkg: ./internal/raft, target: FuzzStep }
+          - { pkg: ./internal/raft, target: FuzzSchedules }
+          - { pkg: ./internal/wal, target: FuzzDecodeFrame }
+          - { pkg: ./internal/wal, target: FuzzOpen }
+          - { pkg: ./internal/replica, target: FuzzLoadSnapshot }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,17 +105,16 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: go test -run '^$' -fuzz '^FuzzApply$' -fuzztime 30s ./internal/state/
-      - run: go test -run '^$' -fuzz '^FuzzApplyRaw$' -fuzztime 30s ./internal/state/
-      - run: go test -run '^$' -fuzz '^FuzzReadSnapshot$' -fuzztime 30s ./internal/state/
+      - run: go test -run '^$' -fuzz "^${{ matrix.target }}\$" -fuzztime 30s "${{ matrix.pkg }}"
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: fuzz-findings
-          path: internal/state/testdata/fuzz
+          name: fuzz-findings-${{ matrix.target }}
+          path: ${{ matrix.pkg }}/testdata/fuzz
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,9 +125,14 @@ jobs:
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+          args: --build-tags simbug
 
   vuln:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -98,4 +140,4 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
