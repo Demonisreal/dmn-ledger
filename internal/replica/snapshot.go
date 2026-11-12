@@ -116,6 +116,7 @@ func (n *Node) load(r io.Reader) error {
 	}
 	n.sm, n.sessions = sm, sessions
 	n.applied, n.appliedTerm, n.hash = head.index, head.term, head.hash
+	n.anchorTick = n.ticks
 	return nil
 }
 
@@ -153,7 +154,6 @@ func (n *Node) install(s raft.Snapshot) error {
 		return err
 	}
 	n.snap = s
-	n.answer(s.Index, 0, client.Reply{}, false)
 	return nil
 }
 

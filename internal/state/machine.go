@@ -99,7 +99,7 @@ func (m *Machine) Apply(op Op, ts uint64, body []byte, dst []Failure) ([]Failure
 	if len(body)%size != 0 {
 		return dst, fmt.Errorf("%w: %d bytes is not a multiple of %d", ErrMalformedBatch, len(body), size)
 	}
-	start := max(ts, m.last+1)
+	start := StartTime(ts, m.last)
 	if ts >= tsLimit || start+max(uint64(len(body)/size), 1) > tsLimit {
 		return dst, fmt.Errorf("%w: timestamp %d out of range, last %d", ErrMalformedBatch, ts, m.last)
 	}
@@ -110,6 +110,10 @@ func (m *Machine) Apply(op Op, ts uint64, body []byte, dst []Failure) ([]Failure
 		return m.createAccounts(start, body, dst), nil
 	}
 	return m.createTransfers(start, body, dst), nil
+}
+
+func StartTime(ts, last uint64) uint64 {
+	return max(ts, last+1)
 }
 
 func (m *Machine) createAccounts(ts uint64, body []byte, dst []Failure) []Failure {

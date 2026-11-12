@@ -350,3 +350,90 @@ func TestClockJumpIsBounded(t *testing.T) {
 		t.Fatalf("clock behind: time %d after %d", back.Time, r.Time)
 	}
 }
+
+func TestClockSlackDoesNotGrowWithUptime(t *testing.T) {
+	tn := newTestNet(t, 1, nil)
+	tn.elect(0)
+	c := tn.register(0, 1)
+	for i := range uint64(1000) {
+		tn.tick(0)
+		if i%10 == 0 {
+			ok(t, c.do(client.CreateAccounts, accounts(10+i)))
+		}
+	}
+	prev := ok(t, c.do(client.CreateAccounts, accounts(1)))
+	for range 5 {
+		tn.tick(0)
+	}
+	tn.clocks[0] += 3600 * 1_000_000_000
+	r := ok(t, c.do(client.CreateAccounts, accounts(2)))
+	if jump := r.Time - prev.Time; jump > 6*tn.cfgs[0].ClockStep {
+		t.Fatalf("time moved %d ns in 5 ticks after %d ticks of uptime", jump, tn.nodes[0].ticks)
+	}
+}
+
+func TestRestartedLeaderStampsAfterItsOwnEntry(t *testing.T) {
+	tn := newTestNet(t, 1, nil)
+	tn.elect(0)
+	c := tn.register(0, 1)
+	first := ok(t, c.do(client.CreateAccounts, accounts(1)))
+	tn.crash(0)
+	tn.open(0)
+	tn.clocks[0] += 3600 * 1_000_000_000
+	n := tn.nodes[0]
+	for n.Status().Role != raft.Leader {
+		n.Tick()
+		if n.Status().Role != raft.Leader {
+			tn.run(0)
+		}
+	}
+	req := c.request(client.CreateAccounts, accounts(2))
+	if r := tn.call(0, req); r.Status != client.Busy {
+		t.Fatalf("leader with an unapplied log: %+v, want Busy", r)
+	}
+	r := ok(t, tn.call(0, req))
+	if r.Time-first.Time > 4*tn.cfgs[0].ClockStep {
+		t.Fatalf("first stamp after the restart moved time by %d ns", r.Time-first.Time)
+	}
+}
+
+func TestClockOutOfRangeIsRefused(t *testing.T) {
+	for _, clock := range []uint64{1<<63 - 1, 1 << 63, stampLimit} {
+		tn := newTestNet(t, 1, nil)
+		tn.elect(0)
+		c := tn.register(0, 1)
+		last := tn.nodes[0].Status().Last
+		tn.clocks[0] = clock
+		req := c.request(client.CreateAccounts, accounts(1))
+		if r := tn.call(0, req); r.Status != client.BadClock {
+			t.Fatalf("clock %d: %+v, want BadClock", clock, r)
+		}
+		if got := tn.nodes[0].Status().Last; got != last {
+			t.Fatalf("clock %d: log grew from %d to %d", clock, last, got)
+		}
+		tn.clocks[0] = start
+		ok(t, tn.call(0, req))
+		tn.crash(0)
+		tn.open(0)
+		tn.elect(0)
+		ok(t, c.do(client.CreateAccounts, accounts(2)))
+	}
+}
+
+func TestBrokenEntryIsStoredAsMalformed(t *testing.T) {
+	tn := newTestNet(t, 1, nil)
+	tn.elect(0)
+	c := tn.register(0, 1)
+	req := c.request(client.CreateAccounts, accounts(1)[:95])
+	if _, err := tn.nodes[0].raft.Propose(kindRequest, appendRequest(req, start)); err != nil {
+		t.Fatal(err)
+	}
+	tn.run(0)
+	req.Body = accounts(1)
+	if r := tn.call(0, req); r.Status != client.Malformed {
+		t.Fatalf("retry of a broken entry: %+v, want the stored Malformed", r)
+	}
+	if r := ok(t, c.do(client.LookupAccounts, ids(1))); len(r.Body) != 0 {
+		t.Fatalf("broken entry created %d bytes of accounts", len(r.Body))
+	}
+}

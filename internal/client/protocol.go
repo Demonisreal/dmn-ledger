@@ -46,6 +46,7 @@ const (
 	Malformed
 	SessionUnknown
 	Stale
+	BadClock
 )
 
 var statusNames = [...]string{
@@ -55,6 +56,7 @@ var statusNames = [...]string{
 	Malformed:      "Malformed",
 	SessionUnknown: "SessionUnknown",
 	Stale:          "Stale",
+	BadClock:       "BadClock",
 }
 
 func (s Status) String() string {

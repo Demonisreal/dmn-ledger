@@ -65,32 +65,22 @@ func (n *Node) apply(e wal.Entry) {
 	n.applied, n.appliedTerm = e.Index, e.Term
 
 	var r client.Reply
-	ok := false
 	switch uint8(e.Kind) {
 	case kindRegister:
-		r, ok = n.register(e.Index, e.Body)
+		r = n.register(e.Index, e.Body)
 	case kindRequest:
-		r, ok = n.request(e.Index, e.Body)
+		r = n.request(e.Index, e.Body)
 	}
-	n.answer(e.Index, e.Term, r, ok)
-}
-
-func (n *Node) answer(index, term uint64, r client.Reply, ok bool) {
-	for len(n.waiting) > 0 && n.waiting[0].index <= index {
-		p := n.waiting[0]
+	if len(n.waiting) > 0 && n.waiting[0].index == e.Index {
 		n.waiting = n.waiting[1:]
-		if ok && p.index == index && p.term == term {
-			r.Leader = n.cfg.ID
-			n.replies = append(n.replies, r)
-		} else {
-			n.refuse(p.req, client.NotLeader)
-		}
+		r.Leader = n.cfg.ID
+		n.replies = append(n.replies, r)
 	}
 }
 
-func (n *Node) register(index uint64, body []byte) (client.Reply, bool) {
+func (n *Node) register(index uint64, body []byte) client.Reply {
 	if len(body) != idSize {
-		return client.Reply{}, false
+		return client.Reply{}
 	}
 	id := u128.FromBytes(body)
 	s := n.sessions[id]
@@ -101,7 +91,7 @@ func (n *Node) register(index uint64, body []byte) (client.Reply, bool) {
 		s = &session{since: index, access: index}
 		n.sessions[id] = s
 	}
-	return client.Reply{Client: id, Op: client.Register, Status: client.OK, Body: binary.BigEndian.AppendUint64(nil, s.since)}, true
+	return client.Reply{Client: id, Op: client.Register, Status: client.OK, Body: binary.BigEndian.AppendUint64(nil, s.since)}
 }
 
 func (n *Node) evict() {
@@ -115,9 +105,9 @@ func (n *Node) evict() {
 	delete(n.sessions, victim)
 }
 
-func (n *Node) request(index uint64, body []byte) (client.Reply, bool) {
+func (n *Node) request(index uint64, body []byte) client.Reply {
 	if len(body) < requestHead {
-		return client.Reply{}, false
+		return client.Reply{}
 	}
 	r := client.Reply{
 		Client: u128.FromBytes(body),
@@ -137,7 +127,7 @@ func (n *Node) request(index uint64, body []byte) (client.Reply, bool) {
 	default:
 		r.Status = client.Stale
 	}
-	return r, true
+	return r
 }
 
 func (n *Node) execute(r client.Reply, ts uint64, recs []byte) client.Reply {
@@ -151,13 +141,14 @@ func (n *Node) execute(r client.Reply, ts uint64, recs []byte) client.Reply {
 		r.Status = client.Malformed
 		return r
 	}
-	at := max(ts, n.sm.Last()+1)
+	at := state.StartTime(ts, n.sm.Last())
 	fails, err := n.sm.Apply(op, ts, recs, n.fails[:0])
 	n.fails = fails
 	if err != nil {
 		r.Status = client.Malformed
 		return r
 	}
+	n.anchorTick = n.ticks
 	r.Status, r.Time = client.OK, at
 	for _, f := range fails {
 		r.Body = binary.BigEndian.AppendUint32(r.Body, uint32(f.Index)) //nolint:gosec

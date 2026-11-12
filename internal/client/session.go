@@ -43,6 +43,9 @@ type Session struct {
 }
 
 func New(id u128.Uint128, nodes []uint64, retryTicks int) *Session {
+	if len(nodes) == 0 || retryTicks < 1 {
+		panic("client: New needs at least one node and retryTicks of at least 1")
+	}
 	s := &Session{id: id, nodes: slices.Clone(nodes), retry: retryTicks}
 	s.target = int(id.Lo % uint64(len(nodes))) //nolint:gosec
 	s.start(Request{Client: id, Op: Register})
@@ -106,7 +109,7 @@ func (s *Session) Step(r Reply) {
 			s.ticks, s.due, s.hop = 0, 1, false
 		}
 		return
-	case Busy:
+	case Busy, BadClock:
 		s.ticks, s.due, s.hop = 0, busyTicks, false
 		return
 	case SessionUnknown:

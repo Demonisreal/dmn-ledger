@@ -14,9 +14,12 @@ Only the leader reads a clock, once, when it proposes a request. The timestamp t
 entry, and every replica applies the entry with that timestamp. The state machine uses
 `max(ts, last + 1)`, so time never goes backwards and every batch has its own instant.
 
-The leader bounds its own clock by its tick count: `ts = min(clock, anchor + (ticks + 1) *
-ClockStep)`, where the anchor is the newest ledger time it has applied. A clock that jumps ahead
-moves ledger time by at most `ClockStep` per tick. A clock that falls behind only slows it down.
+The leader bounds its own clock by its tick count: `ts = min(clock, last + (ticks since last + 1) *
+ClockStep)`, where `last` is the newest ledger time it has applied, counted from the tick it was
+applied in. A leader stamps only after applying an entry of its own term, so `last` is the newest
+time of the cluster. A clock that jumps ahead moves ledger time by at most `ClockStep` per tick since
+the last write. A clock that falls behind only slows it down. Stamps at or above 2^62 are refused
+with `BadClock` before they reach the log.
 
 ## Consequences
 
@@ -24,8 +27,12 @@ moves ledger time by at most `ClockStep` per tick. A clock that falls behind onl
   diverge because of time.
 - The planted bug B12 (apply with the replica's own clock) is found by the end check S7 in the
   first seed: the replicas disagree on the digest.
-- A leader that starts after a long pause stamps behind the real clock until its tick count
-  catches up. Deadlines then expire late, never early.
+- A leader that restarts into a long pause without writes stamps behind the real clock until its
+  tick count catches up. Deadlines then expire late.
+- After a pause `T` without writes, a jump may put ledger time `(ClockStep/Tick - 1) * T` ahead of
+  real time, and deadlines expire that much early.
+- The very first write of a cluster takes the leader's clock as it is: one clock is trusted once.
+  The window around the majority clock (below) would close this.
 - The simulator gives each node an offset, jumps forwards and backwards and different tick speeds
   (profile `clock`).
 

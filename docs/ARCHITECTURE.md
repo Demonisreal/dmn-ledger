@@ -163,23 +163,34 @@ One client request is one entry. Reads never reach the log.
 - A node that is not leader answers `NotLeader` with the leader it knows, 0 if none. A request over
   1 MiB, with an unknown op or with a body that is not a whole number of records is `Malformed` and
   writes nothing. A full core (`ErrBusy`) answers `Busy`.
-- A write is proposed and remembered as (index, term). When an entry of that term is applied at that
-  index, the reply goes out. When the node stops being leader, every waiting write gets
+- A leader stamps writes only after it has applied an entry of its own term; before that a write
+  gets `Busy`. A stamp outside the valid range (see Timestamps) gets `BadClock` and writes nothing.
+- A write is proposed and remembered by its index. When the entry at that index is applied, the
+  reply goes out. While a node stays leader, every entry after its own empty entry is one of its own
+  proposals, so the term needs no check. When the node stops being leader, every waiting write gets
   `NotLeader`. The client asks again elsewhere, and its session makes sure nothing applies twice.
-- Reads are collected; each `Process` issues at most one `ReadIndex` for all of them and answers
-  them from the state once `applied` reaches the confirmed index. `ErrNotReady` answers `Busy`.
-  Reads need no session and are not stored.
+- Reads are collected; each `Process` issues at most one `ReadIndex` for all of them. A read
+  appears in `Ready.Reads` with `Commit` at or above its index, and that commit is applied before
+  the reads of the same round, so a confirmed read is answered at once. A tag the node already
+  failed with `NotLeader` is skipped. `ErrNotReady` answers `Busy`. Reads need no session and are
+  not stored.
 
 ### Timestamps
 
-The leader stamps each request entry with `ts = min(Clock(), anchor + (ticks since anchor + 1) *
-ClockStep)`. The anchor is the newest ledger time the node has applied; it moves whenever that time
-reaches the bound. The very first stamp of a cluster takes the clock as it is. The state machine
-uses `max(ts, last + 1)`, so a clock that falls behind only slows ledger time down, and a clock that
-jumps ahead moves ledger time by at most `ClockStep` per tick. Replicas never read a clock: time
-comes from the log, so it cannot make them diverge. A leader that starts after a long pause without
-writes stamps behind the clock until its tick count catches up; deadlines then expire late, never
-early.
+The leader stamps each request entry with `ts = min(Clock(), last + (ticks since last + 1) *
+ClockStep)`, where `last` is the newest ledger time the node has applied and "ticks since last"
+counts from the moment it applied it, on every node, also after a snapshot was loaded. Because the
+leader stamps only after applying an entry of its own term, `last` is the newest time of the whole
+cluster. The state machine uses `max(ts, last + 1)`, so a clock that falls behind only slows ledger
+time down, and a clock that jumps ahead moves ledger time by at most `ClockStep` per tick since the
+last write, plus one step. With `ClockStep` above the longest real tick, an honest clock passes the
+bound unchanged.
+
+Only the first write of a cluster (`last == 0`) takes the clock as it is: one clock is trusted once.
+A stamp at or above 2^62 (the year 2116) is a broken clock and is refused with `BadClock` before it
+reaches the log; this leaves the state machine room below its limit of 2^63, so no clock value can
+stop the ledger from accepting writes. Replicas never read a clock: time comes from the log, so it
+cannot make them diverge.
 
 ### Applying
 
@@ -191,8 +202,10 @@ Every node applies the same entries in the same way, and a broken body never pan
   of the register entry that created it.
 - Request: an unknown client or a wrong session number gives `SessionUnknown`. `number == last`
   gives the stored reply again, `number < last` gives `Stale`. Otherwise the batch goes to the state
-  machine, and the reply (`Time = max(ts, last + 1)` and the failures) is stored in the session.
-  A batch the state machine rejects is `Malformed`, stored the same way.
+  machine, and the reply is stored in the session: `Time` is the batch start
+  `state.StartTime(ts, last) = max(ts, last + 1)`, the body lists the failures. A batch the state
+  machine rejects is `Malformed`, stored the same way. A leader never proposes such a batch; the
+  rule keeps every node deterministic on an entry it did not check itself.
 
 ### Exactly once
 
@@ -209,8 +222,9 @@ restart and resubmit.
   the bytes of `state.WriteSnapshot`. The same state gives the same bytes; `Digest()` is SHA-256 over
   them.
 - A node takes one after `SnapshotEvery` applied entries, at the end of `Process`, and then compacts
-  the WAL before the previous snapshot. The log always reaches back to the older of the two kept
-  snapshots.
+  the WAL before the previous snapshot. The log reaches back to the older of the two kept
+  snapshots, except after installing a snapshot from the leader: then the log is empty until the
+  node takes its next own snapshot.
 - Receiving: `Receive` keeps the payload of a `MsgSnap` by index and term. If the core asks to
   install it, the node checks the header against `Ready.Snapshot`, stores it with
   `wal.SaveSnapshot`, loads it back from disk and only then empties the log from the back. A crash in
@@ -231,9 +245,10 @@ returns the requests to send and `Result` the final reply of the request that ju
 - A session starts with `Register` (number 0) and keeps the session number from its reply. After
   that one request is in flight at a time, and its number grows by one for every request, reads
   included, so a late reply never matches a later question.
+- `New` panics without nodes or with `retryTicks` below 1; both are programming errors.
 - Replies with another number are dropped. `NotLeader` switches to the hinted node, or the next one,
-  and resends at most once per tick. `Busy` waits two ticks. No reply within `retryTicks` moves to
-  the next node with the same request and the same number.
+  and resends at most once per tick. `Busy` and `BadClock` wait two ticks on the same node. No reply
+  within `retryTicks` moves to the next node with the same request and the same number.
 - `SessionUnknown` ends the session with `ErrEvicted`. The outcome of the request in flight is then
   unknown; the session never registers again on its own, because that would break exactly once.
 - Client IDs are random and new for every session. Reusing one would let delayed requests of the old

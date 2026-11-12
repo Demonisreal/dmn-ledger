@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"path/filepath"
+	"slices"
 
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
@@ -17,7 +18,10 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/wal"
 )
 
-const applyBytes = 4 << 20
+const (
+	applyBytes = 4 << 20
+	stampLimit = 1 << 62
+)
 
 type Config struct {
 	ID            uint64
@@ -58,14 +62,13 @@ type Status struct {
 }
 
 type proposal struct {
-	index, term uint64
-	req         client.Request
+	index uint64
+	req   client.Request
 }
 
 type readBatch struct {
-	tag, term, index uint64
-	confirmed        bool
-	reqs             []client.Request
+	tag  uint64
+	reqs []client.Request
 }
 
 type Node struct {
@@ -86,7 +89,6 @@ type Node struct {
 	ticks      uint64
 	leading    uint64
 	lead       uint64
-	anchor     uint64
 	anchorTick uint64
 
 	inbox    []client.Request
@@ -135,7 +137,6 @@ func Open(cfg Config) (_ *Node, err error) {
 		return nil, fmt.Errorf("replica: snapshot file %d/%d holds %d/%d", meta.Index, meta.Term, n.applied, n.appliedTerm)
 	}
 	n.snap = raft.Snapshot(meta)
-	n.anchor = n.sm.Last()
 
 	n.log, err = wal.Open(cfg.FS, filepath.Join(cfg.Dir, "wal"), wal.Options{SegmentSize: cfg.SegmentSize, Nonces: cfg.Nonces})
 	if err != nil {
@@ -295,17 +296,12 @@ func (n *Node) follow() {
 		n.refuse(p.req, client.NotLeader)
 	}
 	n.waiting = nil
-	kept := n.reads[:0]
 	for _, b := range n.reads {
-		if b.confirmed {
-			kept = append(kept, b)
-			continue
-		}
 		for _, req := range b.reqs {
 			n.refuse(req, client.NotLeader)
 		}
 	}
-	n.reads = kept
+	n.reads = nil
 	n.leading = 0
 	if st.Role == raft.Leader {
 		n.leading = st.Term
@@ -335,7 +331,16 @@ func (n *Node) accept() error {
 func (n *Node) propose(req client.Request) error {
 	kind, body := kindRegister, req.Client.AppendBytes(nil)
 	if req.Op != client.Register {
-		kind, body = kindRequest, appendRequest(req, n.stamp())
+		if n.appliedTerm != n.leading {
+			n.refuse(req, client.Busy)
+			return nil
+		}
+		ts := n.stamp()
+		if ts >= stampLimit {
+			n.refuse(req, client.BadClock)
+			return nil
+		}
+		kind, body = kindRequest, appendRequest(req, ts)
 	}
 	index, err := n.raft.Propose(kind, body)
 	switch {
@@ -346,7 +351,7 @@ func (n *Node) propose(req client.Request) error {
 		return err
 	}
 	req.Body = nil
-	n.waiting = append(n.waiting, proposal{index: index, term: n.leading, req: req})
+	n.waiting = append(n.waiting, proposal{index: index, req: req})
 	return nil
 }
 
@@ -355,12 +360,7 @@ func (n *Node) stamp() uint64 {
 	if last == 0 {
 		return clock
 	}
-	bound := n.anchor + (n.ticks-n.anchorTick+1)*n.cfg.ClockStep
-	if last >= bound {
-		n.anchor, n.anchorTick = last, n.ticks
-		bound = last + n.cfg.ClockStep
-	}
-	return min(clock, bound)
+	return min(clock, last+(n.ticks-n.anchorTick+1)*n.cfg.ClockStep)
 }
 
 func (n *Node) readIndex() error {
@@ -380,29 +380,21 @@ func (n *Node) readIndex() error {
 	case err != nil:
 		return err
 	}
-	n.reads = append(n.reads, readBatch{tag: n.tag, term: n.leading, reqs: reqs})
+	n.reads = append(n.reads, readBatch{tag: n.tag, reqs: reqs})
 	return nil
 }
 
 func (n *Node) confirm(reads []raft.Read) {
 	for _, rd := range reads {
-		for i := range n.reads {
-			if n.reads[i].tag == rd.Tag {
-				n.reads[i].confirmed, n.reads[i].index = true, rd.Index
-			}
-		}
-	}
-	kept := n.reads[:0]
-	for _, b := range n.reads {
-		if !b.confirmed || n.applied < b.index {
-			kept = append(kept, b)
+		i := slices.IndexFunc(n.reads, func(b readBatch) bool { return b.tag == rd.Tag })
+		if i < 0 {
 			continue
 		}
-		for _, req := range b.reqs {
+		for _, req := range n.reads[i].reqs {
 			n.replies = append(n.replies, n.lookup(req))
 		}
+		n.reads = slices.Delete(n.reads, i, i+1)
 	}
-	n.reads = kept
 }
 
 func (n *Node) refuse(req client.Request, st client.Status) {

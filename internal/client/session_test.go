@@ -178,3 +178,34 @@ func TestSubmitRejectsRegister(t *testing.T) {
 		}
 	}
 }
+
+func TestNewRejectsBadArguments(t *testing.T) {
+	for _, tc := range []struct {
+		nodes []uint64
+		retry int
+	}{{nil, 10}, {nodes, 0}} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("New(%v, %d) did not panic", tc.nodes, tc.retry)
+				}
+			}()
+			New(alice, tc.nodes, tc.retry)
+		}()
+	}
+}
+
+func TestBadClockWaitsLikeBusy(t *testing.T) {
+	s := registered(t)
+	m := submit(t, s, CreateTransfers)
+	s.Step(Reply{Client: alice, Number: m.Request.Number, Status: BadClock})
+	if _, ok := s.Result(); ok {
+		t.Fatal("BadClock ended the request")
+	}
+	for range busyTicks {
+		s.Tick()
+	}
+	if out := s.Outbox(); len(out) != 1 || out[0].To != m.To || out[0].Request.Number != m.Request.Number {
+		t.Fatalf("after BadClock: %+v, want the same request to the same node", out)
+	}
+}
