@@ -128,7 +128,7 @@ func Open(cfg Config) (_ *Node, err error) {
 		}
 	}()
 
-	meta, err := wal.LoadSnapshot(cfg.FS, n.snapDir(), n.load)
+	meta, _, err := wal.LoadSnapshot(cfg.FS, n.snapDir(), n.load)
 	switch {
 	case errors.Is(err, wal.ErrNoSnapshot):
 		n.sm = state.New(0, 0)

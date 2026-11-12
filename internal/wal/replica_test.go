@@ -15,17 +15,21 @@ const (
 	snapsDir = "/data/snap"
 )
 
+type vote struct {
+	term, node uint64
+}
+
 type replica struct {
 	o          Options
 	terms      map[uint64]uint64
 	acked      uint64
-	hs, voting HardState
+	hs, voting vote
 	snap, next SnapshotMeta
 	install    bool
 }
 
 type started struct {
-	hs          HardState
+	meta        Meta
 	snap        SnapshotMeta
 	first, last uint64
 	emptied     bool
@@ -33,25 +37,35 @@ type started struct {
 
 func (r *replica) start(fsys disk.FS) (started, *WAL, error) {
 	var st started
-	h, hs, err := OpenHardState(fsys, nodeDir)
+	m, meta, err := OpenMeta(fsys, nodeDir)
 	if err != nil {
-		return st, nil, fmt.Errorf("hard state: %w", err)
+		return st, nil, fmt.Errorf("meta: %w", err)
 	}
-	_ = h.Close()
-	st.hs = hs
-	st.snap, err = LoadSnapshot(fsys, snapsDir, func(rd io.Reader) error {
+	defer func() { _ = m.Close() }()
+	st.meta = meta
+	st.snap, _, err = LoadSnapshot(fsys, snapsDir, func(rd io.Reader) error {
 		_, err := io.Copy(io.Discard, rd)
 		return err
 	})
 	if err != nil && !errors.Is(err, ErrNoSnapshot) {
 		return st, nil, fmt.Errorf("snapshot: %w", err)
 	}
-	w, err := Open(fsys, dir, r.o)
+	o := r.o
+	o.Sealed, o.Strict = meta.Sealed, !m.Intact()
+	w, err := Open(fsys, dir, o)
 	if err != nil {
 		return st, nil, err
 	}
 	st.first, _ = w.FirstIndex()
 	st.last, _ = w.LastIndex()
+	if meta.Sealed > st.snap.Index && (st.last == 0 || st.first > st.snap.Index+1 || st.last < meta.Sealed) {
+		_ = w.Close()
+		return st, nil, fmt.Errorf("sealed %d, snapshot %d, log [%d, %d]: damage without a damaged disk", meta.Sealed, st.snap.Index, st.first, st.last)
+	}
+	if err := m.Settle(); err != nil {
+		_ = w.Close()
+		return st, nil, err
+	}
 	switch {
 	case st.last == 0:
 	case st.last < st.snap.Index:
@@ -73,8 +87,8 @@ func (r *replica) check(c *disk.Sim) error {
 		return err
 	}
 	defer func() { _ = w.Close() }()
-	if st.hs != r.hs && st.hs != r.voting {
-		return fmt.Errorf("hard state %+v, want %+v or %+v", st.hs, r.hs, r.voting)
+	if got := (vote{st.meta.Term, st.meta.Vote}); got != r.hs && got != r.voting {
+		return fmt.Errorf("vote %+v, want %+v or %+v", got, r.hs, r.voting)
 	}
 	if st.snap != r.snap && st.snap != r.next {
 		return fmt.Errorf("snapshot %+v, want %+v or %+v", st.snap, r.snap, r.next)
@@ -82,6 +96,9 @@ func (r *replica) check(c *disk.Sim) error {
 	need := r.acked
 	if r.install && st.snap == r.next {
 		need = min(need, st.snap.Index)
+	}
+	if st.meta.Sealed < need {
+		return fmt.Errorf("acked up to %d, sealed only up to %d", need, st.meta.Sealed)
 	}
 	for i := st.snap.Index + 1; i <= need; i++ {
 		if st.emptied || i < st.first || i > st.last {
@@ -135,21 +152,21 @@ func replicaRun(t *testing.T, seed uint64, steps int) int {
 		}
 	}}
 
-	h, _, err := OpenHardState(sim, nodeDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = h.Close()
-	h, _, err = OpenHardState(fsys, nodeDir)
+	m, _, err := OpenMeta(fsys, nodeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	w := mustOpen(t, fsys, r.o)
-	vote := func() {
-		r.voting = HardState{Term: r.hs.Term + 1, Vote: rng.Uint64N(3)}
-		if err := h.Save(r.voting); err != nil {
-			t.Fatal(err)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("seed %d step %d: %v", seed, step, err)
 		}
+	}
+	must(m.Settle())
+	vote := func() {
+		r.voting = vote{r.hs.term + 1, rng.Uint64N(3)}
+		must(m.Save(r.voting.term, r.voting.node, false))
 		r.hs = r.voting
 	}
 	vote()
@@ -158,11 +175,12 @@ func replicaRun(t *testing.T, seed uint64, steps int) int {
 		switch k := rng.IntN(100); {
 		case k < 50:
 			n := 1 + rng.Uint64N(5)
-			mustAppend(t, w, span(last+1, last+1+n, r.hs.Term)...)
+			mustAppend(t, w, span(last+1, last+1+n, r.hs.term)...)
 			for i := last + 1; i <= last+n; i++ {
-				r.terms[i] = r.hs.Term
+				r.terms[i] = r.hs.term
 			}
 			last += n
+			must(m.Seal(last))
 			r.acked = last
 		case k < 60:
 			vote()
@@ -170,6 +188,9 @@ func replicaRun(t *testing.T, seed uint64, steps int) int {
 			i := r.snap.Index + rng.Uint64N(last-r.snap.Index+1)
 			vote()
 			r.acked = min(r.acked, i)
+			if i < m.Sealed() {
+				must(m.Seal(i))
+			}
 			if err := w.TruncateAfter(i); err != nil {
 				t.Fatal(err)
 			}
@@ -194,10 +215,11 @@ func replicaRun(t *testing.T, seed uint64, steps int) int {
 			if rng.IntN(2) == 0 {
 				s = last + 1 + rng.Uint64N(20)
 			}
-			r.next, r.install = SnapshotMeta{Index: s, Term: r.hs.Term}, true
+			r.next, r.install = SnapshotMeta{Index: s, Term: r.hs.term}, true
 			if err := saveSnapIn(fsys, r.next); err != nil {
 				t.Fatal(err)
 			}
+			must(m.Seal(s))
 			r.snap, r.acked = r.next, s
 			clear(r.terms)
 			if err := w.TruncateAfter(0); err != nil {
@@ -208,7 +230,7 @@ func replicaRun(t *testing.T, seed uint64, steps int) int {
 		}
 	}
 	_ = w.Close()
-	_ = h.Close()
+	_ = m.Close()
 	return points
 }
 

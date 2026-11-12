@@ -131,28 +131,41 @@ func pruneSnapshots(fsys disk.FS, dir string) error {
 	return fsys.SyncDir(dir)
 }
 
-func LoadSnapshot(fsys disk.FS, dir string, read func(io.Reader) error) (SnapshotMeta, error) {
+func LoadSnapshot(fsys disk.FS, dir string, read func(io.Reader) error) (SnapshotMeta, []SnapshotMeta, error) {
 	if err := fsys.MkdirAll(dir); err != nil {
-		return SnapshotMeta{}, err
+		return SnapshotMeta{}, nil, err
 	}
 	names, err := fsys.List(dir)
 	if err != nil {
-		return SnapshotMeta{}, err
+		return SnapshotMeta{}, nil, err
 	}
 	if err := fsys.SyncDir(dir); err != nil {
-		return SnapshotMeta{}, err
+		return SnapshotMeta{}, nil, err
 	}
+	var broken []SnapshotMeta
 	for i := len(names) - 1; i >= 0; i-- {
 		meta, ok := parseSnapshotName(names[i])
 		if !ok {
 			continue
 		}
-		if err := ReadSnapshot(fsys, dir, meta, read); err != nil {
-			return SnapshotMeta{}, err
+		err := ReadSnapshot(fsys, dir, meta, read)
+		if errors.Is(err, ErrCorrupt) {
+			broken = append(broken, meta)
+			continue
 		}
-		return meta, nil
+		if err != nil {
+			return SnapshotMeta{}, nil, err
+		}
+		return meta, broken, nil
 	}
-	return SnapshotMeta{}, ErrNoSnapshot
+	return SnapshotMeta{}, broken, ErrNoSnapshot
+}
+
+func RemoveSnapshot(fsys disk.FS, dir string, meta SnapshotMeta) error {
+	if err := fsys.Remove(filepath.Join(dir, snapshotName(meta))); err != nil {
+		return err
+	}
+	return fsys.SyncDir(dir)
 }
 
 func ReadSnapshot(fsys disk.FS, dir string, meta SnapshotMeta, read func(io.Reader) error) error {
@@ -181,8 +194,12 @@ func ReadSnapshot(fsys disk.FS, dir string, meta SnapshotMeta, read func(io.Read
 	if _, err := f.ReadAt(ftr[:], bodyLen); err != nil {
 		return err
 	}
-	if ftr != snapshotFooter(meta, h.Sum32()) {
+	held := SnapshotMeta{Index: binary.LittleEndian.Uint64(ftr[0:]), Term: binary.LittleEndian.Uint64(ftr[8:])}
+	if ftr != snapshotFooter(held, h.Sum32()) {
 		return &CorruptError{File: path, Offset: bodyLen}
+	}
+	if held != meta {
+		return fmt.Errorf("wal: snapshot %s holds %d/%d", path, held.Index, held.Term)
 	}
 	return read(io.NewSectionReader(f, 0, bodyLen))
 }

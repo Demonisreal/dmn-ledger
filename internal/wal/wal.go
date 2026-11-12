@@ -23,7 +23,7 @@ const (
 
 var (
 	ErrCorrupt     = errors.New("wal: corrupt")
-	ErrVersion     = errors.New("wal: unknown segment version")
+	ErrVersion     = errors.New("wal: unknown format version")
 	ErrCompacted   = errors.New("wal: index compacted")
 	ErrUnavailable = errors.New("wal: index unavailable")
 	ErrOutOfOrder  = errors.New("wal: entry out of order")
@@ -47,6 +47,9 @@ func (e *CorruptError) Is(target error) bool {
 type Options struct {
 	SegmentSize int64
 	Nonces      io.Reader
+	Sealed      uint64
+	Strict      bool
+	Salvage     bool
 }
 
 type WAL struct {
@@ -129,14 +132,18 @@ func Open(fsys disk.FS, dir string, opts Options) (_ *WAL, err error) {
 	if err := w.openSegments(); err != nil {
 		return nil, err
 	}
-	for i := range w.segs {
-		if err := w.recoverSegment(i); err != nil {
+	var raw []byte
+	for i := 0; i < len(w.segs); i++ {
+		raw, err = w.readSegment(i, opts)
+		if opts.Salvage && errors.Is(err, ErrCorrupt) {
+			err = w.removeAfter(i)
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
-	if seg := w.active(); seg != nil && len(seg.terms) == 0 {
-		w.segs = w.segs[:len(w.segs)-1]
-		if err := w.removeSegment(seg); err != nil {
+	if len(w.segs) > 0 {
+		if err := w.recoverTail(raw); err != nil {
 			return nil, err
 		}
 	}
@@ -174,38 +181,59 @@ func (w *WAL) openSegments() error {
 	return nil
 }
 
-func (w *WAL) recoverSegment(i int) error {
+func (w *WAL) readSegment(i int, opts Options) ([]byte, error) {
 	seg, tail := w.segs[i], i == len(w.segs)-1
 	size, err := seg.f.Size()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if size > maxSegmentFile {
-		return &CorruptError{File: seg.name, Offset: maxSegmentFile}
+		return nil, &CorruptError{File: seg.name, Offset: maxSegmentFile}
 	}
 	raw := make([]byte, size)
 	if _, err := seg.f.ReadAt(raw, 0); err != nil {
-		return err
+		return nil, err
 	}
 	if err := seg.readHeader(raw); err != nil {
-		return err
+		return raw, err
 	}
 	if i > 0 && seg.first != w.segs[i-1].last()+1 {
-		return &CorruptError{File: seg.name, Offset: 0}
+		return raw, &CorruptError{File: seg.name, Offset: 0}
 	}
 	if w.term, err = seg.scan(raw, w.term); err != nil {
-		return err
+		return raw, err
 	}
-	if seg.size < size {
-		if !tail || provenSynced(raw[seg.size:], seg.last()+1, seg.seed) {
-			return &CorruptError{File: seg.name, Offset: seg.size}
+	if seg.size == size {
+		return raw, nil
+	}
+	next := seg.last() + 1
+	if !tail || opts.Strict || next <= opts.Sealed || provenSynced(raw[seg.size:], next, seg.seed) {
+		return raw, &CorruptError{File: seg.name, Offset: seg.size}
+	}
+	return raw, nil
+}
+
+func (w *WAL) removeAfter(i int) error {
+	for len(w.segs) > i+1 {
+		seg := w.active()
+		w.segs = w.segs[:len(w.segs)-1]
+		if err := w.removeSegment(seg); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func (w *WAL) recoverTail(raw []byte) error {
+	seg := w.active()
+	if seg.size < int64(len(raw)) {
 		if err := seg.f.Truncate(seg.size); err != nil {
 			return err
 		}
 	}
-	if !tail || len(seg.terms) == 0 {
-		return nil
+	if len(seg.terms) == 0 {
+		w.segs = w.segs[:len(w.segs)-1]
+		return w.removeSegment(seg)
 	}
 	from := seg.unproven(raw)
 	if _, err := seg.f.WriteAt(raw[from:seg.size], from); err != nil {
@@ -228,6 +256,7 @@ func (s *segment) readHeader(raw []byte) error {
 }
 
 func (s *segment) scan(raw []byte, term uint64) (uint64, error) {
+	var err error
 	off := segHdrLen
 	for off < len(raw) {
 		fr, ok := decodeFrame(raw[off:], s.seed)
@@ -235,7 +264,8 @@ func (s *segment) scan(raw []byte, term uint64) (uint64, error) {
 			break
 		}
 		if fr.Term < term {
-			return 0, &CorruptError{File: s.name, Offset: int64(off)}
+			err = &CorruptError{File: s.name, Offset: int64(off)}
+			break
 		}
 		term = fr.Term
 		s.offs = append(s.offs, int64(off))
@@ -243,7 +273,7 @@ func (s *segment) scan(raw []byte, term uint64) (uint64, error) {
 		off += fr.size
 	}
 	s.size = int64(off)
-	return term, nil
+	return term, err
 }
 
 func (s *segment) unproven(raw []byte) int64 {

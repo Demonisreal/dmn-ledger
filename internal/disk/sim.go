@@ -19,6 +19,7 @@ type Sim struct {
 	MetaErrRate  float64
 	ReadErrRate  float64
 	JournalRate  float64
+	ShredRate    float64
 	Sector       int64
 
 	rng      *rand.Rand
@@ -37,6 +38,12 @@ type simNode struct {
 	synced []byte
 	dirty  bool
 	lo     int64
+	wrote  []int64
+}
+
+type DurableFile struct {
+	Name string
+	Size int64
 }
 
 type simFile struct {
@@ -266,7 +273,7 @@ func (s *Sim) Crash() {
 		old := s.durable[name]
 		n, ok := crashed[old]
 		if !ok {
-			n = old.crash(s.rng, s.Sector)
+			n = old.crash(s.rng, s.Sector, s.ShredRate)
 			crashed[old] = n
 		}
 		live[name] = n
@@ -284,7 +291,7 @@ func (s *Sim) Clone(rng *rand.Rand) *Sim {
 		for name, n := range names {
 			c, ok := copies[n]
 			if !ok {
-				c = &simNode{cur: slices.Clone(n.cur), synced: slices.Clone(n.synced), dirty: n.dirty, lo: n.lo}
+				c = &simNode{cur: slices.Clone(n.cur), synced: slices.Clone(n.synced), dirty: n.dirty, lo: n.lo, wrote: slices.Clone(n.wrote)}
 				copies[n] = c
 			}
 			out[name] = c
@@ -302,16 +309,67 @@ func (s *Sim) Clone(rng *rand.Rand) *Sim {
 }
 
 func (s *Sim) Corrupt(name string, off int64) error {
+	n, err := s.atRest("corrupt", name, off)
+	if err != nil {
+		return err
+	}
+	flip := byte(1) << s.rng.IntN(8)
+	n.spoil(off, n.synced[off]^flip)
+	return nil
+}
+
+func (s *Sim) Garble(name string, off int64) error {
+	n, err := s.atRest("garble", name, off)
+	if err != nil {
+		return err
+	}
+	sec := off - off%s.Sector
+	for k := sec; k < min(sec+s.Sector, int64(len(n.synced))); k++ {
+		n.spoil(k, junk(s.rng))
+	}
+	return nil
+}
+
+func (s *Sim) atRest(op, name string, off int64) (*simNode, error) {
 	name = filepath.Clean(name)
 	n := s.durable[name]
 	if n == nil {
-		return &fs.PathError{Op: "corrupt", Path: name, Err: fs.ErrNotExist}
+		return nil, &fs.PathError{Op: op, Path: name, Err: fs.ErrNotExist}
 	}
 	if off < 0 || off >= int64(len(n.synced)) {
-		return &fs.PathError{Op: "corrupt", Path: name, Err: fs.ErrInvalid}
+		return nil, &fs.PathError{Op: op, Path: name, Err: fs.ErrInvalid}
 	}
-	n.synced[off] ^= 1 << s.rng.IntN(8)
-	return nil
+	return n, nil
+}
+
+func (s *Sim) Durable() []DurableFile {
+	files := make([]DurableFile, 0, len(s.durable))
+	for _, name := range slices.Sorted(maps.Keys(s.durable)) {
+		files = append(files, DurableFile{Name: name, Size: int64(len(s.durable[name].synced))})
+	}
+	return files
+}
+
+func junk(rng *rand.Rand) byte {
+	return byte(rng.Uint32()) //nolint:gosec // G115: keeps the low byte on purpose, any garbage will do
+}
+
+func (n *simNode) spoil(off int64, b byte) {
+	n.synced[off] = b
+	if off < int64(len(n.cur)) && (!n.dirty || off < n.lo) {
+		n.cur[off] = b
+	}
+}
+
+func (n *simNode) mark(off, end, sector int64) {
+	if off == end {
+		return
+	}
+	for sec := off / sector; sec*sector < end; sec++ {
+		if k, found := slices.BinarySearch(n.wrote, sec); !found {
+			n.wrote = slices.Insert(n.wrote, k, sec)
+		}
+	}
 }
 
 func (n *simNode) touch(off int64) {
@@ -348,6 +406,7 @@ func (n *simNode) sync() {
 	lo := min(n.lo, int64(len(n.synced)))
 	n.synced = append(n.synced[:lo], n.cur[lo:]...)
 	n.dirty = false
+	n.wrote = n.wrote[:0]
 }
 
 func (n *simNode) dropDirty() {
@@ -355,9 +414,10 @@ func (n *simNode) dropDirty() {
 		n.synced = append(n.synced, make([]byte, grow)...)
 	}
 	n.dirty = false
+	n.wrote = n.wrote[:0]
 }
 
-func (n *simNode) crash(rng *rand.Rand, sector int64) *simNode {
+func (n *simNode) crash(rng *rand.Rand, sector int64, shred float64) *simNode {
 	if !n.dirty {
 		return &simNode{cur: slices.Clone(n.synced), synced: slices.Clone(n.synced)}
 	}
@@ -366,7 +426,7 @@ func (n *simNode) crash(rng *rand.Rand, sector int64) *simNode {
 	onDisk := make([]byte, size)
 	copy(onDisk, n.synced)
 	for k := int64(len(n.synced)); k < size; k++ {
-		onDisk[k] = byte(rng.Uint32()) //nolint:gosec // G115: keeps the low byte on purpose, any garbage will do
+		onDisk[k] = junk(rng)
 	}
 	for sec := n.lo / sector * sector; sec < size; sec += sector {
 		if rng.IntN(2) == 0 || sec >= int64(len(n.cur)) {
@@ -374,6 +434,19 @@ func (n *simNode) crash(rng *rand.Rand, sector int64) *simNode {
 		}
 		end := min(sec+sector, size, int64(len(n.cur)))
 		copy(onDisk[sec:end], n.cur[sec:end])
+	}
+	if shred > 0 {
+		for _, sec := range n.wrote {
+			at := sec * sector
+			if at >= size {
+				break
+			}
+			if rng.Float64() < shred {
+				for k := at; k < min(at+sector, size); k++ {
+					onDisk[k] = junk(rng)
+				}
+			}
+		}
 	}
 	return &simNode{cur: onDisk, synced: slices.Clone(onDisk)}
 }
@@ -399,9 +472,11 @@ func (f *simFile) WriteAt(p []byte, off int64) (int, error) {
 	if err := f.sim.eio("write", f.name, f.sim.WriteErrRate); err != nil {
 		short := f.sim.rng.IntN(len(p) + 1)
 		f.node.write(p[:short], off)
+		f.node.mark(off, off+int64(short), f.sim.Sector)
 		return short, err
 	}
 	f.node.write(p, off)
+	f.node.mark(off, off+int64(len(p)), f.sim.Sector)
 	return len(p), nil
 }
 
@@ -433,6 +508,9 @@ func (f *simFile) Truncate(size int64) error {
 		return err
 	}
 	f.node.resize(size)
+	if size%f.sim.Sector != 0 {
+		f.node.mark(size-1, size, f.sim.Sector)
+	}
 	return nil
 }
 

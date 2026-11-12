@@ -652,3 +652,235 @@ func TestSimFailSyncAfterDropsPages(t *testing.T) {
 		t.Fatalf("after crash %q, want the last synced %q", got, "mid")
 	}
 }
+
+func TestSimDamageReachesOnlyCleanCache(t *testing.T) {
+	harms := map[string]func(*disk.Sim, string, int64) error{
+		"corrupt": (*disk.Sim).Corrupt,
+		"garble":  (*disk.Sim).Garble,
+	}
+	for name, harm := range harms {
+		t.Run(name, func(t *testing.T) {
+			sim := newSim(3)
+			f, _ := sim.Create("/d/a")
+			_ = sim.SyncDir("/d")
+			write(t, f, bytes.Repeat([]byte{0x55}, 3*disk.SectorSize), 0)
+			_ = f.Sync()
+			dirty := int64(2 * disk.SectorSize)
+			write(t, f, []byte{0xaa, 0xaa}, dirty)
+
+			for _, off := range []int64{10, dirty + 1} {
+				if err := harm(sim, "/d/a", off); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := contents(t, sim, "/d/a")
+			if got[10] == 0x55 {
+				t.Fatal("a running reader does not see the damage in a clean page")
+			}
+			if got[dirty+1] != 0xaa {
+				t.Fatal("the damage reached a dirty page")
+			}
+			if err := f.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			sim.Crash()
+			got = contents(t, sim, "/d/a")
+			if got[10] == 0x55 {
+				t.Fatal("the damage in a clean page is gone after fsync")
+			}
+			if got[dirty+1] != 0xaa {
+				t.Fatal("fsync of the dirty page did not overwrite the damage")
+			}
+		})
+	}
+}
+
+func TestSimGarbleHitsOneSector(t *testing.T) {
+	size := int64(3*disk.SectorSize + 100)
+	for _, off := range []int64{0, disk.SectorSize + 7, 2*disk.SectorSize - 1, size - 1} {
+		sim := newSim(4)
+		f, _ := sim.Create("/d/a")
+		_ = sim.SyncDir("/d")
+		orig := bytes.Repeat([]byte{0x55}, int(size))
+		write(t, f, orig, 0)
+		_ = f.Sync()
+
+		if err := sim.Garble("/d/a", off); err != nil {
+			t.Fatal(err)
+		}
+		lo := off / disk.SectorSize * disk.SectorSize
+		hi := min(lo+disk.SectorSize, size)
+		for _, when := range []string{"in the cache", "after power loss"} {
+			got := contents(t, sim, "/d/a")
+			if int64(len(got)) != size || !bytes.Equal(got[:lo], orig[:lo]) || !bytes.Equal(got[hi:], orig[hi:]) {
+				t.Fatalf("garble at %d, %s: damage outside the sector [%d, %d)", off, when, lo, hi)
+			}
+			if same := bytes.Count(got[lo:hi], []byte{0x55}); same > 20 {
+				t.Fatalf("garble at %d, %s: %d of %d bytes in the sector unchanged", off, when, same, hi-lo)
+			}
+			sim.Crash()
+		}
+	}
+
+	sim := newSim(4)
+	f, _ := sim.Create("/d/a")
+	_ = sim.SyncDir("/d")
+	write(t, f, make([]byte, 10), 0)
+	if err := sim.Garble("/d/a", 0); !errors.Is(err, fs.ErrInvalid) {
+		t.Fatalf("garble in unsynced bytes: %v", err)
+	}
+	if err := sim.Garble("/d/b", 0); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("garble in a missing file: %v", err)
+	}
+}
+
+const filler = 0x55
+
+func shredded(b []byte) []int {
+	var secs []int
+	for off := 0; off < len(b); off += disk.SectorSize {
+		sec := b[off:min(off+disk.SectorSize, len(b))]
+		if bytes.Count(sec, []byte{filler}) != len(sec) {
+			secs = append(secs, off/disk.SectorSize)
+		}
+	}
+	return secs
+}
+
+func syncedFile(seed uint64, sectors int, rate float64) (*disk.Sim, disk.File) {
+	sim := newSim(seed)
+	sim.ShredRate = rate
+	f, _ := sim.Create("/d/a")
+	_ = sim.SyncDir("/d")
+	_, _ = f.WriteAt(bytes.Repeat([]byte{filler}, sectors*disk.SectorSize), 0)
+	_ = f.Sync()
+	return sim, f
+}
+
+func TestSimShredTakesWrittenSectors(t *testing.T) {
+	rewrite := func(t *testing.T, f disk.File) {
+		write(t, f, []byte{filler}, disk.SectorSize+3)
+		write(t, f, []byte{filler, filler}, 4*disk.SectorSize-1)
+	}
+	cases := map[string]struct {
+		rate  float64
+		touch func(t *testing.T, sim *disk.Sim, f disk.File)
+		want  []int
+	}{
+		"same bytes written back": {1, func(t *testing.T, _ *disk.Sim, f disk.File) {
+			rewrite(t, f)
+		}, []int{1, 3, 4}},
+		"synced again": {1, func(t *testing.T, _ *disk.Sim, f disk.File) {
+			rewrite(t, f)
+			if err := f.Sync(); err != nil {
+				t.Fatal(err)
+			}
+		}, nil},
+		"pages dropped by a failed fsync": {1, func(t *testing.T, sim *disk.Sim, f disk.File) {
+			rewrite(t, f)
+			sim.FailSyncAfter(1)
+			if err := f.Sync(); !errors.Is(err, syscall.EIO) {
+				t.Fatalf("sync = %v", err)
+			}
+			write(t, f, []byte{filler}, 5*disk.SectorSize)
+		}, []int{5}},
+		"written after the fsync": {1, func(t *testing.T, _ *disk.Sim, f disk.File) {
+			rewrite(t, f)
+			_ = f.Sync()
+			write(t, f, []byte{filler}, 5*disk.SectorSize)
+		}, []int{5}},
+		"end of a truncate": {1, func(t *testing.T, _ *disk.Sim, f disk.File) {
+			if err := f.Truncate(3*disk.SectorSize + 1); err != nil {
+				t.Fatal(err)
+			}
+		}, []int{3}},
+		"truncate on a sector boundary": {1, func(t *testing.T, _ *disk.Sim, f disk.File) {
+			if err := f.Truncate(3 * disk.SectorSize); err != nil {
+				t.Fatal(err)
+			}
+		}, nil},
+		"empty write": {1, func(t *testing.T, _ *disk.Sim, f disk.File) {
+			write(t, f, nil, disk.SectorSize+3)
+		}, nil},
+		"rate 0": {0, func(t *testing.T, _ *disk.Sim, f disk.File) {
+			rewrite(t, f)
+		}, nil},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			sim, f := syncedFile(1, 6, tc.rate)
+			tc.touch(t, sim, f)
+			clone := sim.Clone(rand.New(rand.NewPCG(8, 8)))
+			sim.Crash()
+			if got := shredded(contents(t, sim, "/d/a")); !slices.Equal(got, tc.want) {
+				t.Fatalf("shredded sectors %v, want %v", got, tc.want)
+			}
+			clone.Crash()
+			if got := shredded(contents(t, clone, "/d/a")); !slices.Equal(got, tc.want) {
+				t.Fatalf("clone shredded sectors %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSimShredAfterShortWrite(t *testing.T) {
+	short := 0
+	for seed := range uint64(10) {
+		sim, f := syncedFile(seed, 6, 1)
+		sim.WriteErrRate = 1
+		n, err := f.WriteAt(bytes.Repeat([]byte{filler}, 3*disk.SectorSize), disk.SectorSize)
+		if !errors.Is(err, syscall.EIO) {
+			t.Fatalf("write = %v", err)
+		}
+		sim.Crash()
+		var want []int
+		for sec := 1; sec*disk.SectorSize < disk.SectorSize+n; sec++ {
+			want = append(want, sec)
+		}
+		if got := shredded(contents(t, sim, "/d/a")); !slices.Equal(got, want) {
+			t.Fatalf("short write of %d bytes: shredded %v, want %v", n, got, want)
+		}
+		if n > 0 && n < 3*disk.SectorSize {
+			short++
+		}
+	}
+	if short == 0 {
+		t.Fatal("never a short write")
+	}
+}
+
+func TestSimShredRateIsPerSector(t *testing.T) {
+	sim, f := syncedFile(5, 128, 0.5)
+	for sec := int64(0); sec < 128; sec += 2 {
+		write(t, f, []byte{filler}, sec*disk.SectorSize+9)
+	}
+	sim.Crash()
+	got := shredded(contents(t, sim, "/d/a"))
+	if len(got) < 16 || len(got) > 48 {
+		t.Fatalf("%d of 64 written sectors shredded at rate 0.5", len(got))
+	}
+	for _, sec := range got {
+		if sec%2 != 0 {
+			t.Fatalf("sector %d shredded, it was not written", sec)
+		}
+	}
+}
+
+func TestSimDurableIsSorted(t *testing.T) {
+	sim := newSim(1)
+	_ = sim.MkdirAll("/d/sub")
+	for _, name := range []string{"/d/b", "/d/sub/c", "/d/a", "/d/unsynced"} {
+		f, _ := sim.Create(name)
+		write(t, f, make([]byte, len(name)), 0)
+		_ = f.Sync()
+		if name != "/d/unsynced" {
+			_ = sim.SyncDir(filepath.Dir(name))
+		}
+	}
+	f, _ := sim.Open("/d/a")
+	write(t, f, make([]byte, 100), 0)
+	want := []disk.DurableFile{{Name: "/d/a", Size: 4}, {Name: "/d/b", Size: 4}, {Name: "/d/sub/c", Size: 8}}
+	if got := sim.Durable(); !slices.Equal(got, want) {
+		t.Fatalf("durable %v, want %v", got, want)
+	}
+}

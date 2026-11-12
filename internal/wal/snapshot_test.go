@@ -31,12 +31,32 @@ func saveSnap(fsys disk.FS, meta SnapshotMeta) error {
 
 func loadSnap(fsys disk.FS) (SnapshotMeta, []byte, error) {
 	var b []byte
-	meta, err := LoadSnapshot(fsys, dir, func(r io.Reader) error {
+	meta, _, err := LoadSnapshot(fsys, dir, func(r io.Reader) error {
 		var err error
 		b, err = io.ReadAll(r)
 		return err
 	})
 	return meta, b, err
+}
+
+func brokenSnaps(t *testing.T, fsys disk.FS) (SnapshotMeta, []SnapshotMeta) {
+	t.Helper()
+	meta, broken, err := LoadSnapshot(fsys, dir, func(r io.Reader) error {
+		_, err := io.Copy(io.Discard, r)
+		return err
+	})
+	if err != nil && !errors.Is(err, ErrNoSnapshot) {
+		t.Fatal(err)
+	}
+	return meta, broken
+}
+
+func snapNames(metas ...SnapshotMeta) []string {
+	var names []string
+	for _, meta := range metas {
+		names = append(names, snapshotName(meta))
+	}
+	return names
 }
 
 func snapFiles(t *testing.T, fsys disk.FS) []string {
@@ -126,29 +146,162 @@ func TestSnapshotCrashDuringSave(t *testing.T) {
 	}
 }
 
-func TestSnapshotCorruptIsReported(t *testing.T) {
-	sim := newSim(3)
-	for _, meta := range []SnapshotMeta{{10, 1}, {20, 1}} {
-		_ = saveSnap(sim, meta)
+func TestSnapshotLoadFallsBack(t *testing.T) {
+	older, newer := SnapshotMeta{Index: 10, Term: 1}, SnapshotMeta{Index: 20, Term: 1}
+	cases := map[string]struct {
+		harmed []SnapshotMeta
+		want   SnapshotMeta
+		broken []SnapshotMeta
+	}{
+		"newest holds":      {nil, newer, nil},
+		"newest broken":     {[]SnapshotMeta{newer}, older, []SnapshotMeta{newer}},
+		"only older broken": {[]SnapshotMeta{older}, newer, nil},
+		"both broken":       {[]SnapshotMeta{older, newer}, SnapshotMeta{}, []SnapshotMeta{newer, older}},
 	}
-	name := filepath.Join(dir, snapshotName(SnapshotMeta{20, 1}))
-	if err := sim.Corrupt(name, 50); err != nil {
-		t.Fatal(err)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			sim := newSim(3)
+			for _, meta := range []SnapshotMeta{older, newer} {
+				if err := saveSnap(sim, meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for k, meta := range tc.harmed {
+				harm := []func(string, int64) error{sim.Corrupt, sim.Garble}[k%2]
+				if err := harm(filepath.Join(dir, snapshotName(meta)), 50); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sim.Crash()
+
+			var body []byte
+			meta, broken, err := LoadSnapshot(sim, dir, func(r io.Reader) error {
+				var err error
+				body, err = io.ReadAll(r)
+				return err
+			})
+			if tc.want == (SnapshotMeta{}) {
+				if !errors.Is(err, ErrNoSnapshot) || meta != tc.want {
+					t.Fatalf("load = %+v, %v", meta, err)
+				}
+			} else if err != nil || meta != tc.want || !bytes.Equal(body, snapBody(tc.want)) {
+				t.Fatalf("loaded %+v (%d bytes), %v; want %+v", meta, len(body), err, tc.want)
+			}
+			if !slices.Equal(broken, tc.broken) {
+				t.Fatalf("reported %+v as broken, want %+v", broken, tc.broken)
+			}
+			if got := snapFiles(t, sim); !slices.Equal(got, snapNames(older, newer)) {
+				t.Fatalf("load changed the files: %v", got)
+			}
+		})
 	}
-	sim.Crash()
-	var ce *CorruptError
-	if _, _, err := loadSnap(sim); !errors.As(err, &ce) || ce.File != name {
-		t.Fatalf("load = %v", err)
+}
+
+func TestSnapshotBrokenFileWouldEvictTheHealthyOne(t *testing.T) {
+	older, newer, next := SnapshotMeta{Index: 10, Term: 1}, SnapshotMeta{Index: 20, Term: 1}, SnapshotMeta{Index: 15, Term: 1}
+	for _, cleanup := range []bool{false, true} {
+		sim := newSim(3)
+		_ = saveSnap(sim, older)
+		_ = saveSnap(sim, newer)
+		if err := sim.Corrupt(filepath.Join(dir, snapshotName(newer)), 50); err != nil {
+			t.Fatal(err)
+		}
+		base, broken := brokenSnaps(t, sim)
+		if base != older || !slices.Equal(broken, []SnapshotMeta{newer}) {
+			t.Fatalf("loaded %+v, broken %+v", base, broken)
+		}
+		want := snapNames(next, newer)
+		if cleanup {
+			if err := RemoveSnapshot(sim, dir, newer); err != nil {
+				t.Fatal(err)
+			}
+			sim.Crash()
+			want = snapNames(older, next)
+		}
+		if err := saveSnap(sim, next); err != nil {
+			t.Fatal(err)
+		}
+		if got := snapFiles(t, sim); !slices.Equal(got, want) {
+			t.Fatalf("cleanup %v: files after the next snapshot %v, want %v", cleanup, got, want)
+		}
+	}
+}
+
+func TestCrashWhileRemovingBrokenSnapshots(t *testing.T) {
+	older, newer := SnapshotMeta{Index: 10, Term: 1}, SnapshotMeta{Index: 20, Term: 1}
+	for _, both := range []bool{false, true} {
+		sim := newSim(3)
+		_ = saveSnap(sim, older)
+		_ = saveSnap(sim, newer)
+		_ = sim.Corrupt(filepath.Join(dir, snapshotName(newer)), 50)
+		var left []string
+		if both {
+			_ = sim.Corrupt(filepath.Join(dir, snapshotName(older)), 50)
+		} else {
+			left = snapNames(older)
+		}
+		base, broken := brokenSnaps(t, sim)
+		if both != (base == SnapshotMeta{}) || len(broken) == 0 {
+			t.Fatalf("loaded %+v, broken %+v", base, broken)
+		}
+		points := 0
+		check := func(c *disk.Sim, tag string) {
+			again, rest := brokenSnaps(t, c)
+			if again != base {
+				t.Fatalf("%s: loaded %+v, want %+v", tag, again, base)
+			}
+			for _, meta := range rest {
+				if err := RemoveSnapshot(c, dir, meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c.Crash()
+			if got := snapFiles(t, c); !slices.Equal(got, left) {
+				t.Fatalf("%s: files after the second cleanup %v, want %v", tag, got, left)
+			}
+		}
+		fsys := hookFS{Sim: sim, after: func(op string) {
+			points++
+			lost := fork(sim, uint64(points))
+			lost.Crash()
+			check(lost, "power loss after "+op)
+			check(fork(sim, uint64(points)), "process crash after "+op)
+		}}
+		for _, meta := range broken {
+			if err := RemoveSnapshot(fsys, dir, meta); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if points != 2*len(broken) {
+			t.Fatalf("%d crash points for %d broken snapshots", points, len(broken))
+		}
 	}
 }
 
 func TestSnapshotNameMustMatchFooter(t *testing.T) {
 	sim := newSim(4)
-	meta := SnapshotMeta{Index: 10, Term: 1}
+	older, meta := SnapshotMeta{Index: 5, Term: 1}, SnapshotMeta{Index: 10, Term: 1}
+	_ = saveSnap(sim, older)
 	_ = saveSnap(sim, meta)
 	_ = sim.Rename(filepath.Join(dir, snapshotName(meta)), filepath.Join(dir, snapshotName(SnapshotMeta{Index: 11, Term: 1})))
-	if _, _, err := loadSnap(sim); !errors.Is(err, ErrCorrupt) {
-		t.Fatalf("renamed snapshot: %v", err)
+	loaded, _, err := loadSnap(sim)
+	if err == nil || errors.Is(err, ErrCorrupt) || errors.Is(err, ErrNoSnapshot) {
+		t.Fatalf("renamed snapshot: loaded %+v, %v; a wrong name is not a disk fault and must stop the start", loaded, err)
+	}
+}
+
+func TestSnapshotUnreadableContentStopsTheLoad(t *testing.T) {
+	sim := newSim(4)
+	_ = saveSnap(sim, SnapshotMeta{Index: 5, Term: 1})
+	_ = saveSnap(sim, SnapshotMeta{Index: 10, Term: 1})
+	errMagic := errors.New("bad magic")
+	calls := 0
+	meta, broken, err := LoadSnapshot(sim, dir, func(io.Reader) error {
+		calls++
+		return errMagic
+	})
+	if !errors.Is(err, errMagic) || calls != 1 || len(broken) != 0 {
+		t.Fatalf("loaded %+v, broken %+v, %v after %d reads; want the error of the newest snapshot and no fallback", meta, broken, err, calls)
 	}
 }
 

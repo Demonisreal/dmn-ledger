@@ -6,6 +6,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"path/filepath"
@@ -461,16 +462,271 @@ func TestMissingSegmentIsCorrupt(t *testing.T) {
 	wantCorrupt(t, err, segs[3], 0)
 }
 
-func TestBitFlipInLastSyncedBatchLooksTorn(t *testing.T) {
+type damage struct {
+	segSize int64
+	term    uint64
+	sealed  uint64
+	strict  bool
+	torn    bool
+	harm    func(t *testing.T, sim *disk.Sim, segs []string) spot
+}
+
+type spot struct {
+	seg  string
+	off  int64
+	keep uint64
+}
+
+func firstOf(seg string) uint64 {
+	first, _ := parseSegmentName(seg)
+	return first
+}
+
+func frameAt(segs []string, i uint64) (string, int64) {
+	k := len(segs) - 1
+	for firstOf(segs[k]) > i {
+		k--
+	}
+	return segs[k], frameOffset(firstOf(segs[k]), i, 1)
+}
+
+func flipFrame(i uint64) func(*testing.T, *disk.Sim, []string) spot {
+	return func(t *testing.T, sim *disk.Sim, segs []string) spot {
+		seg, off := frameAt(segs, i)
+		corruptAt(t, sim, seg, off+offTerm)
+		return spot{seg, off, i - 1}
+	}
+}
+
+func halfLastFrame(t *testing.T, sim *disk.Sim, segs []string) spot {
+	seg, off := frameAt(segs, 40)
+	f, err := sim.Open(filepath.Join(dir, seg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Truncate(off + 7)
+	_ = f.Sync()
+	return spot{seg, off, 39}
+}
+
+func flipHeader(k int) func(*testing.T, *disk.Sim, []string) spot {
+	return func(t *testing.T, sim *disk.Sim, segs []string) spot {
+		seg := segs[(k+len(segs))%len(segs)]
+		corruptAt(t, sim, seg, segOffNonce)
+		return spot{seg, 0, firstOf(seg) - 1}
+	}
+}
+
+func damages() map[string]damage {
+	return map[string]damage{
+		"flip behind the seal":                  {sealed: 35, torn: true, harm: flipFrame(36)},
+		"flip at the seal":                      {sealed: 36, harm: flipFrame(36)},
+		"flip behind the seal, strict":          {sealed: 35, strict: true, harm: flipFrame(36)},
+		"half frame behind the seal":            {sealed: 39, torn: true, harm: halfLastFrame},
+		"half frame under the seal":             {sealed: 40, harm: halfLastFrame},
+		"half frame, strict":                    {strict: true, harm: halfLastFrame},
+		"no frame in the tail, behind the seal": {segSize: 1, sealed: 39, torn: true, harm: halfLastFrame},
+		"no frame in the tail, under the seal":  {segSize: 1, sealed: 40, harm: halfLastFrame},
+		"no frame in the tail, strict":          {segSize: 1, strict: true, harm: halfLastFrame},
+		"flip before a later sync":              {harm: flipFrame(5)},
+		"flip in an older segment":              {segSize: 400, harm: flipFrame(12)},
+		"flip in the first frame":               {segSize: 400, harm: flipFrame(1)},
+		"header of an older segment":            {segSize: 400, harm: flipHeader(2)},
+		"header of the first segment":           {segSize: 400, harm: flipHeader(0)},
+		"header of the last segment":            {segSize: 400, harm: flipHeader(-1)},
+		"missing segment": {segSize: 400, harm: func(_ *testing.T, sim *disk.Sim, segs []string) spot {
+			_ = sim.Remove(filepath.Join(dir, segs[2]))
+			_ = sim.SyncDir(dir)
+			return spot{segs[3], 0, firstOf(segs[2]) - 1}
+		}},
+		"term going back": {segSize: 1, term: 5, harm: func(t *testing.T, sim *disk.Sim, segs []string) spot {
+			low := newSim(2)
+			w := mustOpen(t, low, opts(1))
+			mustAppend(t, w, span(1, 41, 1)...)
+			_ = w.Close()
+			f, _ := sim.Create(filepath.Join(dir, segs[7]))
+			_, _ = f.WriteAt(contents(t, low, filepath.Join(dir, segs[7])), 0)
+			_ = f.Sync()
+			return spot{segs[7], segHdrLen, 7}
+		}},
+		"oversized segment": {segSize: 400, harm: func(_ *testing.T, sim *disk.Sim, segs []string) spot {
+			seg := segs[len(segs)-1]
+			f, _ := sim.Open(filepath.Join(dir, seg))
+			_ = f.Truncate(maxSegmentFile + 1)
+			_ = f.Sync()
+			return spot{seg, maxSegmentFile, firstOf(seg) - 1}
+		}},
+	}
+}
+
+func damagedLog(t *testing.T, d damage) (*disk.Sim, Options, spot) {
+	t.Helper()
+	sim := newSim(1)
+	o := opts(d.segSize)
+	w := mustOpen(t, sim, o)
+	mustAppend(t, w, span(1, 21, max(d.term, 1))...)
+	mustAppend(t, w, span(21, 41, max(d.term, 1))...)
+	_ = w.Close()
+	at := d.harm(t, sim, segments(t, sim))
+	o.Sealed, o.Strict = d.sealed, d.strict
+	return sim, o, at
+}
+
+func checkKept(t *testing.T, w *WAL, d damage, keep uint64) {
+	t.Helper()
+	if keep > 0 {
+		checkTerms(t, w, 1, repeat(max(d.term, 1), int(keep))...)
+	} else if first, last := bounds(t, w); first != 0 || last != 0 {
+		t.Fatalf("log is [%d, %d], want an empty log", first, last)
+	}
+}
+
+func contents(t *testing.T, fsys disk.FS, name string) []byte {
+	t.Helper()
+	f, err := fsys.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	size, _ := f.Size()
+	b := make([]byte, size)
+	if _, err := f.ReadAt(b, 0); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func files(t *testing.T, sim *disk.Sim) map[string][]byte {
+	t.Helper()
+	names, err := sim.List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := map[string][]byte{}
+	for _, name := range names {
+		held[name] = contents(t, sim, filepath.Join(dir, name))
+	}
+	return held
+}
+
+func TestOpenJudgesDamageByTheSeal(t *testing.T) {
+	for name, d := range damages() {
+		t.Run(name, func(t *testing.T) {
+			sim, o, at := damagedLog(t, d)
+			before := files(t, sim)
+			w, err := Open(sim, dir, o)
+			if !d.torn {
+				wantCorrupt(t, err, at.seg, at.off)
+				if !maps.EqualFunc(before, files(t, sim), bytes.Equal) {
+					t.Fatal("open reported corruption and changed the files")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("open = %v, want the torn tail cut", err)
+			}
+			checkKept(t, w, d, at.keep)
+			mustAppend(t, w, ent(at.keep+1, 9))
+			_ = w.Close()
+			w = mustOpen(t, sim, o)
+			if last := lastIndex(t, w); last != at.keep+1 {
+				t.Fatalf("append after the cut: last %d, want %d", last, at.keep+1)
+			}
+		})
+	}
+}
+
+func TestSalvageKeepsAValidStart(t *testing.T) {
+	for name, d := range damages() {
+		t.Run(name, func(t *testing.T) {
+			sim, o, at := damagedLog(t, d)
+			salvage := o
+			salvage.Salvage = true
+			w := mustOpen(t, sim, salvage)
+			checkKept(t, w, d, at.keep)
+			if err := w.Append(ent(at.keep+1, 0)); at.keep > 0 && !errors.Is(err, ErrOutOfOrder) {
+				t.Fatalf("append with a term below the kept entries = %v", err)
+			}
+			_ = w.Close()
+			sim.Crash()
+
+			w = mustOpen(t, sim, o)
+			checkKept(t, w, d, at.keep)
+			mustAppend(t, w, ent(at.keep+1, 9))
+			_ = w.Close()
+			w = mustOpen(t, sim, o)
+			if last := lastIndex(t, w); last != at.keep+1 {
+				t.Fatalf("append after salvage: last %d, want %d", last, at.keep+1)
+			}
+		})
+	}
+}
+
+func TestCrashDuringSalvage(t *testing.T) {
+	points := 0
+	for name, d := range damages() {
+		sim, o, at := damagedLog(t, d)
+		salvage := o
+		salvage.Salvage = true
+		check := func(c *disk.Sim, tag string) {
+			points++
+			w, err := Open(c, dir, o)
+			switch {
+			case errors.Is(err, ErrCorrupt):
+			case err != nil:
+				t.Fatalf("%s, %s: open = %v", name, tag, err)
+			default:
+				checkKept(t, w, d, at.keep)
+				_ = w.Close()
+			}
+			w = mustOpen(t, c, salvage)
+			checkKept(t, w, d, at.keep)
+			_ = w.Close()
+		}
+		fsys := hookFS{Sim: sim, after: func(op string) {
+			lost := fork(sim, uint64(points))
+			lost.Crash()
+			check(lost, "power loss after "+op)
+			check(fork(sim, uint64(points)), "process crash after "+op)
+		}}
+		w := mustOpen(t, fsys, salvage)
+		_ = w.Close()
+	}
+	if points < 100 {
+		t.Fatalf("only %d crash points", points)
+	}
+}
+
+func TestSalvageSyncsWhatItKeeps(t *testing.T) {
 	sim := newSim(1)
 	w := mustOpen(t, sim, opts(0))
-	mustAppend(t, w, span(1, 11, 1)...)
-	mustAppend(t, w, span(11, 21, 1)...)
+	mustAppend(t, w, span(1, 6, 1)...)
+	if err := w.Append(span(6, 9, 1)...); err != nil {
+		t.Fatal(err)
+	}
+	sim.FailSyncAfter(1)
+	if err := w.Sync(); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("sync = %v", err)
+	}
 	_ = w.Close()
+	f := lastSegment(t, sim)
+	size, _ := f.Size()
+	_, _ = f.WriteAt(bytes.Repeat([]byte{0xa5}, 100), size)
+	_ = f.Sync()
 
-	corruptAt(t, sim, segments(t, sim)[0], frameOffset(1, 15, 1)+frameHdrLen)
+	o := opts(0)
+	o.Sealed, o.Strict = 5, true
+	_, err := Open(sim, dir, o)
+	wantCorrupt(t, err, segments(t, sim)[0], size)
+	o.Salvage = true
+	w = mustOpen(t, sim, o)
+	kept := lastIndex(t, w)
+	_ = w.Close()
+	sim.Crash()
 	w = mustOpen(t, sim, opts(0))
-	checkTerms(t, w, 1, repeat(1, 14)...)
+	if got := lastIndex(t, w); kept != 8 || got != kept {
+		t.Fatalf("salvage kept %d entries, after power loss %d", kept, got)
+	}
 }
 
 func TestSyncErrorIsSticky(t *testing.T) {
@@ -548,8 +804,16 @@ func TestUnknownVersionIsReported(t *testing.T) {
 	binary.LittleEndian.PutUint32(hdr[segOffCRC:], crc32.Checksum(hdr[:segOffCRC], castagnoli))
 	_, _ = f.WriteAt(hdr, 0)
 
-	if _, err := Open(sim, dir, opts(0)); !errors.Is(err, ErrVersion) {
-		t.Fatalf("open = %v, want ErrVersion", err)
+	before := files(t, sim)
+	for _, salvage := range []bool{false, true} {
+		o := opts(0)
+		o.Sealed, o.Salvage = 3, salvage
+		if _, err := Open(sim, dir, o); !errors.Is(err, ErrVersion) || errors.Is(err, ErrCorrupt) {
+			t.Fatalf("open with salvage %v = %v, want ErrVersion", salvage, err)
+		}
+		if !maps.EqualFunc(before, files(t, sim), bytes.Equal) {
+			t.Fatalf("open with salvage %v changed a segment of another version", salvage)
+		}
 	}
 }
 
@@ -787,11 +1051,12 @@ func TestOpenRewritesPagesAfterFailedSync(t *testing.T) {
 }
 
 func FuzzOpen(f *testing.F) {
-	f.Add(uint8(0), uint16(40), []byte{0x01}, uint16(0))
-	f.Add(uint8(1), uint16(0), []byte{0xff, 0xff, 0xff, 0x7f}, uint16(0))
-	f.Add(uint8(2), uint16(100), []byte{}, uint16(17))
-	f.Add(uint8(3), uint16(300), make([]byte, 64), uint16(0))
-	f.Fuzz(func(t *testing.T, which uint8, off uint16, xor []byte, cut uint16) {
+	f.Add(uint8(0), uint16(40), []byte{0x01}, uint16(0), uint8(0), false, false)
+	f.Add(uint8(1), uint16(0), []byte{0xff, 0xff, 0xff, 0x7f}, uint16(0), uint8(30), false, true)
+	f.Add(uint8(2), uint16(100), []byte{}, uint16(17), uint8(29), false, false)
+	f.Add(uint8(2), uint16(100), []byte{}, uint16(17), uint8(0), true, true)
+	f.Add(uint8(3), uint16(300), make([]byte, 64), uint16(0), uint8(12), true, false)
+	f.Fuzz(func(t *testing.T, which uint8, off uint16, xor []byte, cut uint16, sealed uint8, strict, salvage bool) {
 		sim := newSim(1)
 		o := opts(512)
 		w := mustOpen(t, sim, o)
@@ -816,22 +1081,35 @@ func FuzzOpen(f *testing.F) {
 			_ = seg.Truncate(size - int64(cut)%size)
 		}
 
+		o.Sealed, o.Strict, o.Salvage = uint64(sealed), strict, salvage
 		w, err = Open(sim, dir, o)
 		if err != nil {
+			if salvage && errors.Is(err, ErrCorrupt) {
+				t.Fatalf("open with Salvage = %v", err)
+			}
 			if !errors.Is(err, ErrCorrupt) && !errors.Is(err, ErrVersion) {
 				t.Fatalf("open = %v, want ErrCorrupt", err)
 			}
 			return
 		}
-		defer func() { _ = w.Close() }()
 		first, last := bounds(t, w)
-		if last == 0 {
-			return
+		if last > 0 {
+			if first != 1 {
+				t.Fatalf("first = %d", first)
+			}
+			checkTerms(t, w, 1, repeat(1, int(last))...)
 		}
-		if first != 1 {
-			t.Fatalf("first = %d", first)
+		_ = w.Close()
+
+		o.Salvage = false
+		w, err = Open(sim, dir, o)
+		if err != nil {
+			t.Fatalf("second open = %v, the first one left [%d, %d]", err, first, last)
 		}
-		checkTerms(t, w, 1, repeat(1, int(last))...)
+		defer func() { _ = w.Close() }()
+		if again, end := bounds(t, w); again != first || end != last {
+			t.Fatalf("second open sees [%d, %d], the first one left [%d, %d]", again, end, first, last)
+		}
 	})
 }
 
@@ -1060,15 +1338,15 @@ func TestCloseAfterFailedRemove(t *testing.T) {
 
 func TestOpenCreatesDirectories(t *testing.T) {
 	sim := disk.NewSim(rand.New(rand.NewPCG(1, 1)))
-	h, _, err := OpenHardState(sim, "/node/a")
+	m, _, err := OpenMeta(sim, "/node/a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = h.Close()
+	_ = m.Close()
 	if err := SaveSnapshot(sim, "/node/a/snap", SnapshotMeta{Index: 1, Term: 1}, func(io.Writer) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadSnapshot(sim, "/node/b/snap", func(io.Reader) error { return nil }); !errors.Is(err, ErrNoSnapshot) {
+	if _, _, err := LoadSnapshot(sim, "/node/b/snap", func(io.Reader) error { return nil }); !errors.Is(err, ErrNoSnapshot) {
 		t.Fatalf("load from a new directory: %v", err)
 	}
 	w, err := Open(sim, "/node/a/wal", opts(0))
@@ -1154,20 +1432,26 @@ func TestRealFilesystem(t *testing.T) {
 	_ = w.Close()
 
 	nodeDir := filepath.Join(root, "node")
-	h, hs, err := OpenHardState(fsys, nodeDir)
-	if err != nil || hs != (HardState{}) {
-		t.Fatalf("hard state: %+v, %v", hs, err)
+	m, st, err := OpenMeta(fsys, nodeDir)
+	if err != nil || st != (Meta{}) || !m.Intact() {
+		t.Fatalf("meta: %+v, %v", st, err)
+	}
+	if err := m.Settle(); err != nil {
+		t.Fatal(err)
 	}
 	for term := uint64(1); term <= 3; term++ {
-		if err := h.Save(HardState{Term: term, Vote: term}); err != nil {
+		if err := m.Save(term, term, term == 2); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Seal(term * 10); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_ = h.Close()
-	if h, hs, err = OpenHardState(fsys, nodeDir); err != nil || hs != (HardState{Term: 3, Vote: 3}) {
-		t.Fatalf("hard state after reopen: %+v, %v", hs, err)
+	_ = m.Close()
+	if m, st, err = OpenMeta(fsys, nodeDir); err != nil || st != (Meta{Term: 3, Vote: 3, Sealed: 30}) || !m.Intact() {
+		t.Fatalf("meta after reopen: %+v, %v", st, err)
 	}
-	_ = h.Close()
+	_ = m.Close()
 
 	snapDir := filepath.Join(nodeDir, "snap")
 	for _, meta := range []SnapshotMeta{{10, 1}, {20, 1}, {30, 2}} {
@@ -1179,15 +1463,18 @@ func TestRealFilesystem(t *testing.T) {
 		}
 	}
 	var got []byte
-	meta, err := LoadSnapshot(fsys, snapDir, func(r io.Reader) error {
+	meta, broken, err := LoadSnapshot(fsys, snapDir, func(r io.Reader) error {
 		var err error
 		got, err = io.ReadAll(r)
 		return err
 	})
-	if err != nil || meta != (SnapshotMeta{30, 2}) || !bytes.Equal(got, snapBody(meta)) {
-		t.Fatalf("snapshot: %+v, %v", meta, err)
+	if err != nil || meta != (SnapshotMeta{30, 2}) || len(broken) != 0 || !bytes.Equal(got, snapBody(meta)) {
+		t.Fatalf("snapshot: %+v, broken %+v, %v", meta, broken, err)
 	}
-	if names, _ := fsys.List(snapDir); len(names) != 2 {
+	if err := RemoveSnapshot(fsys, snapDir, SnapshotMeta{20, 1}); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := fsys.List(snapDir); !slices.Equal(names, []string{snapshotName(meta)}) {
 		t.Fatalf("snapshot files: %v", names)
 	}
 }
