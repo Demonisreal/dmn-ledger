@@ -48,6 +48,7 @@ type Status struct {
 	ID       uint64
 	Role     raft.Role
 	Term     uint64
+	Vote     uint64
 	Lead     uint64
 	Commit   uint64
 	Applied  uint64
@@ -247,20 +248,8 @@ func (n *Node) process() error {
 
 func (n *Node) round() error {
 	rd := n.raft.Ready()
-	if rd.HardState != nil {
-		if err := n.hs.Save(wal.HardState(*rd.HardState)); err != nil {
-			return err
-		}
-	}
-	if rd.Snapshot != nil {
-		if err := n.install(*rd.Snapshot); err != nil {
-			return err
-		}
-	}
-	if len(rd.Entries) > 0 {
-		if err := n.store(rd.Entries); err != nil {
-			return err
-		}
+	if err := n.persist(rd); err != nil {
+		return err
 	}
 	n.msgs = append(n.msgs, rd.Messages...)
 	if err := n.applyTo(rd.Commit); err != nil {
@@ -280,10 +269,7 @@ func (n *Node) store(ents []raft.Entry) error {
 	for i, e := range ents {
 		batch[i] = wal.Entry{Index: e.Index, Term: e.Term, Kind: wal.Kind(e.Kind), Body: e.Body}
 	}
-	if err := n.log.Append(batch...); err != nil {
-		return err
-	}
-	return n.log.Sync()
+	return n.log.Append(batch...)
 }
 
 func (n *Node) applyTo(commit uint64) error {
@@ -429,6 +415,7 @@ func (n *Node) Status() Status {
 		ID:       st.ID,
 		Role:     st.Role,
 		Term:     st.Term,
+		Vote:     st.Vote,
 		Lead:     st.Lead,
 		Commit:   st.Commit,
 		Applied:  n.applied,
@@ -440,6 +427,18 @@ func (n *Node) Status() Status {
 
 func (n *Node) CheckInvariants() error {
 	return n.sm.CheckInvariants()
+}
+
+func (n *Node) LedgerDigest() [sha256.Size]byte {
+	return n.sm.Digest()
+}
+
+func (n *Node) Session(id u128.Uint128) (uint64, bool) {
+	s, ok := n.sessions[id]
+	if !ok {
+		return 0, false
+	}
+	return s.since, true
 }
 
 func (n *Node) Close() error {

@@ -399,10 +399,6 @@ func (r *Raft) checkQuorum() bool {
 	return n >= r.quorum()
 }
 
-func upToDate(term, index, lastTerm, last uint64) bool {
-	return term > lastTerm || term == lastTerm && index >= last
-}
-
 func (r *Raft) handlePreVote(m Message) error {
 	lastTerm, err := r.lastTerm()
 	if err != nil {
@@ -453,17 +449,11 @@ func (r *Raft) handleApp(m Message) error {
 		r.send(Message{Type: MsgAppResp, To: m.From, Term: r.term, Index: hint, Reject: true, Seq: m.Seq})
 		return nil
 	}
-	for k, e := range m.Entries {
-		if term, ok, err = r.termAt(e.Index); err != nil {
-			return err
-		}
-		if !ok || term != e.Term {
-			r.appendEnts(m.Entries[k:])
-			break
-		}
+	if err := r.merge(m.Entries); err != nil {
+		return err
 	}
 	last := m.Index + uint64(len(m.Entries))
-	r.commit = max(r.commit, min(m.Commit, last))
+	r.followCommit(m.Commit, last)
 	r.send(Message{Type: MsgAppResp, To: m.From, Term: r.term, Index: last, Seq: m.Seq})
 	return nil
 }
@@ -527,24 +517,8 @@ func (r *Raft) handleAppResp(m Message) error {
 	return nil
 }
 
-func (r *Raft) maybeCommit() {
-	var buf [maxPeers]uint64
-	match := buf[:0]
-	for _, p := range r.prs {
-		match = append(match, p.match)
-	}
-	if n := quorumValue(match, r.quorum()); n > r.commit && n >= r.termStart {
-		r.commit = n
-	}
-}
-
 func (r *Raft) releaseReads() {
-	var buf [maxPeers]uint64
-	seqs := buf[:0]
-	for _, p := range r.prs {
-		seqs = append(seqs, p.seq)
-	}
-	s := quorumValue(seqs, r.quorum())
+	s := r.confirmedSeq()
 	k := 0
 	for ; k < len(r.pending) && r.pending[k].seq <= s; k++ {
 		r.reads = append(r.reads, Read{Tag: r.pending[k].tag, Index: r.pending[k].index})

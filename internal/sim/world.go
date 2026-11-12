@@ -195,6 +195,10 @@ func (w *World) Quiet() uint64 {
 	return w.plan.quiet
 }
 
+func (w *World) End() uint64 {
+	return w.plan.end
+}
+
 func (w *World) Disk(id uint64) *disk.Sim {
 	return w.hosts[id-1].disk
 }

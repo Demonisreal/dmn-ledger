@@ -28,6 +28,36 @@ jobs:
       - run: go test -short -race ./...
       - run: CGO_ENABLED=0 go build ./...
 
+  sim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go build -o "$RUNNER_TEMP/sim" ./cmd/sim
+      - name: 2000 fixed seeds
+        run: '"$RUNNER_TEMP/sim" -seeds 2000 -from 0 -profile all'
+      - name: 2000 new seeds
+        run: |
+          from=$((1000000 + GITHUB_RUN_NUMBER * 2000))
+          echo "first seed $from"
+          "$RUNNER_TEMP/sim" -seeds 2000 -from "$from" -profile all
+
+  simbug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet -tags simbug ./...
+      - run: go test -tags simbug -count=1 ./...
+
   fuzz:
     runs-on: ubuntu-latest
     steps:

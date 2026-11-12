@@ -30,17 +30,20 @@ const (
 )
 
 type ClusterConfig struct {
-	Seed    uint64
-	Profile Profile
-	Nodes   uint64
-	Trace   io.Writer
-	Disk    func(id uint64, fsys disk.FS) disk.FS
-	Said    func(id uint64, msgs []raft.Message) error
-	Check   func(c *Cluster) error
+	Seed        uint64
+	Profile     Profile
+	Nodes       uint64
+	MaxSessions int
+	Trace       io.Writer
+	Disk        func(id uint64, fsys disk.FS) disk.FS
+	Said        func(id uint64, msgs []raft.Message) error
+	Check       func(c *Cluster) error
+	Failed      func(id uint64, err error) error
 }
 
 type Call struct {
 	Client     uint64
+	Session    uint64
 	Op         client.Op
 	Body       []byte
 	Start, End uint64
@@ -58,6 +61,7 @@ type Cluster struct {
 	windows   []int
 	started   int
 	open      int
+	stopped   error
 }
 
 func NewCluster(cfg ClusterConfig) (*Cluster, error) {
@@ -70,6 +74,9 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 		gen:       workload.New(fork(rng)),
 	}
 	c.gen.MaxBatch = 1 + rng.IntN(8)
+	if c.cfg.MaxSessions == 0 {
+		c.cfg.MaxSessions = maxSessions
+	}
 	nodes := cfg.Nodes
 	if nodes == 0 {
 		nodes = 3
@@ -137,10 +144,16 @@ func (c *Cluster) said(id uint64, msgs []Msg) error {
 }
 
 func (c *Cluster) check() error {
-	if c.cfg.Check == nil {
-		return nil
+	if c.stopped != nil || c.cfg.Check == nil {
+		return c.stopped
 	}
 	return c.cfg.Check(c)
+}
+
+func (c *Cluster) failed(id uint64, err error) {
+	if c.cfg.Failed != nil && c.stopped == nil {
+		c.stopped = c.cfg.Failed(id, err)
+	}
 }
 
 func (c *Cluster) admit() bool {
@@ -156,8 +169,28 @@ func (c *Cluster) admit() bool {
 	return true
 }
 
+func (c *Cluster) Open(id uint64, fsys disk.FS) (*replica.Node, error) {
+	return c.openNode(NodeEnv{
+		ID:     id,
+		Peers:  slices.Clone(c.w.peers),
+		FS:     fsys,
+		Clock:  c.w.Now,
+		Rand:   pcg(c.cfg.Seed, id),
+		Nonces: nonces(pcg(c.cfg.Seed, id)),
+	})
+}
+
 func (c *Cluster) startNode(env NodeEnv) (Process, error) {
-	n, err := replica.Open(replica.Config{
+	n, err := c.openNode(env)
+	if err != nil {
+		c.failed(env.ID, err)
+		return nil, err
+	}
+	return &ledgerNode{c: c, id: env.ID, n: n}, nil
+}
+
+func (c *Cluster) openNode(env NodeEnv) (*replica.Node, error) {
+	return replica.Open(replica.Config{
 		ID:             env.ID,
 		Peers:          env.Peers,
 		FS:             env.FS,
@@ -165,7 +198,7 @@ func (c *Cluster) startNode(env NodeEnv) (Process, error) {
 		Clock:          env.Clock,
 		Rand:           env.Rand,
 		Nonces:         env.Nonces,
-		MaxSessions:    maxSessions,
+		MaxSessions:    c.cfg.MaxSessions,
 		SnapshotEvery:  c.snapEvery,
 		SegmentSize:    c.segSize,
 		ClockStep:      2 * tick,
@@ -175,10 +208,6 @@ func (c *Cluster) startNode(env NodeEnv) (Process, error) {
 		MaxAppendBytes: 1 << 20,
 		MaxUncommitted: 4096,
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &ledgerNode{c: c, n: n}, nil
 }
 
 func (c *Cluster) startClient(env ClientEnv) Process {
@@ -196,8 +225,9 @@ func (c *Cluster) startClient(env ClientEnv) Process {
 }
 
 type ledgerNode struct {
-	c *Cluster
-	n *replica.Node
+	c  *Cluster
+	id uint64
+	n  *replica.Node
 }
 
 func (p *ledgerNode) Tick() {
@@ -220,6 +250,7 @@ func (p *ledgerNode) Receive(m Msg) {
 func (p *ledgerNode) Run() ([]Msg, error) {
 	out, err := p.n.Process()
 	if err != nil {
+		p.c.failed(p.id, err)
 		return nil, err
 	}
 	msgs := make([]Msg, 0, len(out.Messages)+len(out.Replies))
@@ -235,6 +266,7 @@ func (p *ledgerNode) Run() ([]Msg, error) {
 				continue
 			}
 			if err != nil {
+				p.c.failed(p.id, err)
 				return nil, err
 			}
 		}
@@ -247,17 +279,18 @@ func (p *ledgerNode) Run() ([]Msg, error) {
 }
 
 type ledgerClient struct {
-	c     *Cluster
-	addr  uint64
-	s     *client.Session
-	rng   *rand.Rand
-	now   func() uint64
-	ready bool
-	left  int
-	pause int
-	call  int
-	batch workload.Batch
-	err   error
+	c       *Cluster
+	addr    uint64
+	s       *client.Session
+	rng     *rand.Rand
+	now     func() uint64
+	ready   bool
+	session uint64
+	left    int
+	pause   int
+	call    int
+	batch   workload.Batch
+	err     error
 }
 
 func (p *ledgerClient) Tick() {
@@ -295,7 +328,7 @@ func (p *ledgerClient) submit() {
 		return
 	}
 	p.call = len(c.calls)
-	c.calls = append(c.calls, Call{Client: p.addr, Op: op, Body: body, Start: p.now()})
+	c.calls = append(c.calls, Call{Client: p.addr, Session: p.session, Op: op, Body: body, Start: p.now()})
 	p.left--
 }
 
@@ -311,6 +344,9 @@ func (p *ledgerClient) Receive(m Msg) {
 		return
 	case p.call < 0:
 		p.ready = r.Status == client.OK
+		if p.ready {
+			p.session = binary.BigEndian.Uint64(r.Body)
+		}
 		return
 	}
 	call := &p.c.calls[p.call]

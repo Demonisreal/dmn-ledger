@@ -124,18 +124,18 @@ func (n *Node) request(index uint64, body []byte) (client.Reply, bool) {
 		Number: binary.BigEndian.Uint64(body[24:]),
 		Op:     client.Op(body[32]),
 	}
-	since, ts := binary.BigEndian.Uint64(body[16:]), binary.BigEndian.Uint64(body[33:])
+	since := binary.BigEndian.Uint64(body[16:])
 	s := n.sessions[r.Client]
 	switch {
 	case s == nil || s.since != since:
 		r.Status = client.SessionUnknown
+	case fresh(s, r.Number):
+		r = n.execute(r, n.entryTime(body), body[requestHead:])
+		s.last, s.access, s.reply = r.Number, index, r
 	case r.Number == s.last && r.Number > 0:
 		r = s.reply
-	case r.Number <= s.last:
-		r.Status = client.Stale
 	default:
-		r = n.execute(r, ts, body[requestHead:])
-		s.last, s.access, s.reply = r.Number, index, r
+		r.Status = client.Stale
 	}
 	return r, true
 }

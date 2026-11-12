@@ -34,6 +34,13 @@ linters:
               desc: deterministic core, single thread
             - pkg: crypto/rand
               desc: deterministic core, randomness is passed in
+        checkers:
+          files:
+            - "**/internal/check/*.go"
+            - "!$test"
+          deny:
+            - pkg: time
+              desc: a seed's verdict must not depend on the machine
     gosec:
       excludes:
         - G104

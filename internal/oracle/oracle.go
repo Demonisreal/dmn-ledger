@@ -71,6 +71,10 @@ func (l *Ledger) Clone() *Ledger {
 	return c
 }
 
+func (l *Ledger) Last() uint64 {
+	return l.last
+}
+
 func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Failure, error) {
 	var size int
 	switch op {

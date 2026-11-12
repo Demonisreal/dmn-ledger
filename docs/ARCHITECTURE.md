@@ -13,12 +13,16 @@ internal/replica     one loop per node: raft + WAL + state
   internal/state     ledger state machine, deterministic
 internal/client      request types and the session core of the SDK
 internal/sim         deterministic simulator driving the same replica code
+internal/check       checkers that watch a simulated run, porcupine per window
+internal/simbug      switch for the planted bugs, only in builds with -tags simbug
 internal/workload    batch generator for the model test, the simulator and benchmarks
+cmd/sim              runs seeds on all cores and prints the command that replays a failure
 ```
 
 `raft`, `state`, `sim`, `replica`, `client` and `workload` use no clock, network, file system,
 goroutines or global randomness. `depguard` in `.golangci.yml` enforces this for `time`, `net`, `os`, `sync` and
-`crypto/rand`. Randomness is a `*rand.Rand` passed in, time is ticks.
+`crypto/rand`. Randomness is a `*rand.Rand` passed in, time is ticks. `check` may run seeds in
+parallel but does not import `time` either: a seed's verdict never depends on the machine.
 
 ## Consensus core (`internal/raft`)
 
@@ -215,8 +219,9 @@ restart and resubmit.
 - Sending: the driver reads the bytes for a `MsgSnap` through `ReadSnapshot`. If that snapshot is
   gone, the message is dropped and the leader tries again later.
 
-`Status()` reports ID, role, term, leader, commit, applied, last index, apply hash and the number of
-sessions. `CheckInvariants()` runs the full state check.
+`Status()` reports ID, role, term, vote, leader, commit, applied, last index, apply hash and the
+number of sessions. `CheckInvariants()` runs the full state check. `Digest()` hashes the snapshot
+bytes, `LedgerDigest()` only the ledger state, which is what an independent model can recompute.
 
 ## Client sessions (`internal/client`)
 
@@ -233,3 +238,90 @@ returns the requests to send and `Result` the final reply of the request that ju
   unknown; the session never registers again on its own, because that would break exactly once.
 - Client IDs are random and new for every session. Reusing one would let delayed requests of the old
   session apply in the new one.
+
+## Simulator (`internal/sim`)
+
+One goroutine runs a whole cluster on virtual time. A seed decides everything: the fault plan, the
+latency and loss of every link, each disk's behaviour on power loss, the workload and the order of
+events with equal time. The nodes are `replica.Node` on `disk.Sim`, the clients are
+`client.Session`. A trace line is written for every event, and `TraceHash` is the SHA-256 over all
+of them; the same seed gives the same hash.
+
+- **Fault plan.** A storm phase of 2 to 6 seconds with up to twelve windows (partitions of several
+  kinds, process crashes, power loss on one or all nodes, crashes after the k-th disk access,
+  failing and slow fsync, EIO, clock jumps), then five quiet seconds in which everything heals and
+  every node runs. Profiles `calm`, `net`, `crash`, `clock` and `all` choose which kinds appear.
+- **Disk time.** A node is busy while its fsyncs run. Its messages leave afterwards, and inputs
+  that arrive meanwhile go into the next `Process` together.
+- **Workload.** 3 to 6 clients with 30 to 60 requests each. After 32 started requests the clients
+  wait until all of them are answered. Each such window starts with no request in flight.
+- **Profiles for sessions.** `evict` runs the `all` faults with two session slots for up to six
+  clients.
+
+## Checkers (`internal/check`)
+
+`check.Run` runs one seed and reports the first violation with seed, virtual time, node and reason.
+While the run goes on, after every event:
+
+| Check | Property | Source |
+|---|---|---|
+| S1 | at most one leader per term | senders of `MsgApp` and `MsgSnap` |
+| S2 | per node and term at most one candidate gets the vote, across restarts | granted `MsgVoteResp` |
+| S3 | the apply hash at each index is the same on every node and never changes | `Status()` |
+| S4 | a node's term never falls, across restarts; its commit never falls within a process | `Status()` |
+| S5 | the disk keeps the node's word: at every 50th promise the disk is cloned, the clone loses power and is opened; an acknowledgement up to m is still covered, a granted vote is still in the hard state | `disk.Sim.Clone` |
+| S6 | state invariants, every 64 applied entries and at the end | `CheckInvariants()` |
+| F1 | a node stops only because of a disk error, never because it found a contradiction or cannot start | stop and start errors |
+| L3 | a run ends within 500 000 events (about 20 times the most a correct run needs) | event count |
+
+At the end:
+
+| Check | Property |
+|---|---|
+| S7 | every node is up, with the same applied index and the same digest |
+| L2 | exactly one leader, every node at the same commit index |
+| L1 | every request is answered; a request open in the quiet phase within two virtual seconds |
+| E1 | every reply belongs to its request: same client, number and operation |
+| E2 | a client told `SessionUnknown` no longer has that session on any node; in `evict` no node holds more sessions than allowed |
+| S8 | oracle replay: all confirmed writes, ordered by their time, run through `internal/oracle`; every reply matches, every successful transfer appears once, and the ledger digest equals the nodes' |
+| S9 | linearizability: porcupine checks each window, starting from the oracle state at the window border |
+
+S8 and S9 are skipped in `evict`, where the outcome of a request cut off by eviction is unknown.
+
+S9's model is the oracle itself. A write steps only if its reply time is later than the model's
+last time and its failures match what the oracle computes; a read steps only if it shows the
+model's state and time. Writes therefore linearize in the order of their times, and two states
+with the same set of linearized operations are equal, which keeps porcupine's cache effective.
+The search is bounded by the input, not by a timeout: windows of at most 32 requests, a handful of
+clients, few accounts.
+
+### Planted bugs
+
+Built with `-tags simbug`, `simbug.Set` switches on one of twelve bugs. The decisions they touch
+live in small functions in `raft/rules.go` and `replica/rules.go`; the tagged twin files contain
+the same functions with the switch. B1 to B3 wrap the disk inside the checker. Without the tag none
+of this code exists.
+
+| Bug | What breaks | Found by |
+|---|---|---|
+| B1 | fsync of the hard state does nothing | F1, S5 |
+| B2 | fsync of the WAL does nothing | S5 |
+| B3 | directory sync after a new segment does nothing | S5 |
+| B4 | acknowledgements leave before the WAL sync | S5 |
+| B5 | entries are stored before the hard state | F1 (the node cannot restart) |
+| B6 | commit by counting replicas for entries of older terms | not found, see below |
+| B7 | votes without comparing logs | S3 |
+| B8 | a follower keeps a conflicting tail | S3, L3 |
+| B9 | a follower commits up to its own log end | S3 |
+| B10 | reads without confirmation by a majority | not found, see below |
+| B11 | sessions do not recognise a repeated request | S8, S9 |
+| B12 | entries are applied with the replica's own clock | S7 |
+
+B6 does not show in the simulator: a new leader appends an empty entry and sends older entries
+only together with it, so every acknowledgement already covers an entry of its own term. B10 needs
+a cut-off leader that still answers reads after a client has finished a write elsewhere; check-
+quorum deposes it before clients find the new leader. The rule tests in `internal/raft` catch both.
+
+`go run ./cmd/sim -seeds 10000 -profile all` runs seeds on all cores and stops at the first failure
+with the command that replays it, for example
+`go run -tags simbug ./cmd/sim -bug B12 -seed 0 -profile all -trace`.
