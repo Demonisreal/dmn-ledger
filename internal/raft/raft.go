@@ -66,6 +66,13 @@ type Raft struct {
 	msgs        []Message
 	hs          HardState
 	readyCommit uint64
+
+	repair     bool
+	nonce      uint64
+	probeTicks int
+	goalTerm   uint64
+	goal       uint64
+	acked      uint64
 }
 
 func New(cfg Config) (*Raft, error) {
@@ -100,6 +107,10 @@ func New(cfg Config) (*Raft, error) {
 		prs:            make([]progress, len(cfg.Peers)),
 		votes:          make([]bool, len(cfg.Peers)),
 		sinceLead:      cfg.ElectionTicks,
+		repair:         cfg.HardState.Repair,
+	}
+	if r.repair {
+		r.nonce = r.rand.Uint64()
 	}
 	lastTerm, err := r.lastTerm()
 	if err != nil {
@@ -127,7 +138,10 @@ func (r *Raft) Tick() error {
 	r.sinceLead++
 	if r.role != Leader {
 		r.elapsed++
-		if r.elapsed >= r.timeout {
+		if r.repair {
+			r.probe()
+		}
+		if r.elapsed >= r.timeout && r.voter() {
 			return r.preVote()
 		}
 		return nil
@@ -213,6 +227,14 @@ func (r *Raft) Step(m Message) error {
 		if r.role == Leader {
 			return r.handleAppResp(m)
 		}
+	case MsgRepairProbe:
+		if r.role == Leader {
+			r.send(Message{Type: MsgRepairInfo, To: m.From, Term: r.term, Index: r.repairGoal(), Seq: m.Seq})
+		}
+	case MsgRepairInfo:
+		if r.goalTerm != r.term && m.Seq == r.nonce {
+			r.goalTerm, r.goal = r.term, m.Index
+		}
 	}
 	return nil
 }
@@ -221,7 +243,7 @@ func (r *Raft) wellFormed(m Message) bool {
 	switch {
 	case m.To != r.id, m.From == r.id, !slices.Contains(r.peers, m.From):
 		return false
-	case m.Type < MsgPreVote, m.Type > MsgSnap:
+	case m.Type < MsgPreVote, m.Type > MsgRepairInfo:
 		return false
 	case m.Term == 0, m.Term == math.MaxUint64, m.LogTerm > m.Term:
 		return false
@@ -267,22 +289,23 @@ func (r *Raft) ReadIndex(tag uint64) error {
 }
 
 func (r *Raft) HasReady() bool {
-	return r.hs != HardState{Term: r.term, Vote: r.vote} || r.snap != nil || len(r.ents) > 0 ||
+	return r.hs != r.hardState() || r.snap != nil || len(r.ents) > 0 ||
 		len(r.msgs) > 0 || r.commit != r.readyCommit || len(r.reads) > 0
 }
 
 func (r *Raft) Ready() Ready {
 	rd := Ready{Snapshot: r.snap, Entries: r.ents, Messages: r.msgs, Commit: r.commit, Reads: r.reads}
-	if hs := (HardState{Term: r.term, Vote: r.vote}); hs != r.hs {
+	if hs := r.hardState(); hs != r.hs {
 		rd.HardState = &hs
 	}
 	return rd
 }
 
 func (r *Raft) Advance() {
-	r.hs = HardState{Term: r.term, Vote: r.vote}
+	r.hs = r.hardState()
 	r.snap, r.ents, r.msgs, r.reads = nil, nil, nil, nil
 	r.readyCommit = r.commit
+	r.heal()
 	if r.role == Leader {
 		r.prs[r.self].match = r.lastIndex()
 		r.maybeCommit()
@@ -298,6 +321,26 @@ func (r *Raft) Status() Status {
 		Lead:   r.lead,
 		Commit: r.commit,
 		Last:   r.lastIndex(),
+		Repair: r.repair,
+	}
+}
+
+func (r *Raft) hardState() HardState {
+	return HardState{Term: r.term, Vote: r.vote, Repair: r.repair}
+}
+
+func (r *Raft) probe() {
+	r.probeTicks++
+	if r.probeTicks >= r.heartbeatTicks && r.lead != 0 && r.goalTerm != r.term {
+		r.probeTicks = 0
+		r.send(Message{Type: MsgRepairProbe, To: r.lead, Term: r.term, Seq: r.nonce})
+	}
+}
+
+func (r *Raft) heal() {
+	if r.repair && r.goalTerm == r.term && r.acked >= r.goal {
+		r.repair = false
+		r.resetTimer()
 	}
 }
 
@@ -328,7 +371,7 @@ func (r *Raft) poll(from uint64) bool {
 
 func (r *Raft) becomeFollower(term, lead uint64) {
 	if term > r.term {
-		r.term, r.vote = term, 0
+		r.term, r.vote, r.acked = term, 0, 0
 		r.dropOlder()
 	}
 	r.role, r.lead = Follower, lead
@@ -404,7 +447,7 @@ func (r *Raft) handlePreVote(m Message) error {
 	if err != nil {
 		return err
 	}
-	grant := m.Term > r.term && r.role != Leader && r.sinceLead >= r.electionTicks &&
+	grant := r.voter() && m.Term > r.term && r.role != Leader && r.sinceLead >= r.electionTicks &&
 		upToDate(m.LogTerm, m.Index, lastTerm, r.lastIndex())
 	if grant {
 		r.send(Message{Type: MsgPreVoteResp, To: m.From, Term: m.Term})
@@ -419,7 +462,7 @@ func (r *Raft) handleVote(m Message) error {
 	if err != nil {
 		return err
 	}
-	if (r.vote == 0 || r.vote == m.From) && upToDate(m.LogTerm, m.Index, lastTerm, r.lastIndex()) {
+	if r.voter() && (r.vote == 0 || r.vote == m.From) && upToDate(m.LogTerm, m.Index, lastTerm, r.lastIndex()) {
 		r.vote = m.From
 		r.resetTimer()
 		r.send(Message{Type: MsgVoteResp, To: m.From, Term: r.term})
@@ -431,7 +474,7 @@ func (r *Raft) handleVote(m Message) error {
 
 func (r *Raft) handleApp(m Message) error {
 	if m.Index < r.commit {
-		r.send(Message{Type: MsgAppResp, To: m.From, Term: r.term, Index: r.commit, Seq: m.Seq})
+		r.ack(m, r.commit)
 		return nil
 	}
 	term, ok, err := r.termAt(m.Index)
@@ -454,7 +497,7 @@ func (r *Raft) handleApp(m Message) error {
 	}
 	last := m.Index + uint64(len(m.Entries))
 	r.followCommit(m.Commit, last)
-	r.send(Message{Type: MsgAppResp, To: m.From, Term: r.term, Index: last, Seq: m.Seq})
+	r.ack(m, last)
 	return nil
 }
 
@@ -477,7 +520,7 @@ func (r *Raft) conflictHint(i, term uint64, found bool) (uint64, error) {
 
 func (r *Raft) handleSnap(m Message) error {
 	if m.Index <= r.commit {
-		r.send(Message{Type: MsgAppResp, To: m.From, Term: r.term, Index: r.commit, Seq: m.Seq})
+		r.ack(m, r.commit)
 		return nil
 	}
 	term, ok, err := r.termAt(m.Index)
@@ -489,7 +532,7 @@ func (r *Raft) handleSnap(m Message) error {
 		r.ents = nil
 	}
 	r.commit = m.Index
-	r.send(Message{Type: MsgAppResp, To: m.From, Term: r.term, Index: m.Index, Seq: m.Seq})
+	r.ack(m, m.Index)
 	return nil
 }
 
@@ -500,9 +543,9 @@ func (r *Raft) handleAppResp(m Message) error {
 	p.seq = max(p.seq, m.Seq)
 	r.releaseReads()
 	switch {
-	case m.Reject && m.Index == 0:
+	case m.Reject && (m.Index == 0 || m.Index >= p.next):
 	case m.Reject:
-		p.next = max(p.match+1, min(m.Index, p.next))
+		p.next, p.match = m.Index, min(p.match, m.Index-1)
 		p.inflight = false
 		return r.sendApp(i, true)
 	case m.Index > p.match && m.Index <= r.lastIndex():

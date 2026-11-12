@@ -113,6 +113,7 @@ type node struct {
 	offered  map[uint64]uint64
 	commit   uint64
 	reads    []Read
+	healedIn uint64
 }
 
 type envelope struct {
@@ -132,6 +133,7 @@ type cluster struct {
 	hold     func() bool
 	crashAt  func(n *node) int
 	installs int
+	heals    int
 }
 
 func newCluster(t testing.TB, size int, tune tuning, seed uint64) *cluster {
@@ -170,6 +172,7 @@ func (c *cluster) boot(n *node) {
 	}
 	n.r = r
 	n.applied, n.hash, n.commit = n.log.snap.Index, n.snapHash, n.log.snap.Index
+	n.healedIn = 0
 	clear(n.offered)
 }
 
@@ -210,6 +213,10 @@ func (c *cluster) process(n *node) {
 		}
 		if rd.HardState != nil {
 			c.chk.hardState(n, *rd.HardState)
+			if n.hs.Repair && !rd.HardState.Repair {
+				c.chk.healed(n)
+				c.heals++
+			}
 			n.hs = *rd.HardState
 		}
 		if at == 1 {
@@ -251,7 +258,14 @@ func (c *cluster) process(n *node) {
 		n.reads = append(n.reads, rd.Reads...)
 		c.chk.reads(n, rd.Reads)
 		n.r.Advance()
+		c.watchRepair(n)
 		c.chk.status(n)
+	}
+}
+
+func (c *cluster) watchRepair(n *node) {
+	if st := n.r.Status(); n.hs.Repair && !st.Repair && n.healedIn == 0 {
+		n.healedIn = st.Term
 	}
 }
 
@@ -317,6 +331,15 @@ func (c *cluster) crash(n *node) {
 	c.boot(n)
 }
 
+func (c *cluster) damage(n *node, keep int) {
+	n.log.ents = slices.Clone(n.log.ents[:keep])
+	if n.log.LastIndex() < n.log.snap.Index {
+		n.log.first, n.log.ents = n.log.snap.Index+1, nil
+	}
+	n.hs.Repair = true
+	c.crash(n)
+}
+
 func (c *cluster) snapshot(n *node, keepOld bool) {
 	c.process(n)
 	if n.applied <= n.log.snap.Index {
@@ -343,6 +366,7 @@ func (c *cluster) deliver(env envelope) {
 		c.chk.fail("node %d: Step %v: %v", n.id, m.Type, err)
 		return
 	}
+	c.watchRepair(n)
 	c.after(n)
 }
 
@@ -452,6 +476,8 @@ type entryID struct {
 	prevTerm uint64
 }
 
+type holding struct{ node, index, term uint64 }
+
 type committedEntry struct {
 	seenIn uint64
 	term   uint64
@@ -464,6 +490,7 @@ type checker struct {
 	leaders   map[uint64]uint64
 	votes     map[voteKey]uint64
 	ents      map[entryKey]entryID
+	held      map[holding]bool
 	commits   map[uint64]committedEntry
 	hashes    map[uint64]uint64
 	terms     map[uint64]uint64
@@ -476,6 +503,7 @@ func newChecker() *checker {
 		leaders:   map[uint64]uint64{},
 		votes:     map[voteKey]uint64{},
 		ents:      map[entryKey]entryID{},
+		held:      map[holding]bool{},
 		commits:   map[uint64]committedEntry{},
 		hashes:    map[uint64]uint64{},
 		terms:     map[uint64]uint64{},
@@ -508,12 +536,15 @@ func (chk *checker) sent(n *node, msgs []Message) {
 
 func (chk *checker) promises(n *node, msgs []Message) {
 	for _, m := range msgs {
+		if n.hs.Repair && votingOrLeading(m) {
+			chk.fail("repair: node %d sends %v in term %d, its disk says repair", n.id, m.Type, m.Term)
+		}
 		switch {
 		case m.Type == MsgAppResp && !m.Reject && (m.Term != n.hs.Term || m.Index > n.log.LastIndex()):
 			chk.fail("promise: node %d acknowledged %d in term %d, disk has term %d and ends at %d", n.id, m.Index, m.Term, n.hs.Term, n.log.LastIndex())
-		case m.Type == MsgVoteResp && !m.Reject && n.hs != (HardState{Term: m.Term, Vote: m.To}):
+		case m.Type == MsgVoteResp && !m.Reject && (n.hs.Term != m.Term || n.hs.Vote != m.To):
 			chk.fail("promise: node %d granted %d in term %d, disk has %+v", n.id, m.To, m.Term, n.hs)
-		case m.Type == MsgVote && n.hs != (HardState{Term: m.Term, Vote: n.id}):
+		case m.Type == MsgVote && (n.hs.Term != m.Term || n.hs.Vote != n.id):
 			chk.fail("promise: node %d campaigns in term %d, disk has %+v", n.id, m.Term, n.hs)
 		case (m.Type == MsgApp || m.Type == MsgSnap) && m.Term != n.hs.Term:
 			chk.fail("promise: node %d leads term %d, disk has term %d", n.id, m.Term, n.hs.Term)
@@ -521,6 +552,16 @@ func (chk *checker) promises(n *node, msgs []Message) {
 			chk.fail("promise: node %d sends entries up to %d, disk ends at %d", n.id, m.Index+uint64(len(m.Entries)), n.log.LastIndex())
 		}
 	}
+}
+
+func votingOrLeading(m Message) bool {
+	switch m.Type {
+	case MsgPreVote, MsgVote, MsgApp, MsgSnap:
+		return true
+	case MsgPreVoteResp, MsgVoteResp:
+		return !m.Reject
+	}
+	return false
 }
 
 func (chk *checker) leader(id, term uint64) {
@@ -534,11 +575,28 @@ func (chk *checker) hardState(n *node, hs HardState) {
 	if hs.Term < chk.terms[n.id] {
 		chk.fail("node %d: term fell from %d to %d", n.id, chk.terms[n.id], hs.Term)
 	}
+	if hs.Repair && !n.hs.Repair {
+		chk.fail("node %d: the core set repair on its own", n.id)
+	}
 	chk.terms[n.id] = hs.Term
+}
+
+func (chk *checker) healed(n *node) {
+	for i := n.log.snap.Index + 1; i <= chk.maxCommit; i++ {
+		ce, ok := chk.commits[i]
+		if !ok || ce.seenIn > n.healedIn || !chk.held[holding{n.id, i, ce.term}] {
+			continue
+		}
+		if t, err := n.log.Term(i); err != nil || t != ce.term {
+			chk.fail("repair: node %d left repair in term %d without entry %d of term %d, which it once stored and which is committed", n.id, n.healedIn, i, ce.term)
+			return
+		}
+	}
 }
 
 func (chk *checker) stored(n *node, ents []Entry) {
 	for _, e := range ents {
+		chk.held[holding{n.id, e.Index, e.Term}] = true
 		prev, err := n.log.Term(e.Index - 1)
 		if err != nil {
 			prev = ^uint64(0)

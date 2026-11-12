@@ -11,7 +11,7 @@ import (
 
 func (n *Node) persist(rd raft.Ready) error {
 	if rd.HardState != nil {
-		if err := n.hs.Save(wal.HardState(*rd.HardState)); err != nil {
+		if err := n.hs.Save(wal.HardState{Term: rd.HardState.Term, Vote: rd.HardState.Vote}); err != nil {
 			return err
 		}
 	}

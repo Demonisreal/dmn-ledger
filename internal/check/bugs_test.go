@@ -35,8 +35,9 @@ func TestBugsAreFound(t *testing.T) {
 		{"B11", sim.ProfileEvict, 500, []string{"S8"}},
 		{"B12", sim.ProfileAll, 500, []string{"S7"}},
 	}
+	huntedInRaft := []string{"B15", "B16", "B17"}
 	for _, name := range simbug.Names() {
-		if !slices.ContainsFunc(hunts, func(h hunt) bool { return h.bug == name }) {
+		if !slices.Contains(huntedInRaft, name) && !slices.ContainsFunc(hunts, func(h hunt) bool { return h.bug == name }) {
 			t.Errorf("%s is not hunted", name)
 		}
 	}

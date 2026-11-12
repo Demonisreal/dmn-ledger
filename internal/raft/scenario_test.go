@@ -349,3 +349,141 @@ func TestStaleAckAfterReelection(t *testing.T) {
 	c.settle()
 	c.checkOK()
 }
+
+func TestLostEntriesComeBackWithoutStorm(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	l, f := c.node(1), c.node(3)
+	c.elect(l)
+	for _, body := range []string{"a", "b", "c", "d", "e"} {
+		c.propose(l, body)
+		c.settle()
+	}
+	c.damage(f, 2)
+	refusals, appends := 0, 0
+	for round := range 20 {
+		for _, n := range c.nodes {
+			c.tick(n)
+		}
+		if round == 0 {
+			c.propose(l, "f")
+		}
+		for k := 0; len(c.net) > 0; k++ {
+			if k == 50 {
+				t.Fatalf("round %d: network did not settle, %d refusals and %d appends to the damaged node", round, refusals, appends)
+			}
+			for _, env := range c.take(func(Message) bool { return true }) {
+				switch m := env.m; {
+				case m.Type == MsgAppResp && m.From == 3 && m.Reject:
+					refusals++
+				case m.Type == MsgApp && m.To == 3 && len(m.Entries) > 0:
+					appends++
+				}
+				c.deliver(env)
+			}
+		}
+		c.checkOK()
+	}
+	if f.hs.Repair || !slices.Equal(f.log.terms(), l.log.terms()) || f.applied != l.applied {
+		t.Fatalf("damaged node disk %+v log %v applied %d, leader log %v applied %d", f.hs, f.log.terms(), f.applied, l.log.terms(), l.applied)
+	}
+	if l.r.role != Leader || l.r.term != 1 || l.applied != 7 {
+		t.Fatalf("leader %+v applied %d, want the same leader to apply 7", l.r.Status(), l.applied)
+	}
+	if refusals > 1 || appends > 2 {
+		t.Fatalf("%d refusals and %d appends to bring back 5 entries", refusals, appends)
+	}
+}
+
+func TestRepairingNodeDoesNotHelpElect(t *testing.T) {
+	for _, size := range []int{3, 5} {
+		c := newCluster(t, size, defaultTuning, 1)
+		old := c.node(1)
+		c.elect(old)
+		c.propose(old, "a")
+		c.settle()
+		c.isolate(1)
+		c.damage(c.node(2), 1)
+		var lead *node
+		for range 200 {
+			for _, n := range c.nodes[1:] {
+				c.tick(n)
+			}
+			c.settle()
+			for _, n := range c.nodes[1:] {
+				if n.r.role == Leader {
+					lead = n
+				}
+			}
+		}
+		switch {
+		case size == 3 && lead != nil:
+			t.Fatalf("size 3: node %d elected while the other is in repair", lead.id)
+		case size == 3 && c.node(3).r.term != 1:
+			t.Fatalf("size 3: term moved to %d without a leader", c.node(3).r.term)
+		case size == 5 && (lead == nil || lead.id == 2):
+			t.Fatalf("size 5: leader %+v, want one of the three healthy nodes", lead)
+		}
+		c.heal()
+		for range 100 {
+			for _, n := range c.nodes {
+				c.tick(n)
+			}
+			c.settle()
+		}
+		if lead = c.leader(); lead == nil || c.node(2).hs.Repair || c.node(2).applied != lead.applied {
+			t.Fatalf("size %d: after the partition leader %v, damaged node %+v", size, lead, c.node(2).r.Status())
+		}
+		c.checkOK()
+	}
+}
+
+func TestTwoRepairingNodes(t *testing.T) {
+	t.Run("leader stays and heals both", func(t *testing.T) {
+		c := newCluster(t, 3, defaultTuning, 1)
+		l := c.node(1)
+		c.elect(l)
+		for _, body := range []string{"a", "b", "c"} {
+			c.propose(l, body)
+			c.settle()
+		}
+		c.damage(c.node(2), 1)
+		c.damage(c.node(3), 2)
+		for range 50 {
+			for _, n := range c.nodes {
+				c.tick(n)
+			}
+			c.settle()
+		}
+		if l.r.role != Leader || l.r.term != 1 {
+			t.Fatalf("leader %+v", l.r.Status())
+		}
+		for _, n := range c.nodes[1:] {
+			if n.hs.Repair || !slices.Equal(n.log.terms(), l.log.terms()) {
+				t.Fatalf("node %d disk %+v log %v, leader log %v", n.id, n.hs, n.log.terms(), l.log.terms())
+			}
+		}
+		c.checkOK()
+	})
+	t.Run("no leader, no election", func(t *testing.T) {
+		c := newCluster(t, 3, defaultTuning, 1)
+		l := c.node(1)
+		c.elect(l)
+		c.propose(l, "a")
+		c.settle()
+		c.damage(c.node(2), 1)
+		c.damage(c.node(3), 1)
+		c.crash(l)
+		for range 200 {
+			for _, n := range c.nodes {
+				c.tick(n)
+			}
+			c.settle()
+		}
+		for _, n := range c.nodes {
+			if st := n.r.Status(); st.Role == Leader || st.Term != 1 || n.id != 1 && !n.hs.Repair {
+				t.Fatalf("node %d %+v, disk %+v, want the cluster to stand", n.id, st, n.hs)
+			}
+		}
+		c.checkOK()
+	})
+}

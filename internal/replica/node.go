@@ -156,7 +156,7 @@ func Open(cfg Config) (_ *Node, err error) {
 		MaxUncommitted: cfg.MaxUncommitted,
 		Rand:           cfg.Rand,
 		Log:            logView{n},
-		HardState:      raft.HardState(hs),
+		HardState:      raft.HardState{Term: hs.Term, Vote: hs.Vote},
 	})
 	if err != nil {
 		return nil, err

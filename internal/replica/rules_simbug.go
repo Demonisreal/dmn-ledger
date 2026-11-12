@@ -17,7 +17,7 @@ func (n *Node) persist(rd raft.Ready) error {
 		}
 	}
 	if rd.HardState != nil && !simbug.On("B5") {
-		if err := n.hs.Save(wal.HardState(*rd.HardState)); err != nil {
+		if err := n.hs.Save(wal.HardState{Term: rd.HardState.Term, Vote: rd.HardState.Vote}); err != nil {
 			return err
 		}
 	}
@@ -37,7 +37,7 @@ func (n *Node) persist(rd raft.Ready) error {
 		}
 	}
 	if rd.HardState != nil && simbug.On("B5") {
-		return n.hs.Save(wal.HardState(*rd.HardState))
+		return n.hs.Save(wal.HardState{Term: rd.HardState.Term, Vote: rd.HardState.Vote})
 	}
 	return nil
 }

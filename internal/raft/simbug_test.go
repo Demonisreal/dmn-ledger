@@ -14,7 +14,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/simbug"
 )
 
-var bug = flag.String("bug", "", "run the tests with this planted bug, B6 to B10")
+var bug = flag.String("bug", "", "run the tests with this planted bug, B6 to B10 or B15 to B17")
 
 func TestMain(m *testing.M) {
 	flag.Parse()
@@ -38,14 +38,14 @@ func TestRuleTestsCatchTheCoreBugs(t *testing.T) {
 		{"B8", []string{"TestFollowerAppend", "TestFigure7", "TestFigure8", "TestStaleAckAfterReelection", "TestRandomSchedules"}},
 		{"B9", []string{"TestFollowerAppend", "TestRandomSchedules"}},
 		{"B10", []string{"TestReadIndex", "TestReadConfirmedByQuorum", "TestDeposedLeaderGetsNoRead", "TestDeposedLeaderAfterPartitionGetsNoRead", "TestReadSurvivesStepDown", "TestRandomSchedules"}},
+		{"B15", []string{"TestRepairingNodeDoesNotVote", "TestRepairedNodeVotesAgain", "TestRepairingNodeDoesNotHelpElect", "TestTwoRepairingNodes", "TestRandomSchedules"}},
+		{"B16", []string{"TestRepairProbe", "TestRandomSchedules"}},
+		{"B17", []string{"TestRepairEndsOneReadyLater", "TestRandomSchedules"}},
 	}
 	for _, c := range caught {
 		t.Run(c.bug, func(t *testing.T) {
 			t.Parallel()
 			args := []string{"-bug", c.bug, "-test.run", "^(" + strings.Join(c.tests, "|") + ")$"}
-			if testing.Short() {
-				args = append(args, "-test.short")
-			}
 			if d, ok := t.Deadline(); ok {
 				args = append(args, "-test.timeout", time.Until(d).String())
 			}

@@ -3,6 +3,7 @@ package raft
 import (
 	"errors"
 	"math/rand/v2"
+	"slices"
 	"testing"
 )
 
@@ -21,7 +22,7 @@ func (in *fuzzInput) next() byte {
 
 func (in *fuzzInput) message() Message {
 	m := Message{
-		Type:    MsgType(in.next()%7 + 1),
+		Type:    MsgType(in.next()%9 + 1),
 		From:    uint64(in.next()%3 + 1),
 		To:      1,
 		Term:    uint64(in.next() % 8),
@@ -41,13 +42,15 @@ func (in *fuzzInput) message() Message {
 }
 
 func FuzzStep(f *testing.F) {
-	f.Add([]byte{})
-	f.Add([]byte{3, 2, 3, 3, 2, 0, 0, 0, 4, 1, 4, 1, 3, 2, 2, 0, 1, 3})
-	f.Add([]byte{4, 4, 1, 3, 3, 2, 5, 1, 2, 1, 0, 4, 6, 1, 3, 5, 2, 0, 1, 0})
-	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 1, 3, 3, 2, 0, 0, 0, 3, 1, 3, 3, 3, 2, 0, 0, 0})
-	f.Fuzz(func(t *testing.T, b []byte) {
+	f.Add([]byte{}, false)
+	f.Add([]byte{3, 2, 3, 3, 2, 0, 0, 0, 4, 1, 4, 1, 3, 2, 2, 0, 1, 3}, false)
+	f.Add([]byte{4, 4, 1, 3, 3, 2, 5, 1, 2, 1, 0, 4, 6, 1, 3, 5, 2, 0, 1, 0}, false)
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 1, 3, 3, 2, 0, 0, 0, 3, 1, 3, 3, 3, 2, 0, 0, 0}, false)
+	f.Add([]byte{3, 4, 1, 2, 3, 2, 0, 0, 0, 0, 3, 8, 1, 2, 4, 0, 0, 3, 0, 3, 4, 1, 2, 3, 2, 0, 0, 2, 0, 3, 2, 2, 3, 4, 2, 0, 0, 0}, true)
+	f.Add([]byte{3, 2, 2, 3, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 7, 1, 2, 0, 0, 0, 1, 0}, true)
+	f.Fuzz(func(t *testing.T, b []byte, repair bool) {
 		log := newMemLog(1, 1, 2)
-		hs := HardState{Term: 2}
+		hs := HardState{Term: 2, Repair: repair}
 		cfg := Config{
 			ID: 1, Peers: []uint64{1, 2, 3}, ElectionTicks: 3, HeartbeatTicks: 1, SnapshotTicks: 3,
 			MaxAppendBytes: 2, MaxUncommitted: 8, Rand: rand.New(rand.NewPCG(1, 2)), Log: log, HardState: hs,
@@ -57,7 +60,8 @@ func FuzzStep(f *testing.F) {
 			t.Fatal(err)
 		}
 		in := &fuzzInput{b: b}
-		var commit uint64
+		var commit, acked uint64
+		var goals []uint64
 		for len(in.b) > 0 {
 			switch op := in.next(); op % 8 {
 			case 0:
@@ -73,7 +77,12 @@ func FuzzStep(f *testing.F) {
 					err = nil
 				}
 			default:
-				err = r.Step(in.message())
+				m := in.message()
+				if m.Type == MsgRepairInfo && m.Seq == 3 {
+					m.Seq = r.nonce
+					goals = append(goals, m.Index)
+				}
+				err = r.Step(m)
 			}
 			if errors.Is(err, ErrSafety) {
 				return
@@ -89,7 +98,21 @@ func FuzzStep(f *testing.F) {
 				if rd.HardState.Term < hs.Term || rd.HardState.Term == hs.Term && hs.Vote != 0 && rd.HardState.Vote != hs.Vote {
 					t.Fatalf("hard state %+v after %+v", *rd.HardState, hs)
 				}
+				if rd.HardState.Repair && !hs.Repair {
+					t.Fatalf("hard state %+v after %+v, the core set repair", *rd.HardState, hs)
+				}
+				if hs.Repair && !rd.HardState.Repair && !slices.ContainsFunc(goals, func(i uint64) bool { return i <= acked }) {
+					t.Fatalf("repair ends after acknowledging up to %d, the leader named %v", acked, goals)
+				}
 				hs = *rd.HardState
+			}
+			for _, m := range rd.Messages {
+				if hs.Repair && votingOrLeading(m) {
+					t.Fatalf("%v in repair: %+v", m.Type, m)
+				}
+				if m.Type == MsgAppResp && !m.Reject {
+					acked = max(acked, m.Index)
+				}
 			}
 			if rd.Snapshot != nil {
 				if rd.Snapshot.Index <= commit {

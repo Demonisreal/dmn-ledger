@@ -21,6 +21,8 @@ func TestHigherTermBecomesFollower(t *testing.T) {
 		{"vote response", Message{Type: MsgVoteResp, Term: 5, Reject: true}, Follower, 5, 0, 0},
 		{"append response", Message{Type: MsgAppResp, Term: 5, Reject: true}, Follower, 5, 0, 0},
 		{"rejected prevote response", Message{Type: MsgPreVoteResp, Term: 5, Reject: true}, Follower, 5, 0, 0},
+		{"repair probe", Message{Type: MsgRepairProbe, Term: 5, Seq: 7}, Follower, 5, 0, 0},
+		{"repair info", Message{Type: MsgRepairInfo, Term: 5, Index: 1, Seq: 7}, Follower, 5, 0, 0},
 		{"prevote", Message{Type: MsgPreVote, Term: 5, Index: 1, LogTerm: 1}, Leader, 1, 1, 1},
 		{"granted prevote response", Message{Type: MsgPreVoteResp, Term: 5}, Leader, 1, 1, 1},
 	}
@@ -52,6 +54,8 @@ func TestLowerTermRejected(t *testing.T) {
 		{"append response", Message{Type: MsgAppResp, Term: 2, Index: 1}, 0},
 		{"vote response", Message{Type: MsgVoteResp, Term: 2}, 0},
 		{"prevote response", Message{Type: MsgPreVoteResp, Term: 2}, 0},
+		{"repair probe", Message{Type: MsgRepairProbe, Term: 2, Seq: 7}, 0},
+		{"repair info", Message{Type: MsgRepairInfo, Term: 2, Index: 1, Seq: 7}, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -542,10 +546,11 @@ func TestLeaderHandlesAppResp(t *testing.T) {
 		{"success", 1, 2, Message{Index: 3}, 3, 4, true, 3, 1},
 		{"stale success", 3, 4, Message{Index: 1}, 3, 4, false, 0, 0},
 		{"reject lowers next", 1, 4, Message{Index: 2, Reject: true}, 1, 2, true, 1, 3},
-		{"reject never below match", 2, 4, Message{Index: 1, Reject: true}, 2, 3, true, 2, 2},
+		{"reject below match rewinds", 2, 4, Message{Index: 2, Reject: true}, 1, 2, true, 1, 3},
 		{"stale-term rejection ignored", 1, 4, Message{Index: 0, Reject: true}, 1, 4, false, 0, 0},
 		{"success beyond log ignored", 1, 2, Message{Index: 9}, 1, 2, false, 0, 0},
-		{"reject never raises next", 1, 3, Message{Index: 9, Reject: true}, 1, 3, true, 2, 2},
+		{"reject at next dropped", 1, 3, Message{Index: 3, Reject: true}, 1, 3, false, 0, 0},
+		{"reject above next dropped", 1, 3, Message{Index: 9, Reject: true}, 1, 3, false, 0, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1076,5 +1081,432 @@ func TestSlowSnapshotKeepsLeader(t *testing.T) {
 	}
 	if len(held) == 0 || n2.applied != 6 || n2.r.commit != n1.r.commit {
 		t.Fatalf("follower applied %d commit %d, leader commit %d, %d snapshots held", n2.applied, n2.r.commit, n1.r.commit, len(held))
+	}
+}
+
+func TestRejectBelowMatchRewinds(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n, f := c.node(1), c.node(2)
+	c.elect(n)
+	for _, body := range []string{"a", "b", "c"} {
+		c.propose(n, body)
+		c.settle()
+	}
+	if p := n.r.prs[1]; p.match != 4 || n.r.commit != 4 {
+		t.Fatalf("progress %+v commit %d", p, n.r.commit)
+	}
+	c.damage(f, 1)
+	c.tick(n)
+	c.tick(n)
+	c.deliverAll(to(2))
+	rej := c.take(from(2))
+	if len(rej) != 1 || !rej[0].m.Reject || rej[0].m.Index != 2 {
+		t.Fatalf("want one refusal with hint 2: %+v", rej)
+	}
+	c.deliver(rej[0])
+	if p := n.r.prs[1]; p.match != 1 || p.next != 2 || n.r.commit != 4 {
+		t.Fatalf("progress %+v commit %d, want match 1 next 2 commit 4", p, n.r.commit)
+	}
+	c.settle()
+	if p := n.r.prs[1]; p.match != 4 || !slices.Equal(f.log.terms(), n.log.terms()) {
+		t.Fatalf("progress %+v, follower log %v, leader log %v", p, f.log.terms(), n.log.terms())
+	}
+}
+
+func TestRejectAtOrAboveNextIsDropped(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.node(1)
+	c.elect(n)
+	for _, body := range []string{"a", "b", "c"} {
+		c.propose(n, body)
+	}
+	c.drop(func(Message) bool { return true })
+	p := &n.r.prs[1]
+	p.match, p.next, p.inflight = 1, 5, true
+	for range 10 {
+		c.step(n, Message{Type: MsgAppResp, From: 2, Term: 1, Index: 3, Reject: true})
+	}
+	got := c.take(to(2))
+	if len(got) != 1 || got[0].m.Index != 2 || len(got[0].m.Entries) != 2 {
+		t.Fatalf("ten copies of one refusal sent %+v, want one append after 2", got)
+	}
+	for _, hint := range []uint64{3, 4, 9} {
+		c.step(n, Message{Type: MsgAppResp, From: 2, Term: 1, Index: hint, Reject: true})
+	}
+	if got := c.take(to(2)); len(got) > 0 || p.match != 1 || p.next != 3 {
+		t.Fatalf("refusals at or above next sent %+v, progress %+v", got, *p)
+	}
+}
+
+func TestRepairComesFromHardState(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2, Vote: 3, Repair: true}, 1, 2)
+	if st := n.r.Status(); !st.Repair || n.r.HasReady() {
+		t.Fatalf("status %+v, ready %v", st, n.r.HasReady())
+	}
+	c.must(n, n.r.Step(Message{Type: MsgApp, From: 2, To: 1, Term: 3, Index: 2, LogTerm: 2}))
+	if rd := n.r.Ready(); rd.HardState == nil || *rd.HardState != (HardState{Term: 3, Repair: true}) {
+		t.Fatalf("hard state %+v, want term 3 still in repair", rd.HardState)
+	}
+	c.process(n)
+	nonce := n.r.nonce
+	c.crash(n)
+	if !n.r.Status().Repair || n.r.nonce == nonce {
+		t.Fatalf("after restart: status %+v, nonce %d, was %d", n.r.Status(), n.r.nonce, nonce)
+	}
+}
+
+func TestRepairingNodeDoesNotVote(t *testing.T) {
+	cases := []struct {
+		name string
+		m    Message
+		term uint64
+	}{
+		{"pre-vote", Message{Type: MsgPreVote, Term: 3, Index: 2, LogTerm: 2}, 2},
+		{"vote", Message{Type: MsgVote, Term: 2, Index: 2, LogTerm: 2}, 2},
+		{"vote in a higher term", Message{Type: MsgVote, Term: 3, Index: 2, LogTerm: 2}, 3},
+	}
+	for _, tc := range cases {
+		for _, repair := range []bool{false, true} {
+			name := tc.name
+			if repair {
+				name += " in repair"
+			}
+			t.Run(name, func(t *testing.T) {
+				c := newCluster(t, 3, defaultTuning, 1)
+				n := c.load(1, HardState{Term: 2, Repair: repair}, 1, 2)
+				tc.m.From = 2
+				c.step(n, tc.m)
+				resp := c.only(1)
+				if resp.Reject != repair {
+					t.Fatalf("response %+v, want refusal %v", resp, repair)
+				}
+				if repair && (resp.Term != tc.term || n.hs != (HardState{Term: tc.term, Repair: true})) {
+					t.Fatalf("refused in term %d, disk %+v, want term %d without a vote", resp.Term, n.hs, tc.term)
+				}
+			})
+		}
+	}
+	t.Run("timeout", func(t *testing.T) {
+		c := newCluster(t, 3, defaultTuning, 1)
+		n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2)
+		if k := ticksUntil(c, n, MsgPreVote, 100); k != -1 {
+			t.Fatalf("pre-vote after %d ticks in repair", k)
+		}
+		if st := n.r.Status(); st.Role != Follower || st.Term != 2 {
+			t.Fatalf("status %+v", st)
+		}
+	})
+}
+
+func TestRepairingNodeCountsForCommitAndReads(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n, f := c.node(1), c.node(3)
+	c.elect(n)
+	c.propose(n, "a")
+	c.settle()
+	c.damage(f, 0)
+	c.isolate(2)
+	i := c.propose(n, "b")
+	c.settle()
+	if n.r.commit != i || f.r.commit != 2 || f.applied != 2 {
+		t.Fatalf("leader commit %d, follower commit %d applied %d, want %d with the follower in repair", n.r.commit, f.r.commit, f.applied, i)
+	}
+	c.must(n, c.read(n, 7))
+	c.settle()
+	if !slices.Equal(n.reads, []Read{{Tag: 7, Index: i}}) {
+		t.Fatalf("reads %+v", n.reads)
+	}
+	for range 40 {
+		c.tick(n)
+		c.settle()
+	}
+	if n.r.role != Leader || !f.r.Status().Repair || f.r.commit != i {
+		t.Fatalf("leader %+v, follower %+v", n.r.Status(), f.r.Status())
+	}
+}
+
+func TestRepairProbe(t *testing.T) {
+	probes := func(c *cluster, id uint64) []Message {
+		var got []Message
+		for _, env := range c.take(func(m Message) bool { return m.From == id && m.Type == MsgRepairProbe }) {
+			got = append(got, env.m)
+		}
+		return got
+	}
+	t.Run("every heartbeat to the leader", func(t *testing.T) {
+		c := newCluster(t, 3, defaultTuning, 1)
+		n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2)
+		for range 10 {
+			c.tick(n)
+		}
+		if got := probes(c, 1); len(got) > 0 {
+			t.Fatalf("probe without a known leader: %+v", got)
+		}
+		c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 2, LogTerm: 2})
+		c.sent(1)
+		var at []int
+		for k := 1; k <= 6; k++ {
+			c.tick(n)
+			for _, m := range probes(c, 1) {
+				if m.To != 2 || m.Term != 2 || m.Seq != n.r.nonce {
+					t.Fatalf("probe %+v, want to 2 in term 2 with nonce %d", m, n.r.nonce)
+				}
+				at = append(at, k)
+			}
+		}
+		if !slices.Equal(at, []int{1, 3, 5}) {
+			t.Fatalf("probes at ticks %v, want every %d ticks", at, defaultTuning.heartbeat)
+		}
+	})
+	t.Run("leader answers with its last index", func(t *testing.T) {
+		c := newCluster(t, 3, defaultTuning, 1)
+		l := c.node(1)
+		c.elect(l)
+		c.propose(l, "a")
+		c.settle()
+		c.propose(l, "b")
+		c.drop(func(Message) bool { return true })
+		c.step(l, Message{Type: MsgRepairProbe, From: 2, Term: 1, Seq: 77})
+		if m := c.only(1); m.Type != MsgRepairInfo || m.To != 2 || m.Term != 1 || m.Index != 3 || m.Seq != 77 {
+			t.Fatalf("answer %+v, want RepairInfo to 2 with index 3 and seq 77, commit is %d", m, l.r.commit)
+		}
+	})
+	t.Run("follower drops it", func(t *testing.T) {
+		c := newCluster(t, 3, defaultTuning, 1)
+		c.elect(c.node(1))
+		c.step(c.node(3), Message{Type: MsgRepairProbe, From: 2, Term: 1, Seq: 77})
+		if got := c.sent(3); len(got) > 0 {
+			t.Fatalf("follower answered %+v", got)
+		}
+	})
+	t.Run("lower term dropped", func(t *testing.T) {
+		c := newCluster(t, 3, defaultTuning, 1)
+		l := c.load(1, HardState{Term: 2}, 1)
+		c.elect(l)
+		c.step(l, Message{Type: MsgRepairProbe, From: 2, Term: 2, Seq: 77})
+		if got := c.sent(1); len(got) > 0 {
+			t.Fatalf("leader of term 3 answered a probe of term 2: %+v", got)
+		}
+	})
+}
+
+func TestProbeGoesOnlyToTheKnownLeader(t *testing.T) {
+	c := newCluster(t, 5, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2)
+	ticks := func() []uint64 {
+		var dst []uint64
+		for range 10 {
+			c.tick(n)
+		}
+		for _, m := range c.sent(1) {
+			if m.Type == MsgRepairProbe {
+				dst = append(dst, m.To)
+			}
+		}
+		return dst
+	}
+	c.step(n, Message{Type: MsgApp, From: 3, Term: 2, Index: 2, LogTerm: 2})
+	if dst := ticks(); len(dst) == 0 || slices.ContainsFunc(dst, func(id uint64) bool { return id != 3 }) {
+		t.Fatalf("probes to %v, want only to leader 3", dst)
+	}
+	c.step(n, Message{Type: MsgVote, From: 4, Term: 3, Index: 2, LogTerm: 2})
+	if dst := ticks(); len(dst) > 0 {
+		t.Fatalf("probes to %v in term 3 without a known leader", dst)
+	}
+	c.step(n, Message{Type: MsgApp, From: 4, Term: 3, Index: 2, LogTerm: 2})
+	if dst := ticks(); len(dst) == 0 || slices.ContainsFunc(dst, func(id uint64) bool { return id != 4 }) {
+		t.Fatalf("probes to %v, want only to leader 4", dst)
+	}
+}
+
+func TestRepairGoal(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2)
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 2, LogTerm: 2})
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 4, Seq: n.r.nonce})
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 3, Seq: n.r.nonce})
+	c.sent(1)
+	for range 10 {
+		c.tick(n)
+	}
+	for _, m := range c.sent(1) {
+		if m.Type == MsgRepairProbe {
+			t.Fatalf("probe %+v with a goal for the term", m)
+		}
+	}
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 2, LogTerm: 2, Entries: []Entry{ent(3, 2)}})
+	if !n.hs.Repair || !n.r.Status().Repair {
+		t.Fatal("left repair at 3, the first answer in the term named 4")
+	}
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 3, LogTerm: 2, Entries: []Entry{ent(4, 2)}})
+	if n.hs.Repair || n.r.Status().Repair {
+		t.Fatalf("still in repair after acknowledging the goal: %+v", n.hs)
+	}
+}
+
+func TestRepairIgnoresOtherNonce(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2, 2)
+	probe := func() Message {
+		t.Helper()
+		for range defaultTuning.heartbeat {
+			c.tick(n)
+		}
+		got := c.take(is(MsgRepairProbe))
+		if len(got) != 1 {
+			t.Fatalf("%d probes in one heartbeat interval, want 1", len(got))
+		}
+		return got[0].m
+	}
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 3, LogTerm: 2})
+	first := probe()
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 3, LogTerm: 2, Entries: []Entry{ent(4, 2)}})
+	c.damage(n, 1)
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 1, LogTerm: 1, Entries: []Entry{ent(2, 2), ent(3, 2)}})
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 3, Seq: first.Seq})
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 3, LogTerm: 2})
+	if !n.hs.Repair || !n.r.Status().Repair {
+		t.Fatalf("the answer to an earlier process ended repair at 3, that process had acknowledged 4: disk %+v", n.hs)
+	}
+	second := probe()
+	if second.Seq == first.Seq {
+		t.Fatalf("nonce %d again after a restart", second.Seq)
+	}
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 4, Seq: second.Seq})
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 3, LogTerm: 2, Entries: []Entry{ent(4, 2)}})
+	if n.hs.Repair {
+		t.Fatalf("still in repair after the answer to its own probe: %+v", n.hs)
+	}
+}
+
+func TestRepairGoalIsBoundToTheTerm(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2)
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 2, LogTerm: 2})
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 5, Seq: n.r.nonce})
+	c.step(n, Message{Type: MsgApp, From: 3, Term: 3, Index: 2, LogTerm: 2, Entries: []Entry{ent(3, 3), ent(4, 3), ent(5, 3)}})
+	if !n.hs.Repair || n.hs.Term != 3 {
+		t.Fatalf("goal of term 2 healed in term 3: disk %+v", n.hs)
+	}
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 5, Seq: n.r.nonce})
+	c.sent(1)
+	if !n.hs.Repair {
+		t.Fatal("answer of term 2 healed in term 3")
+	}
+	for range defaultTuning.heartbeat {
+		c.tick(n)
+	}
+	if got := c.sent(1); len(got) != 1 || got[0].Type != MsgRepairProbe || got[0].To != 3 || got[0].Term != 3 {
+		t.Fatalf("sent %+v, want a probe to the leader of term 3", got)
+	}
+	c.step(n, Message{Type: MsgRepairInfo, From: 3, Term: 3, Index: 5, Seq: n.r.nonce})
+	c.step(n, Message{Type: MsgApp, From: 3, Term: 3, Index: 5, LogTerm: 3})
+	if n.hs.Repair {
+		t.Fatalf("not healed by the goal of term 3: %+v", n.hs)
+	}
+}
+
+func TestRepairCountsOnlyAcksOfTheTerm(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2, 2)
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 3, LogTerm: 2})
+	other := Message{Type: MsgApp, From: 3, Term: 3, Index: 3, LogTerm: 3}
+	c.step(n, other)
+	c.step(n, Message{Type: MsgRepairInfo, From: 3, Term: 3, Index: 3, Seq: n.r.nonce})
+	c.step(n, other)
+	if resp := c.sent(1); len(resp) != 3 || resp[0].Reject || !resp[1].Reject || !resp[2].Reject {
+		t.Fatalf("sent %+v, want an acknowledgement in term 2 and two refusals in term 3", resp)
+	}
+	if !n.hs.Repair || !n.r.Status().Repair {
+		t.Fatalf("the acknowledgement of 3 in term 2 ended repair in term 3: disk %+v", n.hs)
+	}
+	c.step(n, Message{Type: MsgApp, From: 3, Term: 3, Index: 1, LogTerm: 1, Entries: []Entry{ent(2, 3), ent(3, 3)}})
+	if n.hs.Repair || !slices.Equal(n.log.terms(), []uint64{1, 3, 3}) {
+		t.Fatalf("disk %+v log %v, want out of repair with the log of term 3", n.hs, n.log.terms())
+	}
+}
+
+func TestRepairCountsEveryAcknowledgement(t *testing.T) {
+	cases := []struct {
+		name string
+		goal uint64
+		m    Message
+	}{
+		{"append", 5, Message{Type: MsgApp, Index: 5, LogTerm: 2}},
+		{"append below commit", 5, Message{Type: MsgApp, Index: 3, LogTerm: 2}},
+		{"snapshot below commit", 5, Message{Type: MsgSnap, Index: 4, LogTerm: 2}},
+		{"snapshot", 7, Message{Type: MsgSnap, Index: 7, LogTerm: 2}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCluster(t, 3, defaultTuning, 1)
+			n := c.node(1)
+			n.log.install(Snapshot{Index: 5, Term: 2})
+			n.hs = HardState{Term: 2, Repair: true}
+			c.boot(n)
+			c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: tc.goal, Seq: n.r.nonce})
+			if !n.r.Status().Repair {
+				t.Fatal("left repair without an acknowledgement in this process")
+			}
+			tc.m.From, tc.m.Term = 2, 2
+			c.step(n, tc.m)
+			if resp := c.only(1); resp.Reject || resp.Index != tc.goal {
+				t.Fatalf("answer %+v, want the acknowledgement of %d", resp, tc.goal)
+			}
+			if n.hs.Repair {
+				t.Fatalf("still in repair after acknowledging %d: disk %+v", tc.goal, n.hs)
+			}
+		})
+	}
+}
+
+func TestRepairEndsOneReadyLater(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2)
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 2, LogTerm: 2})
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 4, Seq: n.r.nonce})
+	c.sent(1)
+	c.must(n, n.r.Step(Message{Type: MsgApp, From: 2, To: 1, Term: 2, Index: 2, LogTerm: 2, Entries: []Entry{ent(3, 2), ent(4, 2)}}))
+	rd := n.r.Ready()
+	if rd.HardState != nil || len(rd.Entries) != 2 || len(rd.Messages) != 1 || rd.Messages[0].Index != 4 {
+		t.Fatalf("ready %+v, want the entries and their acknowledgement without a hard state", rd)
+	}
+	n.log.append(rd.Entries)
+	n.r.Advance()
+	if n.r.Status().Repair {
+		t.Fatal("still in repair after the acknowledgement of the goal is stored")
+	}
+	rd = n.r.Ready()
+	if rd.HardState == nil || *rd.HardState != (HardState{Term: 2}) || len(rd.Entries) > 0 || len(rd.Messages) > 0 {
+		t.Fatalf("next ready %+v, want only the hard state without repair", rd)
+	}
+	c.process(n)
+}
+
+func TestRepairedNodeVotesAgain(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2)
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 2, LogTerm: 2})
+	for range 30 {
+		c.tick(n)
+	}
+	for _, m := range c.sent(1) {
+		if m.Type != MsgAppResp && m.Type != MsgRepairProbe {
+			t.Fatalf("sent %+v in repair", m)
+		}
+	}
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 2, Seq: n.r.nonce})
+	c.step(n, Message{Type: MsgPreVote, From: 3, Term: 3, Index: 2, LogTerm: 2})
+	if resp := c.only(1); !resp.Reject || n.hs.Repair {
+		t.Fatalf("pre-vote %+v, disk %+v, want refused and healed in the same round", resp, n.hs)
+	}
+	if k := ticksUntil(c, n, MsgPreVote, 100); k < 10 || k >= 20 {
+		t.Fatalf("pre-vote %d ticks after healing, want a fresh timeout in [10, 20)", k)
+	}
+	c.sent(1)
+	c.step(n, Message{Type: MsgVote, From: 3, Term: 3, Index: 2, LogTerm: 2})
+	if resp := c.only(1); resp.Reject || n.hs != (HardState{Term: 3, Vote: 3}) {
+		t.Fatalf("vote %+v, disk %+v, want granted", resp, n.hs)
 	}
 }

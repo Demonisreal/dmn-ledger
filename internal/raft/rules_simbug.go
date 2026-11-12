@@ -51,3 +51,22 @@ func (r *Raft) confirmedSeq() uint64 {
 	}
 	return quorumValue(seqs, r.quorum())
 }
+
+func (r *Raft) voter() bool {
+	return !r.repair || simbug.On("B15")
+}
+
+func (r *Raft) repairGoal() uint64 {
+	if simbug.On("B16") {
+		return r.commit
+	}
+	return r.lastIndex()
+}
+
+func (r *Raft) ack(m Message, index uint64) {
+	r.acked = max(r.acked, index)
+	if simbug.On("B17") {
+		r.heal()
+	}
+	r.send(Message{Type: MsgAppResp, To: m.From, Term: r.term, Index: index, Seq: m.Seq})
+}

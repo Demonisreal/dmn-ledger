@@ -7,7 +7,7 @@ import (
 	"slices"
 )
 
-var names = []string{"B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11", "B12"}
+var names = []string{"B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11", "B12", "B15", "B16", "B17"}
 
 var active string
 

@@ -22,8 +22,9 @@ type Entry struct {
 }
 
 type HardState struct {
-	Term uint64
-	Vote uint64
+	Term   uint64
+	Vote   uint64
+	Repair bool
 }
 
 type Snapshot struct {
@@ -62,6 +63,8 @@ const (
 	MsgApp
 	MsgAppResp
 	MsgSnap
+	MsgRepairProbe
+	MsgRepairInfo
 )
 
 func (t MsgType) String() string {
@@ -80,6 +83,10 @@ func (t MsgType) String() string {
 		return "AppResp"
 	case MsgSnap:
 		return "Snap"
+	case MsgRepairProbe:
+		return "RepairProbe"
+	case MsgRepairInfo:
+		return "RepairInfo"
 	}
 	return fmt.Sprintf("MsgType(%d)", uint8(t))
 }
@@ -142,4 +149,5 @@ type Status struct {
 	Lead   uint64
 	Commit uint64
 	Last   uint64
+	Repair bool
 }
