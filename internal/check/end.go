@@ -45,9 +45,6 @@ func (w *watch) end() error {
 	if err := w.owners(nodes); err != nil {
 		return err
 	}
-	if w.cfg.Profile == ProfileEvict {
-		return nil
-	}
 	return w.replay(nodes[0])
 }
 
@@ -65,22 +62,13 @@ func (w *watch) answered() error {
 }
 
 func (w *watch) owners(nodes []*replica.Node) error {
-	ids := make(map[uint64]u128.Uint128)
-	owner := make(map[u128.Uint128]uint64)
-	numbers := make(map[uint64]uint64)
+	numbers := make(map[u128.Uint128]uint64)
 	for i, call := range w.c.Calls() {
 		r, who := call.Reply, call.Client-w.c.Nodes()
-		numbers[call.Client]++
-		if r.Number != numbers[call.Client] || r.Op != call.Op {
-			return w.fail("E1", 0, "c%d call %d (%s #%d) got the reply to %s #%d", who, i, call.Op, numbers[call.Client], r.Op, r.Number)
+		numbers[call.ID]++
+		if r.Client != call.ID || r.Number != numbers[call.ID] || r.Op != call.Op {
+			return w.fail("E1", 0, "c%d call %d (%s #%d of %v) got the reply to %s #%d of %v", who, i, call.Op, numbers[call.ID], call.ID, r.Op, r.Number, r.Client)
 		}
-		if id, ok := ids[call.Client]; ok && id != r.Client {
-			return w.fail("E1", 0, "c%d call %d got a reply for client %v, earlier ones for %v", who, i, r.Client, id)
-		}
-		if addr, ok := owner[r.Client]; ok && addr != call.Client {
-			return w.fail("E1", 0, "c%d call %d got a reply for the client of c%d", who, i, addr-w.c.Nodes())
-		}
-		ids[call.Client], owner[r.Client] = r.Client, call.Client
 		if r.Status != client.SessionUnknown {
 			continue
 		}

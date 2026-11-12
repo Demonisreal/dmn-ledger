@@ -28,13 +28,16 @@ Transfer IDs stay as a second layer for clients that restart and resubmit.
 ## Consequences
 
 - The planted bug B11 (sessions do not recognise repeats) is found in the first seed by the
-  linearizability check S9.
+  oracle replay S8 or the linearizability check S9, in the `evict` profile by S8 within a few seeds.
 - The session number closes a gap a plain client ID would leave: a register request that arrives
   late, after its session was evicted, creates a new session with a new number, and delayed
   requests of the old one get `SessionUnknown` instead of applying a second time.
 - Sessions are part of every snapshot. The simulator's `evict` profile runs with fewer sessions
-  than clients and checks that nobody receives another client's reply and that an evicted client
-  gets `SessionUnknown`.
+  than clients, starts clients late and lets them open new sessions, and checks that nobody
+  receives another client's reply and that an evicted client gets `SessionUnknown`. The case the
+  session number guards against does occur there, but its failure would hide among requests whose
+  outcome is unknown; the scenario test `TestEvictionSurvivesSnapshotAndFailover` in
+  `internal/replica` turns red without the number.
 
 ## Rejected alternatives
 

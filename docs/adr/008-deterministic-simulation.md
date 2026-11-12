@@ -31,10 +31,10 @@ the clock. Without the tag the code paths do not exist.
 - Every failure is a seed. `go run ./cmd/sim -seed N -trace` shows it again, event by event.
 - 10 000 seeds take about a minute on four cores. CI runs 2000 fixed and 2000 new seeds on every
   pull request; longer runs happen at night outside CI.
-- Ten of the twelve planted bugs are found, seven of them in the very first seed and the rest
-  within 13 to 522 seeds. Two are not found in 1000 seeds, and the reason is known: a new leader's
-  empty entry hides the Figure 8 commit bug, and check-quorum leaves almost no time for a stale
-  read. The rule tests of the core catch both.
+- Eleven of the twelve planted bugs are found, six of them in the very first seed, the rest in a
+  median of 4 to 1150 seeds. B6 is not found in 10 000 seeds, and the reason is known: Figure 8
+  needs two leaders to die at the right moment, and a new leader's empty entry closes the gap
+  quickly. The rule tests of the core catch it.
 - The simulator checks, it does not prove. It knows disks only as well as `disk.Sim` models them,
   and a run is only as good as the faults its plan contains.
 - porcupine's search can grow exponentially. It is bounded by the input, not by a timeout: few

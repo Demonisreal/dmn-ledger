@@ -3,12 +3,17 @@ package check
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io/fs"
 	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/anishathalye/porcupine"
 
 	"github.com/Demonisreal/dmn-ledger/internal/client"
+	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/oracle"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
 	"github.com/Demonisreal/dmn-ledger/internal/sim"
@@ -72,23 +77,78 @@ func TestTraceHashFullStack(t *testing.T) {
 }
 
 func TestEvictProfileEvicts(t *testing.T) {
-	evicted := 0
+	evicted, rejoined, late := 0, 0, 0
 	for seed := range uint64(20) {
-		c, err := sim.NewCluster(sim.ClusterConfig{Seed: seed, Profile: sim.ProfileAll, MaxSessions: evictSessions})
+		c, err := sim.NewCluster(sim.ClusterConfig{Seed: seed, Profile: sim.ProfileAll, MaxSessions: evictSessions, Churn: true})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := c.Run(); err != nil {
 			t.Fatal(err)
 		}
+		ids := make(map[uint64]map[u128.Uint128]bool)
+		first := make(map[uint64]uint64)
 		for _, call := range c.Calls() {
 			if call.Reply.Status == client.SessionUnknown {
 				evicted++
 			}
+			if ids[call.Client] == nil {
+				ids[call.Client] = make(map[u128.Uint128]bool)
+				first[call.Client] = call.Start
+			}
+			ids[call.Client][call.ID] = true
+		}
+		for addr, set := range ids {
+			if len(set) > 1 {
+				rejoined++
+			}
+			if first[addr] > c.World().Now()/4 {
+				late++
+			}
 		}
 	}
-	if evicted == 0 {
-		t.Fatal("no client saw SessionUnknown in 20 seeds")
+	if evicted == 0 || rejoined == 0 || late == 0 {
+		t.Fatalf("in 20 seeds %d calls got SessionUnknown, %d clients opened a second session, %d started late", evicted, rejoined, late)
+	}
+}
+
+type refusingFS struct {
+	disk.FS
+}
+
+func (r refusingFS) Open(name string) (disk.File, error) {
+	if strings.HasSuffix(name, "hardstate") {
+		return nil, errors.New("hard state refused")
+	}
+	return r.FS.Open(name)
+}
+
+func TestStartFailureIsAFinding(t *testing.T) {
+	w := &watch{cfg: Config{Seed: 3}}
+	eio := fmt.Errorf("replica: %w", &fs.PathError{Op: "write", Path: "/ledger/hardstate", Err: syscall.EIO})
+	if err := w.failed(2, eio); err != nil {
+		t.Fatalf("a disk error is no finding: %v", err)
+	}
+	c, err := sim.NewCluster(sim.ClusterConfig{
+		Seed: 3,
+		Disk: func(id uint64, fsys disk.FS) disk.FS {
+			if id == 2 {
+				return refusingFS{fsys}
+			}
+			return fsys
+		},
+		Failed: w.failed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Run()
+	v, ok := errors.AsType[*Violation](err)
+	if !ok || v.Check != "F1" || v.Node != 2 || !strings.Contains(v.Reason, "hard state refused") {
+		t.Fatalf("want F1 on n2, got %v", err)
+	}
+	if now := c.World().Now(); now > 20_000_000 {
+		t.Fatalf("the run went on until %d", now)
 	}
 }
 

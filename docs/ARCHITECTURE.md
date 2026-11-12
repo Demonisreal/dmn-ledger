@@ -264,14 +264,30 @@ of them; the same seed gives the same hash.
 
 - **Fault plan.** A storm phase of 2 to 6 seconds with up to twelve windows (partitions of several
   kinds, process crashes, power loss on one or all nodes, crashes after the k-th disk access,
-  failing and slow fsync, EIO, clock jumps), then five quiet seconds in which everything heals and
-  every node runs. Profiles `calm`, `net`, `crash`, `clock` and `all` choose which kinds appear.
+  failing and slow fsync, EIO, clock jumps, paused nodes, leader crashes), then five quiet seconds
+  in which everything heals and every node runs. Profiles `calm`, `net`, `crash`, `clock` and
+  `all` choose which kinds appear.
+- **Pause.** A node stops like a process in a long GC pause or on an overloaded VM: no ticks, no
+  processing, messages to it pile up. Either it stands still for the whole window, or it wakes
+  every 20 to 200 ms, takes one tick and everything that arrived, and stops again. Half of the
+  pauses hit whichever node leads when the window opens. Check-quorum counts the leader's own
+  ticks, so a paused leader is not deposed while it stands still.
+- **Leader crash.** Kills the node that leads, either at once or right after a `Process` that
+  raised its commit index, before that round's messages leave. It stays down until the window
+  ends. If no node leads, the next one that does is the victim.
+- **Per seed.** Besides the plan, the seed draws `MaxAppendBytes` (0 to 8 KiB, so catching up
+  happens in pieces), the clients' `retryTicks` (2 to 20), snapshot interval, segment size and the
+  workload's batch size.
 - **Disk time.** A node is busy while its fsyncs run. Its messages leave afterwards, and inputs
   that arrive meanwhile go into the next `Process` together.
 - **Workload.** 3 to 6 clients with 30 to 60 requests each. After 32 started requests the clients
   wait until all of them are answered. Each such window starts with no request in flight.
 - **Profiles for sessions.** `evict` runs the `all` faults with two session slots for up to six
-  clients.
+  clients. Clients start up to two seconds late, open a new session after one in eight answers
+  and after `SessionUnknown`, so evictions hit clients with a request in flight and late
+  duplicates of a `Register` arrive after their session was evicted.
+- **Reads.** While a partition or a pause is open, every second request is a lookup instead of
+  every fifth, so reads meet leaders that have lost their majority.
 
 ## Checkers (`internal/check`)
 
@@ -301,7 +317,11 @@ At the end:
 | S8 | oracle replay: all confirmed writes, ordered by their time, run through `internal/oracle`; every reply matches, every successful transfer appears once, and the ledger digest equals the nodes' |
 | S9 | linearizability: porcupine checks each window, starting from the oracle state at the window border |
 
-S8 and S9 are skipped in `evict`, where the outcome of a request cut off by eviction is unknown.
+In `evict` a write that ends with `SessionUnknown` may or may not have been applied. S8 then
+replays only what is certain: let t be the earliest start of such a write and T the latest time of
+a write answered before t. Every write with a time up to T was applied before t, so none of the
+uncertain ones lies in between. S8 checks those writes and skips the final digest, S9 runs only
+when nothing is uncertain.
 
 S9's model is the oracle itself. A write steps only if its reply time is later than the model's
 last time and its failures match what the oracle computes; a read steps only if it shows the
@@ -326,16 +346,20 @@ of this code exists.
 | B5 | entries are stored before the hard state | F1 (the node cannot restart) |
 | B6 | commit by counting replicas for entries of older terms | not found, see below |
 | B7 | votes without comparing logs | S3 |
-| B8 | a follower keeps a conflicting tail | S3, L3 |
+| B8 | a follower keeps a conflicting tail | S3 |
 | B9 | a follower commits up to its own log end | S3 |
-| B10 | reads without confirmation by a majority | not found, see below |
-| B11 | sessions do not recognise a repeated request | S8, S9 |
+| B10 | reads without confirmation by a majority | S9 |
+| B11 | sessions do not recognise a repeated request | S8, S9; in `evict` S8 |
 | B12 | entries are applied with the replica's own clock | S7 |
 
-B6 does not show in the simulator: a new leader appends an empty entry and sends older entries
-only together with it, so every acknowledgement already covers an entry of its own term. B10 needs
-a cut-off leader that still answers reads after a client has finished a write elsewhere; check-
-quorum deposes it before clients find the new leader. The rule tests in `internal/raft` catch both.
+B6 does not show in the simulator, not in 10 000 seeds of `all` or `crash`. With small
+`MaxAppendBytes` the faulty branch does run, but losing a commit needs Figure 8: a third node holds
+an entry of a later term at the same index, the leader dies after counting and before its own
+empty entry is acknowledged, and exactly that third node wins next. The rule tests
+`TestCommitOnlyOwnTerm` and `TestFigure8` in `internal/raft` catch it. B10 needs a cut-off leader
+that still answers reads after a client has finished a write elsewhere; check-quorum leaves a short
+window, and short client retries find it in about one seed in 3 000 (median 1 150 seeds to the
+first find).
 
 `go run ./cmd/sim -seeds 10000 -profile all` runs seeds on all cores and stops at the first failure
 with the command that replays it, for example

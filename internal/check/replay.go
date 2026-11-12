@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/binary"
+	"math"
 	"slices"
 
 	"github.com/anishathalye/porcupine"
@@ -20,13 +21,18 @@ func (w *watch) replay(n *replica.Node) error {
 	calls, bounds := w.c.Calls(), w.c.Windows()
 	window := make([]int, len(calls))
 	var writes []int
+	doubt := uint64(math.MaxUint64)
 	k := 0
 	for i, call := range calls {
 		for k < len(bounds) && bounds[k] <= i {
 			k++
 		}
 		window[i] = k
-		if call.Reply.Status != client.OK {
+		switch {
+		case call.Reply.Status == client.SessionUnknown && w.cfg.Profile == ProfileEvict:
+			doubt = min(doubt, call.Start)
+			continue
+		case call.Reply.Status != client.OK:
 			return w.fail("S8", 0, "c%d call %d (%s) ended with %s", call.Client-w.c.Nodes(), i, call.Op, call.Reply.Status)
 		}
 		if !call.Op.Lookup() {
@@ -34,6 +40,9 @@ func (w *watch) replay(n *replica.Node) error {
 		}
 	}
 	slices.SortFunc(writes, func(a, b int) int { return cmp.Compare(calls[a].Reply.Time, calls[b].Reply.Time) })
+	if doubt != math.MaxUint64 {
+		writes = settled(calls, writes, doubt)
+	}
 
 	l := oracle.New()
 	starts := make([]*oracle.Ledger, len(bounds)+1)
@@ -72,6 +81,9 @@ func (w *watch) replay(n *replica.Node) error {
 			booked[id] = i
 		}
 	}
+	if doubt != math.MaxUint64 {
+		return nil
+	}
 	for ; next < len(starts); next++ {
 		starts[next] = l.Clone()
 	}
@@ -98,6 +110,20 @@ func (w *watch) replay(n *replica.Node) error {
 		lo = hi
 	}
 	return nil
+}
+
+func settled(calls []sim.Call, writes []int, doubt uint64) []int {
+	var horizon uint64
+	for _, i := range writes {
+		if calls[i].End < doubt {
+			horizon = max(horizon, calls[i].Reply.Time)
+		}
+	}
+	k := 0
+	for k < len(writes) && calls[writes[k]].Reply.Time <= horizon {
+		k++
+	}
+	return writes[:k]
 }
 
 func model(start *oracle.Ledger) porcupine.Model {

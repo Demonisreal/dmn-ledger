@@ -54,6 +54,9 @@ const (
 	stallSpan    = 4 * second
 	holdMin      = 100 * millisecond
 	holdSpan     = 900 * millisecond
+
+	crawlMin  = 20 * millisecond
+	crawlSpan = 180 * millisecond
 )
 
 type fault uint8
@@ -70,11 +73,14 @@ const (
 	eio
 	fsyncgate
 	jump
+	pause
+	leadercrash
 )
 
 var faultNames = [...]string{
 	split: "split", oneway: "oneway", isolate: "isolate", bridge: "bridge", crash: "crash", midway: "midway",
-	blackout: "blackout", slow: "slow", eio: "eio", fsyncgate: "fsyncgate", jump: "jump",
+	blackout: "blackout", slow: "slow", eio: "eio", fsyncgate: "fsyncgate", jump: "jump", pause: "pause",
+	leadercrash: "leadercrash",
 }
 
 func (f fault) String() string {
@@ -89,6 +95,9 @@ type window struct {
 	rate       float64
 	shift      uint64
 	back, keep bool
+	step       uint64
+	lead, rise bool
+	hit        uint64
 }
 
 type plan struct {
@@ -102,7 +111,7 @@ type plan struct {
 
 func profileFaults(p Profile) ([]fault, error) {
 	netFaults := []fault{split, oneway, isolate, bridge}
-	diskFaults := []fault{crash, midway, midway, midway, blackout, slow, eio, fsyncgate}
+	diskFaults := []fault{crash, midway, midway, midway, blackout, slow, eio, fsyncgate, leadercrash}
 	switch p {
 	case ProfileCalm, "":
 		return nil, nil
@@ -111,9 +120,9 @@ func profileFaults(p Profile) ([]fault, error) {
 	case ProfileCrash:
 		return diskFaults, nil
 	case ProfileClock:
-		return []fault{jump}, nil
+		return []fault{jump, pause}, nil
 	case ProfileAll:
-		return append(append(netFaults, diskFaults...), jump), nil
+		return append(append(netFaults, diskFaults...), jump, pause), nil
 	}
 	return nil, fmt.Errorf("sim: unknown profile %q", p)
 }
@@ -167,6 +176,13 @@ func newPlan(rng *rand.Rand, p Profile, nodes, hosts uint64) (plan, error) {
 			win.shift = millisecond + rng.Uint64N(jumpMax)
 			win.back = rng.IntN(2) == 0
 			win.keep = rng.IntN(2) == 0
+		case pause:
+			win.lead = rng.IntN(2) == 0
+			if rng.IntN(2) == 0 {
+				win.step = crawlMin + rng.Uint64N(crawlSpan)
+			}
+		case leadercrash:
+			win.rise = rng.IntN(2) == 0
 		}
 		pl.windows = append(pl.windows, win)
 	}

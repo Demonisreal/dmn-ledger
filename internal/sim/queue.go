@@ -10,6 +10,7 @@ const (
 	evFault
 	evHeal
 	evQuiet
+	evNudge
 )
 
 type event struct {

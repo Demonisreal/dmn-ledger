@@ -47,6 +47,7 @@ type Config struct {
 	Disk    func(id uint64, fsys disk.FS) disk.FS
 	Said    func(id uint64, msgs []Msg) error
 	Check   func() error
+	Leading func(id uint64) (commit uint64, ok bool)
 	Trace   io.Writer
 }
 
@@ -60,6 +61,7 @@ type World struct {
 	net    network
 	hosts  []*host
 	peers  []uint64
+	hunts  []int
 	hash   hash.Hash
 	out    io.Writer
 	line   []byte
@@ -81,6 +83,9 @@ type host struct {
 	crashes int
 	midways int
 	eio     []float64
+	paused  int
+	missed  bool
+	commit  uint64
 	waiting bool
 	outbox  []Msg
 	backlog []input
@@ -218,10 +223,10 @@ func (w *World) step() {
 	w.now = ev.at
 	switch ev.kind {
 	case evFault:
-		w.fault(&w.plan.windows[ev.win], false)
+		w.fault(ev.win, false)
 		return
 	case evHeal:
-		w.fault(&w.plan.windows[ev.win], true)
+		w.fault(ev.win, true)
 		return
 	case evQuiet:
 		w.quiet()
@@ -239,14 +244,20 @@ func (w *World) step() {
 	case evDeliver:
 		w.deliver(h, ev)
 	case evWake:
-		if ev.epoch == h.epoch {
-			w.trace("wake %s", h.name)
+		if ev.epoch != h.epoch {
+			return
+		}
+		w.trace("wake %s", h.name)
+		h.waiting = false
+		if h.paused == 0 {
 			w.wake(h)
 		}
 	case evRestart:
 		if ev.epoch == h.epoch && h.proc == nil {
 			w.start(h)
 		}
+	case evNudge:
+		w.nudge(h, &w.plan.windows[ev.win], ev.win)
 	}
 }
 
@@ -302,12 +313,15 @@ func (w *World) arm(h *host) {
 }
 
 func (w *World) input(h *host, in input) {
-	if h.waiting {
+	switch {
+	case h.paused > 0 && in.tick:
+		h.missed = true
+	case h.paused > 0 || h.waiting:
 		h.backlog = append(h.backlog, in)
-		return
+	default:
+		in.feed(h.proc)
+		w.run(h)
 	}
-	in.feed(h.proc)
-	w.run(h)
 }
 
 func (w *World) run(h *host) {
@@ -332,7 +346,49 @@ func (w *World) run(h *host) {
 			return
 		}
 	}
+	if h.node && w.hunted(h) {
+		return
+	}
 	w.settle(h, msgs)
+}
+
+func (w *World) hunted(h *host) bool {
+	if w.cfg.Leading == nil {
+		return false
+	}
+	commit, lead := w.cfg.Leading(h.id)
+	rose := commit > h.commit
+	h.commit = commit
+	if !lead {
+		return false
+	}
+	for _, i := range w.hunts {
+		if win := &w.plan.windows[i]; win.hit == 0 && (rose || !win.rise) {
+			w.kill(h, win)
+			return true
+		}
+	}
+	return false
+}
+
+func (w *World) leader() *host {
+	if w.cfg.Leading == nil {
+		return nil
+	}
+	for _, h := range w.nodes() {
+		if _, ok := w.cfg.Leading(h.id); ok {
+			return h
+		}
+	}
+	return nil
+}
+
+func (w *World) kill(h *host, win *window) {
+	win.hit = h.id
+	h.crashes++
+	power := h.rng.IntN(2) == 0
+	w.stop(h, power)
+	w.trace("kill %s %s", h.name, outage(power))
 }
 
 func (w *World) settle(h *host, msgs []Msg) {
@@ -350,8 +406,12 @@ func (w *World) wake(h *host) {
 	outbox := h.outbox
 	h.outbox = nil
 	w.send(h, outbox)
-	if len(h.backlog) == 0 {
+	if len(h.backlog) == 0 && !h.missed {
 		return
+	}
+	if h.missed {
+		h.missed = false
+		h.proc.Tick()
 	}
 	for _, in := range h.backlog {
 		in.feed(h.proc)
@@ -389,6 +449,8 @@ func (w *World) stop(h *host, power bool) {
 	h.proc = nil
 	h.epoch++
 	h.waiting = false
+	h.missed = false
+	h.commit = 0
 	h.outbox = nil
 	h.backlog = nil
 	h.meter.cost = 0
@@ -412,7 +474,8 @@ func outage(power bool) string {
 	return "process"
 }
 
-func (w *World) fault(win *window, heal bool) {
+func (w *World) fault(i int, heal bool) {
+	win := &w.plan.windows[i]
 	if heal {
 		w.trace("heal %s", w.describe(win))
 	} else {
@@ -495,6 +558,63 @@ func (w *World) fault(win *window, heal bool) {
 		default:
 			h.clock += win.shift
 		}
+	case pause:
+		w.pause(i, heal)
+	case leadercrash:
+		w.hunt(i, heal)
+	}
+}
+
+func (w *World) pause(i int, heal bool) {
+	win := &w.plan.windows[i]
+	if heal {
+		h := w.hosts[win.hit-1]
+		h.paused--
+		if h.paused == 0 && h.proc != nil && !h.waiting {
+			w.trace("thaw %s", h.name)
+			w.wake(h)
+		}
+		return
+	}
+	h := w.hosts[win.node-1]
+	if lead := w.leader(); win.lead && lead != nil {
+		h = lead
+	}
+	win.hit = h.id
+	h.paused++
+	w.trace("freeze %s", h.name)
+	if win.step > 0 && w.now+win.step < win.end {
+		w.push(event{at: w.now + win.step, kind: evNudge, id: h.id, win: i})
+	}
+}
+
+func (w *World) nudge(h *host, win *window, i int) {
+	if w.now+win.step < win.end {
+		w.push(event{at: w.now + win.step, kind: evNudge, id: h.id, win: i})
+	}
+	if h.proc != nil && !h.waiting {
+		w.trace("nudge %s", h.name)
+		w.wake(h)
+	}
+}
+
+func (w *World) hunt(i int, heal bool) {
+	win := &w.plan.windows[i]
+	if !heal {
+		w.hunts = append(w.hunts, i)
+		if lead := w.leader(); !win.rise && lead != nil {
+			w.kill(lead, win)
+		}
+		return
+	}
+	w.hunts = slices.DeleteFunc(w.hunts, func(k int) bool { return k == i })
+	if win.hit == 0 {
+		return
+	}
+	h := w.hosts[win.hit-1]
+	h.crashes--
+	if h.crashes == 0 && h.proc == nil {
+		w.start(h)
 	}
 }
 
@@ -546,6 +666,19 @@ func (w *World) describe(win *window) string {
 			return fmt.Sprintf("%s %s %s%d keep", span, name, sign, win.shift)
 		}
 		return fmt.Sprintf("%s %s %s%d", span, name, sign, win.shift)
+	case pause:
+		if win.lead {
+			name = "leader or " + name
+		}
+		if win.step > 0 {
+			return fmt.Sprintf("%s %s every %d", span, name, win.step)
+		}
+		return span + " " + name
+	case leadercrash:
+		if win.rise {
+			return span + " on commit"
+		}
+		return span
 	}
 	return span + " " + name
 }

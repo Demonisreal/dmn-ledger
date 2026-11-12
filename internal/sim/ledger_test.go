@@ -138,3 +138,24 @@ func TestLedgerTraceHashDeterministic(t *testing.T) {
 		})
 	}
 }
+
+func TestClusterKnobsComeFromTheSeed(t *testing.T) {
+	appends, retries := make(map[int64]bool), make(map[int]bool)
+	for seed := range uint64(100) {
+		c, err := NewCluster(ClusterConfig{Seed: seed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.appendMax < 0 || c.appendMax > 8<<10 || c.retry < 2 || c.retry > 20 {
+			t.Fatalf("seed %d: MaxAppendBytes %d, retryTicks %d", seed, c.appendMax, c.retry)
+		}
+		again, _ := NewCluster(ClusterConfig{Seed: seed})
+		if again.appendMax != c.appendMax || again.retry != c.retry {
+			t.Fatalf("seed %d drew %d/%d, then %d/%d", seed, c.appendMax, c.retry, again.appendMax, again.retry)
+		}
+		appends[c.appendMax], retries[c.retry] = true, true
+	}
+	if len(appends) < 90 || len(retries) < 15 {
+		t.Fatalf("%d distinct MaxAppendBytes and %d distinct retryTicks in 100 seeds", len(appends), len(retries))
+	}
+}

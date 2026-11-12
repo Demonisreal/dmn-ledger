@@ -22,11 +22,13 @@ import (
 const (
 	ledgerDir   = "/ledger"
 	windowSize  = 32
-	retryTicks  = 20
 	thinkTicks  = 20
 	lookupOdds  = 5
+	cutLookups  = 2
 	maxSessions = 64
 	drainTime   = second
+	joinTicks   = 200
+	rejoinOdds  = 8
 )
 
 type ClusterConfig struct {
@@ -34,6 +36,7 @@ type ClusterConfig struct {
 	Profile     Profile
 	Nodes       uint64
 	MaxSessions int
+	Churn       bool
 	Trace       io.Writer
 	Disk        func(id uint64, fsys disk.FS) disk.FS
 	Said        func(id uint64, msgs []raft.Message) error
@@ -43,6 +46,7 @@ type ClusterConfig struct {
 
 type Call struct {
 	Client     uint64
+	ID         u128.Uint128
 	Session    uint64
 	Op         client.Op
 	Body       []byte
@@ -56,6 +60,8 @@ type Cluster struct {
 	gen       *workload.Gen
 	snapEvery uint64
 	segSize   int64
+	appendMax int64
+	retry     int
 	addrs     map[u128.Uint128]uint64
 	calls     []Call
 	windows   []int
@@ -74,6 +80,8 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 		gen:       workload.New(fork(rng)),
 	}
 	c.gen.MaxBatch = 1 + rng.IntN(8)
+	c.appendMax = rng.Int64N(8<<10 + 1)
+	c.retry = 2 + rng.IntN(19)
 	if c.cfg.MaxSessions == 0 {
 		c.cfg.MaxSessions = maxSessions
 	}
@@ -94,6 +102,7 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 		Disk:    cfg.Disk,
 		Said:    c.said,
 		Check:   c.check,
+		Leading: c.leading,
 		Trace:   cfg.Trace,
 	})
 	if err != nil {
@@ -148,6 +157,15 @@ func (c *Cluster) check() error {
 		return c.stopped
 	}
 	return c.cfg.Check(c)
+}
+
+func (c *Cluster) leading(id uint64) (uint64, bool) {
+	n := c.Node(id)
+	if n == nil {
+		return 0, false
+	}
+	st := n.Status()
+	return st.Commit, st.Role == raft.Leader
 }
 
 func (c *Cluster) failed(id uint64, err error) {
@@ -205,23 +223,31 @@ func (c *Cluster) openNode(env NodeEnv) (*replica.Node, error) {
 		ElectionTicks:  10,
 		HeartbeatTicks: 2,
 		SnapshotTicks:  50,
-		MaxAppendBytes: 1 << 20,
+		MaxAppendBytes: c.appendMax,
 		MaxUncommitted: 4096,
 	})
 }
 
 func (c *Cluster) startClient(env ClientEnv) Process {
-	id := u128.Uint128{Hi: env.Rand.Uint64(), Lo: env.Rand.Uint64()}
-	c.addrs[id] = env.ID
-	return &ledgerClient{
-		c:    c,
-		addr: env.ID,
-		s:    client.New(id, env.Nodes, retryTicks),
-		rng:  env.Rand,
-		now:  env.Now,
-		left: 30 + env.Rand.IntN(31),
-		call: -1,
+	p := &ledgerClient{c: c, addr: env.ID, nodes: env.Nodes, rng: env.Rand, now: env.Now, call: -1}
+	p.join()
+	p.left = 30 + env.Rand.IntN(31)
+	if c.cfg.Churn {
+		p.wait = env.Rand.IntN(joinTicks)
 	}
+	return p
+}
+
+func (c *Cluster) cut() bool {
+	for _, win := range c.w.plan.windows {
+		switch win.kind {
+		case split, oneway, isolate, bridge, pause:
+			if win.start <= c.w.now && c.w.now < win.end {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type ledgerNode struct {
@@ -281,19 +307,33 @@ func (p *ledgerNode) Run() ([]Msg, error) {
 type ledgerClient struct {
 	c       *Cluster
 	addr    uint64
+	nodes   []uint64
+	id      u128.Uint128
 	s       *client.Session
 	rng     *rand.Rand
 	now     func() uint64
 	ready   bool
 	session uint64
 	left    int
+	wait    int
 	pause   int
 	call    int
 	batch   workload.Batch
 	err     error
 }
 
+func (p *ledgerClient) join() {
+	p.id = u128.Uint128{Hi: p.rng.Uint64(), Lo: p.rng.Uint64()}
+	p.c.addrs[p.id] = p.addr
+	p.s = client.New(p.id, p.nodes, p.c.retry)
+	p.ready = false
+}
+
 func (p *ledgerClient) Tick() {
+	if p.wait > 0 {
+		p.wait--
+		return
+	}
 	p.s.Tick()
 	p.pause--
 	p.submit()
@@ -306,7 +346,11 @@ func (p *ledgerClient) submit() {
 	}
 	var op client.Op
 	var body []byte
-	if p.rng.IntN(lookupOdds) == 0 {
+	odds := lookupOdds
+	if c.cut() {
+		odds = cutLookups
+	}
+	if p.rng.IntN(odds) == 0 {
 		accounts, ids := c.gen.Lookup()
 		op = client.LookupTransfers
 		if accounts {
@@ -328,7 +372,7 @@ func (p *ledgerClient) submit() {
 		return
 	}
 	p.call = len(c.calls)
-	c.calls = append(c.calls, Call{Client: p.addr, Session: p.session, Op: op, Body: body, Start: p.now()})
+	c.calls = append(c.calls, Call{Client: p.addr, ID: p.id, Session: p.session, Op: op, Body: body, Start: p.now()})
 	p.left--
 }
 
@@ -356,14 +400,17 @@ func (p *ledgerClient) Receive(m Msg) {
 	if r.Status == client.OK && !call.Op.Lookup() {
 		p.c.gen.Settle(p.batch, failures(r.Body))
 	}
-	if r.Status == client.SessionUnknown {
+	switch {
+	case p.c.cfg.Churn && (r.Status == client.SessionUnknown || p.rng.IntN(rejoinOdds) == 0):
+		p.join()
+	case r.Status == client.SessionUnknown:
 		p.left = 0
 	}
 	p.pause = p.rng.IntN(thinkTicks)
 }
 
 func (p *ledgerClient) Run() ([]Msg, error) {
-	if p.err != nil {
+	if p.err != nil || p.wait > 0 {
 		return nil, p.err
 	}
 	out := p.s.Outbox()

@@ -23,8 +23,10 @@ log and need no session.
 - Followers do not serve reads.
 - The planted bug B10 (answer without the majority round) is hard for the simulator to find.
   Check-quorum makes a cut-off leader step down within two election timeouts, and a client needs
-  about as long to reach the new leader. A stale read only fits into the small overlap. The rule
-  tests catch B10 directly (`TestReadConfirmedByQuorum`, `TestDeposedLeaderGetsNoRead`).
+  about as long to reach the new leader. A stale read only fits into the small overlap; with client
+  retries of 2 to 20 ticks the simulator finds it in about one seed in 3 000. A paused leader widens
+  the overlap, because check-quorum counts its own ticks. The rule tests catch B10 directly
+  (`TestReadConfirmedByQuorum`, `TestDeposedLeaderGetsNoRead`).
 
 ## Rejected alternatives
 

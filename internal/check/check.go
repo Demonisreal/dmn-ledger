@@ -88,7 +88,7 @@ func Run(cfg Config) (Report, error) {
 		Failed:  w.failed,
 	}
 	if cfg.Profile == ProfileEvict {
-		cc.Profile, cc.MaxSessions = sim.ProfileAll, evictSessions
+		cc.Profile, cc.MaxSessions, cc.Churn = sim.ProfileAll, evictSessions, true
 	}
 	c, err := sim.NewCluster(cc)
 	if err != nil {

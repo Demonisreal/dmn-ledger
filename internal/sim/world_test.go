@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -213,20 +214,20 @@ func TestSlowWindowStretchesFsync(t *testing.T) {
 }
 
 func TestEIOWindowsSetTheHighestRate(t *testing.T) {
-	w, _ := world(t, Config{Nodes: 1, Node: startScribe}, testPlan(1, second, second), 1)
-	a := window{kind: eio, node: 1, rate: 0.02}
-	b := window{kind: eio, node: 1, rate: 0.001}
+	pl := testPlan(1, second, second)
+	pl.windows = []window{{kind: eio, node: 1, rate: 0.02}, {kind: eio, node: 1, rate: 0.001}}
+	w, _ := world(t, Config{Nodes: 1, Node: startScribe}, pl, 1)
 	d := w.Disk(1)
 	rates := func() []float64 { return []float64{d.WriteErrRate, d.SyncErrRate, d.MetaErrRate, d.ReadErrRate} }
 	for _, step := range []struct {
-		win  *window
+		win  int
 		heal bool
 		want float64
-	}{{&a, false, 0.02}, {&b, false, 0.02}, {&a, true, 0.001}, {&b, true, 0}} {
+	}{{0, false, 0.02}, {1, false, 0.02}, {0, true, 0.001}, {1, true, 0}} {
 		w.fault(step.win, step.heal)
 		for _, r := range rates() {
 			if r != step.want {
-				t.Fatalf("after %v of rate %v: rates %v, want %v", step.heal, step.win.rate, rates(), step.want)
+				t.Fatalf("after %v of rate %v: rates %v, want %v", step.heal, pl.windows[step.win].rate, rates(), step.want)
 			}
 		}
 	}
@@ -413,7 +414,8 @@ func TestClockJump(t *testing.T) {
 		{window{kind: jump, node: 2, shift: 3 * second}, false, base + 3*second, rest},
 		{window{kind: jump, node: 2, shift: 3 * second, keep: true}, true, base + 3*second, rest},
 	} {
-		w.fault(&step.win, step.heal)
+		w.plan.windows = []window{step.win}
+		w.fault(0, step.heal)
 		if own() != step.own || other() != step.other {
 			t.Fatalf("%+v heal %v: n2 reads %d want %d, n1 reads %d want %d", step.win, step.heal, own(), step.own, other(), step.other)
 		}
@@ -730,5 +732,134 @@ func TestQueueOrder(t *testing.T) {
 	}
 	if len(q) != 0 {
 		t.Fatalf("%d events left", len(q))
+	}
+}
+
+type counter struct {
+	clock             func() uint64
+	ticks, msgs, runs int
+	ran               []uint64
+}
+
+func (c *counter) Tick()       { c.ticks++ }
+func (c *counter) Receive(Msg) { c.msgs++ }
+
+func (c *counter) Run() ([]Msg, error) {
+	c.runs++
+	c.ran = append(c.ran, c.clock())
+	return nil, nil
+}
+
+func counterWorld(t *testing.T, pl plan, nodes, clients uint64, leading func(w *World, id uint64) (uint64, bool)) (*World, *bytes.Buffer) {
+	t.Helper()
+	var w *World
+	cfg := Config{Nodes: nodes, Clients: clients, Node: func(env NodeEnv) (Process, error) {
+		return &counter{clock: env.Clock}, nil
+	}}
+	if leading != nil {
+		cfg.Leading = func(id uint64) (uint64, bool) { return leading(w, id) }
+	}
+	w, trace := world(t, cfg, pl, 5)
+	return w, trace
+}
+
+func counted(w *World, id uint64) *counter {
+	c, _ := w.hosts[id-1].proc.(*counter)
+	return c
+}
+
+func TestPauseFreezesTheNode(t *testing.T) {
+	pl := testPlan(1, 4*second, 4*second)
+	pl.windows = []window{{kind: pause, start: second, end: 1500 * millisecond, node: 1}}
+	w, trace := counterWorld(t, pl, 1, 2, nil)
+	runUntil(w, second)
+	c := counted(w, 1)
+	before := *c
+	runUntil(w, 1500*millisecond-1)
+	if c.ticks != before.ticks || c.msgs != before.msgs || c.runs != before.runs {
+		t.Fatalf("paused node worked: %d ticks, %d messages, %d runs, before %d, %d, %d", c.ticks, c.msgs, c.runs, before.ticks, before.msgs, before.runs)
+	}
+	queued := len(w.hosts[0].backlog)
+	runUntil(w, 1500*millisecond)
+	if c.ticks != before.ticks+1 || c.msgs != before.msgs+queued || c.runs != before.runs+1 || queued == 0 {
+		t.Fatalf("after the thaw %d ticks, %d messages, %d runs; want one tick and the %d queued messages in one run", c.ticks-before.ticks, c.msgs-before.msgs, c.runs-before.runs, queued)
+	}
+	if !strings.Contains(trace.String(), "1000000000 freeze n1\n") || !strings.Contains(trace.String(), "1500000000 thaw n1\n") {
+		t.Fatalf("no freeze or thaw in the trace\n%s", trace)
+	}
+}
+
+func TestPauseCrawls(t *testing.T) {
+	pl := testPlan(1, 4*second, 4*second)
+	pl.windows = []window{{kind: pause, start: second, end: 2 * second, node: 1, step: 100 * millisecond}}
+	w, trace := counterWorld(t, pl, 1, 0, nil)
+	runUntil(w, second)
+	c := counted(w, 1)
+	runs, ticks := c.runs, c.ticks
+	runUntil(w, 2*second-1)
+	nudges := strings.Count(trace.String(), " nudge n1\n")
+	if nudges != 9 || c.runs-runs != nudges || c.ticks-ticks != nudges {
+		t.Fatalf("%d nudges, %d runs, %d ticks in the window; want 9 of each", nudges, c.runs-runs, c.ticks-ticks)
+	}
+}
+
+func TestPauseHitsTheLeader(t *testing.T) {
+	pl := testPlan(3, 4*second, 4*second)
+	pl.windows = []window{{kind: pause, start: second, end: 2 * second, node: 1, lead: true}}
+	w, trace := counterWorld(t, pl, 3, 0, func(_ *World, id uint64) (uint64, bool) { return 0, id == 2 })
+	runUntil(w, 2*second)
+	if !strings.Contains(trace.String(), " freeze n2\n") || !strings.Contains(trace.String(), " thaw n2\n") {
+		t.Fatalf("the pause missed the leader\n%s", trace)
+	}
+}
+
+func TestLeaderCrash(t *testing.T) {
+	cases := []struct {
+		name    string
+		rise    bool
+		leading func(w *World, id uint64) (uint64, bool)
+		kill    bool
+	}{
+		{"at once", false, func(_ *World, id uint64) (uint64, bool) { return 0, id == 3 }, true},
+		{"on commit", true, func(w *World, id uint64) (uint64, bool) {
+			if w.now < second {
+				return 0, id == 3
+			}
+			return uint64(counted(w, id).ticks), id == 3
+		}, true},
+		{"commit stands still", true, func(_ *World, id uint64) (uint64, bool) { return 7, id == 3 }, false},
+		{"no leader", false, func(*World, uint64) (uint64, bool) { return 0, false }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pl := testPlan(3, 4*second, 4*second)
+			pl.windows = []window{{kind: leadercrash, start: second, end: 2 * second, node: 1, rise: tc.rise}}
+			w, trace := counterWorld(t, pl, 3, 0, tc.leading)
+			if err := w.Run(); err != nil {
+				t.Fatal(err)
+			}
+			var kills, starts []uint64
+			for line := range strings.Lines(trace.String()) {
+				f := strings.Fields(line)
+				at, _ := strconv.ParseUint(f[0], 10, 64)
+				switch {
+				case f[1] == "kill" && f[2] == "n3":
+					kills = append(kills, at)
+				case f[1] == "start" && f[2] == "n3" && at > 0:
+					starts = append(starts, at)
+				}
+			}
+			switch {
+			case !tc.kill && len(kills) > 0:
+				t.Fatalf("killed n3 at %v", kills)
+			case !tc.kill:
+			case len(kills) != 1 || len(starts) != 1 || starts[0] != 2*second:
+				t.Fatalf("kills %v, restarts %v\n%s", kills, starts, trace)
+			case tc.rise && (kills[0] == second || kills[0] > second+tick*12/10):
+				t.Fatalf("killed at %d, want at the first tick after %d", kills[0], second)
+			case !tc.rise && kills[0] != second:
+				t.Fatalf("killed at %d, want %d", kills[0], second)
+			}
+		})
 	}
 }

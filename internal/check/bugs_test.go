@@ -11,28 +11,39 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/simbug"
 )
 
-var masked = map[string]string{
-	"B6":  "the leader's empty entry travels with every old entry, raft's TestCommitOnlyOwnTerm and TestFigure8 catch it",
-	"B10": "check-quorum deposes a cut-off leader before a client reaches the new one, raft's TestReadConfirmedByQuorum catches it",
-}
+const masked = "B6"
 
 func TestBugsAreFound(t *testing.T) {
 	t.Cleanup(func() { _ = simbug.Set("") })
+	type hunt struct {
+		bug     string
+		profile sim.Profile
+		seeds   uint64
+	}
+	var hunts []hunt
 	for _, name := range simbug.Names {
-		t.Run(name, func(t *testing.T) {
-			if why, ok := masked[name]; ok {
-				t.Skip("not found in 1000 seeds: " + why)
+		seeds := uint64(1000)
+		if name == "B10" {
+			seeds = 2000
+		}
+		hunts = append(hunts, hunt{name, sim.ProfileAll, seeds})
+	}
+	hunts = append(hunts, hunt{"B11", ProfileEvict, 1000})
+	for _, h := range hunts {
+		t.Run(h.bug+"/"+string(h.profile), func(t *testing.T) {
+			if h.bug == masked {
+				t.Skip("not found in 10 000 seeds: the old entries need two leaders to die within one round trip each, raft's TestCommitOnlyOwnTerm and TestFigure8 catch it")
 			}
-			if err := simbug.Set(name); err != nil {
+			if err := simbug.Set(h.bug); err != nil {
 				t.Fatal(err)
 			}
-			seed, err := Sweep(0, 1000, runtime.GOMAXPROCS(0), func(seed uint64) error {
-				_, err := Run(Config{Seed: seed, Profile: sim.ProfileAll})
+			seed, err := Sweep(0, h.seeds, runtime.GOMAXPROCS(0), func(seed uint64) error {
+				_, err := Run(Config{Seed: seed, Profile: h.profile})
 				return err
 			})
 			v, ok := errors.AsType[*Violation](err)
 			if !ok {
-				t.Fatalf("no violation in 1000 seeds, run error %v", err)
+				t.Fatalf("no violation in %d seeds, run error %v", h.seeds, err)
 			}
 			t.Logf("found by %s in seed %d: %v", v.Check, seed, v)
 		})

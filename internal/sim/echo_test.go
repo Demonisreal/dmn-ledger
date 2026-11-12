@@ -240,9 +240,10 @@ func TestTraceHashPinned(t *testing.T) {
 		p    Profile
 		hash string
 	}{
-		{1, ProfileAll, "dc8de919bf0713e2ec773867716ba5a46373601b6b1e7e7afe4c118f09c509fa"},
-		{2, ProfileCrash, "4805208b888fa8f2e6b7b6fe0d7e4905fcff11989af9c4867929d89cdaf3b0e6"},
+		{1, ProfileAll, "536cc7fa8455d116c2bf1fa8b7982ab4fbe530430bc6fd2b72312a06cdb73427"},
+		{2, ProfileCrash, "1d3a6075adeb687330bea293f8e783cb5f017ba15346661bf50e24fc0c637028"},
 		{15, ProfileNet, "6fc34c840168347553b46404434714a2db49b772c4e1858f2e34f2f9d24f77c4"},
+		{3, ProfileClock, "419b16f20c5e16aab6d3447b9d3d3c6d751f31e6786efc7b8c34aa61b9fb4f08"},
 	}
 	for _, pin := range pinned {
 		sum := newEchoRun(t, pin.seed, pin.p, nil).w.TraceHash()
