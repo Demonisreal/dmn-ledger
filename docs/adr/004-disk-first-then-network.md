@@ -1,6 +1,6 @@
 # ADR-004: Disk first, then network
 
-Status: accepted.
+Status: accepted, 2026-11-11.
 
 ## Context
 
@@ -30,13 +30,14 @@ term changes before a `Ready`, messages of the older term are dropped, so every 
 
 ## Consequences
 
-- The rule is checked, not trusted. The simulator clones a node's disk at every 50th promise,
-  cuts the power on the clone and checks that the promise is still there (checker S5).
+- The rule is checked, not trusted. The simulator clones a node's disk at every 50th promise
+  after a round and at every 20th sync inside a round, cuts the power on the clone and checks that
+  what the node promised is still there (checker S5).
 - The planted bugs B4 (messages before the fsync) and B5 (entries before the hard state) are found
-  by S5 in the first seed and by the restart check within a few hundred seeds.
+  by S5, B4 in the first seed, B5 within 4 to 60 seeds from five starting points.
 - Commit latency is the leader's fsync, then a round trip, then the follower's fsync, one after the
-  other. Sending in parallel would overlap the first fsync with the rest. The benchmarks measure what
-  that costs.
+  other. Sending in parallel would overlap the first fsync with the rest. What that costs is not
+  measured yet; there is no benchmark of the node loop on a real disk.
 - Batching needs no timer. Everything that arrives while a node waits for its disk shares the next
   fsync.
 

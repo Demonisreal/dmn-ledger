@@ -5,6 +5,11 @@ This is the contract of the state machine in `internal/state`. The reference mod
 each other. Every replica must reach the same result for the same batch, so the order of the checks
 below is part of the contract, not an implementation detail.
 
+The model follows TigerBeetle's: accounts with pending and posted debits and credits on a ledger,
+two-phase transfers that are posted, voided or expire, linked chains, 128-bit IDs and a result code
+for every event that fails. It is a subset of TigerBeetle's fields and flags, and the code is
+written independently in Go.
+
 ## Accounts
 
 | Field | Type | Notes |
@@ -256,8 +261,8 @@ recomputes it after any batch and fails on the first difference:
 
 ## Snapshot and digest
 
-`WriteSnapshot` writes the whole state; `ReadSnapshot` restores it. The bytes depend only on the state,
-not on the order in which it was built:
+`WriteSnapshot` writes the whole state; `ReadSnapshot` restores it. The bytes depend only on the
+state, not on the order in which it was built:
 
 1. version byte `1`
 2. `last` as uint64
@@ -272,8 +277,8 @@ trailing bytes, and any state that fails `CheckInvariants`. Since the invariants
 whole state from the transfers, every rule of this document that the final state can show is
 checked. What only the history could show is not: the snapshot does not record batch boundaries,
 so neither the limit flags at each step in between nor the members of a chain can be replayed. An
-error of the reader itself is returned as it is, not as `ErrBadSnapshot`, so the caller can tell a broken file
-from a failing disk.
+error of the reader itself is returned as it is, not as `ErrBadSnapshot`, so the caller can tell a
+broken file from a failing disk.
 
 `Digest` is SHA-256 over the snapshot bytes. Two replicas with the same digest hold the same
 accounts, transfers, pending states and `last`, so they hand out the same timestamps from then on.
