@@ -45,7 +45,13 @@ func (w *watch) end() error {
 	if err := w.owners(nodes); err != nil {
 		return err
 	}
-	return w.replay(nodes[0])
+	if err := w.replay(nodes[0]); err != nil {
+		return err
+	}
+	if len(nodes) == 1 {
+		return nil
+	}
+	return w.replayLog(nodes)
 }
 
 func (w *watch) answered() error {

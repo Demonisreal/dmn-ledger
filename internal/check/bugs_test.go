@@ -32,7 +32,7 @@ func TestBugsAreFound(t *testing.T) {
 		{"B9", sim.ProfileAll, 500, []string{"S3"}},
 		{"B10", sim.ProfileSplit, 6000, []string{"S9"}},
 		{"B11", sim.ProfileAll, 500, []string{"S8", "S9"}},
-		{"B11", sim.ProfileEvict, 500, []string{"S8"}},
+		{"B11", sim.ProfileEvict, 500, []string{"S11"}},
 		{"B12", sim.ProfileAll, 500, []string{"S7"}},
 	}
 	huntedInRaft := []string{"B15", "B16", "B17"}

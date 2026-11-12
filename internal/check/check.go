@@ -62,6 +62,7 @@ type watch struct {
 	terms     []uint64
 	commits   map[*replica.Node]uint64
 	committed map[uint64]uint64
+	entries   map[[2]uint64]raft.Entry
 	checked   map[*replica.Node]uint64
 	receipts  map[uint64]receipt
 	promises  int
@@ -85,6 +86,7 @@ func newWatch(cfg Config) *watch {
 		hashes:    make(map[uint64][sha256.Size]byte),
 		commits:   make(map[*replica.Node]uint64),
 		committed: make(map[uint64]uint64),
+		entries:   make(map[[2]uint64]raft.Entry),
 		checked:   make(map[*replica.Node]uint64),
 		receipts:  make(map[uint64]receipt),
 		sample:    syncSample,
@@ -150,6 +152,9 @@ func (w *watch) failed(id uint64, err error) error {
 
 func (w *watch) said(id uint64, msgs []raft.Message) error {
 	for _, m := range msgs {
+		if err := w.logged(id, m.Entries); err != nil {
+			return err
+		}
 		w.note(id, m)
 		promise := false
 		switch {

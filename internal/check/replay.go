@@ -3,7 +3,6 @@ package check
 import (
 	"bytes"
 	"cmp"
-	"math"
 	"slices"
 
 	"github.com/anishathalye/porcupine"
@@ -19,7 +18,7 @@ func (w *watch) replay(n *replica.Node) error {
 	calls, bounds := w.c.Calls(), w.c.Windows()
 	window := make([]int, len(calls))
 	var writes []int
-	doubt := uint64(math.MaxUint64)
+	unsure := false
 	k := 0
 	for i, call := range calls {
 		for k < len(bounds) && bounds[k] <= i {
@@ -28,7 +27,7 @@ func (w *watch) replay(n *replica.Node) error {
 		window[i] = k
 		switch {
 		case call.Reply.Status == client.SessionUnknown && w.cfg.Profile == sim.ProfileEvict:
-			doubt = min(doubt, call.Start)
+			unsure = true
 			continue
 		case call.Reply.Status != client.OK:
 			return w.fail("S8", 0, "c%d call %d (%s) ended with %s", call.Client, i, call.Op, call.Reply.Status)
@@ -37,10 +36,10 @@ func (w *watch) replay(n *replica.Node) error {
 			writes = append(writes, i)
 		}
 	}
-	slices.SortFunc(writes, func(a, b int) int { return cmp.Compare(calls[a].Reply.Time, calls[b].Reply.Time) })
-	if doubt != math.MaxUint64 {
-		writes = settled(calls, writes, doubt)
+	if unsure {
+		return nil
 	}
+	slices.SortFunc(writes, func(a, b int) int { return cmp.Compare(calls[a].Reply.Time, calls[b].Reply.Time) })
 
 	l := oracle.New()
 	starts := make([]*oracle.Ledger, len(bounds)+1)
@@ -63,9 +62,6 @@ func (w *watch) replay(n *replica.Node) error {
 		if got := client.AppendFailures(nil, fails); !bytes.Equal(got, call.Reply.Body) {
 			return w.fail("S8", 0, "c%d call %d (%s at %d) got failures %x, the oracle has %x", call.Client, i, call.Op, call.Reply.Time, call.Reply.Body, got)
 		}
-	}
-	if doubt != math.MaxUint64 {
-		return nil
 	}
 	for ; next < len(starts); next++ {
 		starts[next] = l.Clone()
@@ -97,20 +93,6 @@ func (w *watch) linearizable(calls []sim.Call, bounds []int, starts []*oracle.Le
 		lo = hi
 	}
 	return nil
-}
-
-func settled(calls []sim.Call, writes []int, doubt uint64) []int {
-	var horizon uint64
-	for _, i := range writes {
-		if calls[i].End < doubt {
-			horizon = max(horizon, calls[i].Reply.Time)
-		}
-	}
-	k := 0
-	for k < len(writes) && calls[writes[k]].Reply.Time <= horizon {
-		k++
-	}
-	return writes[:k]
 }
 
 func model(start *oracle.Ledger) porcupine.Model {

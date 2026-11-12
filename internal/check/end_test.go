@@ -15,31 +15,6 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 )
 
-func TestSettledKeepsWhatEndedBeforeTheDoubt(t *testing.T) {
-	calls := []sim.Call{
-		{End: 10, Reply: client.Reply{Time: 100}},
-		{End: 30, Reply: client.Reply{Time: 200}},
-		{End: 60, Reply: client.Reply{Time: 150}},
-		{End: 70, Reply: client.Reply{Time: 300}},
-	}
-	byTime := []int{0, 2, 1, 3}
-	cases := []struct {
-		doubt uint64
-		want  []int
-	}{
-		{5, []int{}},
-		{20, []int{0}},
-		{30, []int{0}},
-		{50, []int{0, 2, 1}},
-		{80, []int{0, 2, 1, 3}},
-	}
-	for _, tc := range cases {
-		if got := settled(calls, slices.Clone(byTime), tc.doubt); !slices.Equal(got, tc.want) {
-			t.Errorf("doubt at %d: kept %v, want %v", tc.doubt, got, tc.want)
-		}
-	}
-}
-
 func finished(t *testing.T) (*watch, []*replica.Node) {
 	t.Helper()
 	c, err := sim.NewCluster(sim.ClusterConfig{Seed: 2, Profile: sim.ProfileCalm, Nodes: 3})
