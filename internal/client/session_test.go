@@ -209,3 +209,57 @@ func TestBadClockWaitsLikeBusy(t *testing.T) {
 		t.Fatalf("after BadClock: %+v, want the same request to the same node", out)
 	}
 }
+
+func TestRefusalsInARowMoveToTheNextNode(t *testing.T) {
+	for _, st := range []Status{Busy, BadClock} {
+		s := registered(t)
+		var m Message
+		refuse := func(want uint64) {
+			t.Helper()
+			s.Step(Reply{Client: alice, Number: m.Request.Number, Status: st})
+			for range busyTicks {
+				s.Tick()
+			}
+			if out := s.Outbox(); len(out) != 1 || out[0].To != want {
+				t.Fatalf("%s: %+v, want a resend to node %d", st, out, want)
+			}
+		}
+		m = submit(t, s, CreateTransfers)
+		refuse(1)
+		refuse(1)
+		s.Step(Reply{Client: alice, Number: m.Request.Number, Status: OK})
+		if _, done := s.Result(); !done {
+			t.Fatal("OK did not end the request")
+		}
+		m = submit(t, s, CreateTransfers)
+		refuse(1)
+		refuse(1)
+		refuse(2)
+		refuse(2)
+		s.Step(Reply{Client: alice, Number: m.Request.Number, Status: NotLeader, Leader: 1})
+		s.Tick()
+		if out := s.Outbox(); len(out) != 1 || out[0].To != 1 {
+			t.Fatalf("%s: after NotLeader %+v, want node 1", st, out)
+		}
+		refuse(1)
+		refuse(1)
+		refuse(2)
+	}
+}
+
+func TestSubmitKeepsItsOwnBody(t *testing.T) {
+	s := registered(t)
+	body := []byte{1, 2, 3}
+	if err := s.Submit(CreateTransfers, body); err != nil {
+		t.Fatal(err)
+	}
+	body[0] = 9
+	for range 10 {
+		s.Tick()
+	}
+	for _, m := range s.Outbox() {
+		if m.Request.Body[0] != 1 {
+			t.Fatalf("request body %v changed with the caller's slice", m.Request.Body)
+		}
+	}
+}

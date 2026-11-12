@@ -21,7 +21,7 @@ const (
 	snapMagic    = "DMNR"
 	snapVersion  = 1
 	snapHeadLen  = len(snapMagic) + 1 + 8 + 8 + sha256.Size + 8
-	sessionLen   = idSize + 8 + 8 + 8 + 1 + 1 + 8 + 4
+	sessionLen   = client.IDSize + 8 + 8 + 8 + 1 + 1 + 8 + 4
 	snapReadSize = 64 << 10
 )
 
@@ -63,7 +63,7 @@ func (n *Node) writeSnapshot(w io.Writer) error {
 		b = binary.BigEndian.AppendUint64(b, s.access)
 		b = append(b, byte(s.reply.Op), byte(s.reply.Status))
 		b = binary.BigEndian.AppendUint64(b, s.reply.Time)
-		b = binary.BigEndian.AppendUint32(b, uint32(len(s.reply.Body))) //nolint:gosec
+		b = binary.BigEndian.AppendUint32(b, uint32(len(s.reply.Body))) //nolint:gosec // G115: replies stay below MaxBody
 		b = append(b, s.reply.Body...)
 	}
 	if _, err := w.Write(b); err != nil {
@@ -83,12 +83,12 @@ func (n *Node) load(r io.Reader) error {
 		return err
 	}
 	sessions := make(map[u128.Uint128]*session)
+	var rec [sessionLen]byte
 	for range head.sessions {
-		rec := buf[:sessionLen]
-		if _, err := io.ReadFull(br, rec); err != nil {
+		if _, err := io.ReadFull(br, rec[:]); err != nil {
 			return err
 		}
-		id := u128.FromBytes(rec)
+		id := u128.FromBytes(rec[:])
 		s := &session{
 			since:  binary.BigEndian.Uint64(rec[16:]),
 			last:   binary.BigEndian.Uint64(rec[24:]),
@@ -116,12 +116,12 @@ func (n *Node) load(r io.Reader) error {
 	}
 	n.sm, n.sessions = sm, sessions
 	n.applied, n.appliedTerm, n.hash = head.index, head.term, head.hash
-	n.anchorTick = n.ticks
+	n.anchor, n.anchorTick = sm.Last(), n.ticks
 	return nil
 }
 
 func (n *Node) install(s raft.Snapshot) error {
-	src, ok := n.payloads[s]
+	src, ok := n.incoming[s]
 	if !ok {
 		return fmt.Errorf("replica: no payload for snapshot %d term %d", s.Index, s.Term)
 	}

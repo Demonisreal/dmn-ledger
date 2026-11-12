@@ -3,7 +3,6 @@ package check
 import (
 	"bytes"
 	"cmp"
-	"encoding/binary"
 	"math"
 	"slices"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/sim"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
-	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
 func (w *watch) replay(n *replica.Node) error {
@@ -29,11 +27,11 @@ func (w *watch) replay(n *replica.Node) error {
 		}
 		window[i] = k
 		switch {
-		case call.Reply.Status == client.SessionUnknown && w.cfg.Profile == ProfileEvict:
+		case call.Reply.Status == client.SessionUnknown && w.cfg.Profile == sim.ProfileEvict:
 			doubt = min(doubt, call.Start)
 			continue
 		case call.Reply.Status != client.OK:
-			return w.fail("S8", 0, "c%d call %d (%s) ended with %s", call.Client-w.c.Nodes(), i, call.Op, call.Reply.Status)
+			return w.fail("S8", 0, "c%d call %d (%s) ended with %s", call.Client, i, call.Op, call.Reply.Status)
 		}
 		if !call.Op.Lookup() {
 			writes = append(writes, i)
@@ -47,12 +45,10 @@ func (w *watch) replay(n *replica.Node) error {
 	l := oracle.New()
 	starts := make([]*oracle.Ledger, len(bounds)+1)
 	next, early := 0, -1
-	booked := make(map[u128.Uint128]int)
 	for _, i := range writes {
 		call := &calls[i]
-		who := call.Client - w.c.Nodes()
 		if call.Reply.Time <= l.Last() {
-			return w.fail("S8", 0, "c%d call %d has time %d, the ledger is already at %d", who, i, call.Reply.Time, l.Last())
+			return w.fail("S8", 0, "c%d call %d has time %d, the ledger is already at %d", call.Client, i, call.Reply.Time, l.Last())
 		}
 		for ; next <= window[i]; next++ {
 			starts[next] = l.Clone()
@@ -62,23 +58,10 @@ func (w *watch) replay(n *replica.Node) error {
 		}
 		fails, err := l.Apply(stateOp(call.Op), call.Reply.Time, call.Body)
 		if err != nil {
-			return w.fail("S8", 0, "c%d call %d: %v", who, i, err)
+			return w.fail("S8", 0, "c%d call %d: %v", call.Client, i, err)
 		}
-		if got := appendFailures(nil, fails); !bytes.Equal(got, call.Reply.Body) {
-			return w.fail("S8", 0, "c%d call %d (%s at %d) got failures %x, the oracle has %x", who, i, call.Op, call.Reply.Time, call.Reply.Body, got)
-		}
-		if call.Op != client.CreateTransfers {
-			continue
-		}
-		for k := range len(call.Body) / state.TransferSize {
-			if slices.ContainsFunc(fails, func(f state.Failure) bool { return f.Index == k }) {
-				continue
-			}
-			id := u128.FromBytes(call.Body[k*state.TransferSize:])
-			if prev, ok := booked[id]; ok {
-				return w.fail("S8", 0, "transfer %v booked by call %d and call %d", id, prev, i)
-			}
-			booked[id] = i
+		if got := client.AppendFailures(nil, fails); !bytes.Equal(got, call.Reply.Body) {
+			return w.fail("S8", 0, "c%d call %d (%s at %d) got failures %x, the oracle has %x", call.Client, i, call.Op, call.Reply.Time, call.Reply.Body, got)
 		}
 	}
 	if doubt != math.MaxUint64 {
@@ -94,6 +77,10 @@ func (w *watch) replay(n *replica.Node) error {
 	if early >= 0 {
 		return w.fail("S9", 0, "call %d of window %d has a later time than a call of a later window", early, window[early])
 	}
+	return w.linearizable(calls, bounds, starts)
+}
+
+func (w *watch) linearizable(calls []sim.Call, bounds []int, starts []*oracle.Ledger) error {
 	lo := 0
 	for k, start := range starts {
 		hi := len(calls)
@@ -102,7 +89,7 @@ func (w *watch) replay(n *replica.Node) error {
 		}
 		ops := make([]porcupine.Operation, 0, hi-lo)
 		for i := lo; i < hi; i++ {
-			ops = append(ops, porcupine.Operation{Input: &calls[i], Call: int64(calls[i].Start), Return: int64(calls[i].End)}) //nolint:gosec
+			ops = append(ops, porcupine.Operation{Input: &calls[i], Call: int64(calls[i].Start), Return: int64(calls[i].End)}) //nolint:gosec // G115: virtual time stays far below 2^63
 		}
 		if !porcupine.CheckOperations(model(start), ops) {
 			return w.fail("S9", 0, "window %d with calls %d to %d is not linearizable", k, lo, hi-1)
@@ -139,7 +126,7 @@ func model(start *oracle.Ledger) porcupine.Model {
 			}
 			next := l.Clone()
 			fails, err := next.Apply(stateOp(call.Op), call.Reply.Time, call.Body)
-			return err == nil && bytes.Equal(appendFailures(nil, fails), call.Reply.Body), next
+			return err == nil && bytes.Equal(client.AppendFailures(nil, fails), call.Reply.Body), next
 		},
 		Equal: func(a, b any) bool { return a.(*oracle.Ledger).Last() == b.(*oracle.Ledger).Last() },
 		Hash:  func(st any) uint64 { return st.(*oracle.Ledger).Last() },
@@ -147,10 +134,7 @@ func model(start *oracle.Ledger) porcupine.Model {
 }
 
 func lookup(l *oracle.Ledger, call *sim.Call) []byte {
-	var ids []u128.Uint128
-	for b := call.Body; len(b) >= 16; b = b[16:] {
-		ids = append(ids, u128.FromBytes(b))
-	}
+	ids := client.DecodeIDs(call.Body)
 	var body []byte
 	if call.Op == client.LookupAccounts {
 		for _, a := range l.LookupAccounts(ids) {
@@ -169,12 +153,4 @@ func stateOp(op client.Op) state.Op {
 		return state.CreateAccounts
 	}
 	return state.CreateTransfers
-}
-
-func appendFailures(dst []byte, fails []state.Failure) []byte {
-	for _, f := range fails {
-		dst = binary.BigEndian.AppendUint32(dst, uint32(f.Index)) //nolint:gosec
-		dst = binary.BigEndian.AppendUint32(dst, uint32(f.Reason))
-	}
-	return dst
 }

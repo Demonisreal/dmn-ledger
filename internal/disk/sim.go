@@ -366,7 +366,7 @@ func (n *simNode) crash(rng *rand.Rand, sector int64) *simNode {
 	onDisk := make([]byte, size)
 	copy(onDisk, n.synced)
 	for k := int64(len(n.synced)); k < size; k++ {
-		onDisk[k] = byte(rng.Uint32()) //nolint:gosec
+		onDisk[k] = byte(rng.Uint32()) //nolint:gosec // G115: keeps the low byte on purpose, any garbage will do
 	}
 	for sec := n.lo / sector * sector; sec < size; sec += sector {
 		if rng.IntN(2) == 0 || sec >= int64(len(n.cur)) {

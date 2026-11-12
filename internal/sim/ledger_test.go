@@ -33,9 +33,9 @@ func (lw *ledgerWatch) check(c *Cluster) error {
 		}
 		st := n.Status()
 		if h, ok := lw.hashes[st.Applied]; !ok {
-			lw.hashes[st.Applied] = st.Hash
-		} else if h != st.Hash {
-			return fmt.Errorf("S3: n%d applied %d with hash %x, seen %x", id, st.Applied, st.Hash[:4], h[:4])
+			lw.hashes[st.Applied] = st.ApplyHash
+		} else if h != st.ApplyHash {
+			return fmt.Errorf("S3: n%d applied %d with hash %x, seen %x", id, st.Applied, st.ApplyHash[:4], h[:4])
 		}
 		if st.Term < lw.terms[id-1] {
 			return fmt.Errorf("S4: n%d term %d after %d", id, st.Term, lw.terms[id-1])
@@ -97,11 +97,11 @@ func checkLedgerEnd(t *testing.T, c *Cluster) {
 	for i, call := range c.Calls() {
 		switch {
 		case call.End == 0:
-			t.Fatalf("call %d of c%d (%s) started at %d never answered", i, call.Client-c.Nodes(), call.Op, call.Start)
+			t.Fatalf("call %d of c%d (%s) started at %d never answered", i, call.Client, call.Op, call.Start)
 		case call.Reply.Status == client.SessionUnknown || call.Reply.Status == client.Stale:
-			t.Fatalf("call %d of c%d (%s) ended with %s", i, call.Client-c.Nodes(), call.Op, call.Reply.Status)
+			t.Fatalf("call %d of c%d (%s) ended with %s", i, call.Client, call.Op, call.Reply.Status)
 		case call.End > quiet && call.End-max(quiet, call.Start) > quietBound:
-			t.Fatalf("call %d of c%d (%s) open %d ns into the quiet phase", i, call.Client-c.Nodes(), call.Op, call.End-max(quiet, call.Start))
+			t.Fatalf("call %d of c%d (%s) open %d ns into the quiet phase", i, call.Client, call.Op, call.End-max(quiet, call.Start))
 		}
 	}
 	if len(c.Calls()) == 0 {

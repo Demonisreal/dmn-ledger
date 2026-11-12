@@ -11,6 +11,7 @@ const (
 	evHeal
 	evQuiet
 	evNudge
+	evKill
 )
 
 type event struct {

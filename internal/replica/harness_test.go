@@ -27,7 +27,7 @@ type envelope struct {
 }
 
 type testNet struct {
-	t       *testing.T
+	t       testing.TB
 	nodes   []*Node
 	disks   []*disk.Sim
 	cfgs    []Config
@@ -40,7 +40,7 @@ type testNet struct {
 	snaps   int
 }
 
-func newTestNet(t *testing.T, size int, tune func(*Config)) *testNet {
+func newTestNet(t testing.TB, size int, tune func(*Config)) *testNet {
 	t.Helper()
 	tn := &testNet{t: t, cut: make(map[uint64]bool)}
 	peers := make([]uint64, size)
@@ -54,7 +54,7 @@ func newTestNet(t *testing.T, size int, tune func(*Config)) *testNet {
 			Dir:            "/n",
 			MaxSessions:    16,
 			SnapshotEvery:  1000,
-			ClockStep:      2 * tickNs,
+			ClockStep:      tickNs + tickNs/4,
 			ElectionTicks:  10,
 			HeartbeatTicks: 2,
 			SnapshotTicks:  50,

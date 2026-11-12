@@ -14,8 +14,7 @@ const (
 	kindRegister uint8 = 1
 	kindRequest  uint8 = 2
 
-	idSize      = 16
-	requestHead = idSize + 8 + 8 + 1 + 8
+	requestHead = client.IDSize + 8 + 8 + 1 + 8
 )
 
 type session struct {
@@ -47,7 +46,7 @@ func wellFormed(req client.Request) bool {
 	case client.CreateTransfers:
 		return len(req.Body)%state.TransferSize == 0
 	case client.LookupAccounts, client.LookupTransfers:
-		return len(req.Body)%idSize == 0
+		return len(req.Body)%client.IDSize == 0
 	}
 	return false
 }
@@ -79,7 +78,7 @@ func (n *Node) apply(e wal.Entry) {
 }
 
 func (n *Node) register(index uint64, body []byte) client.Reply {
-	if len(body) != idSize {
+	if len(body) != client.IDSize {
 		return client.Reply{}
 	}
 	id := u128.FromBytes(body)
@@ -148,20 +147,15 @@ func (n *Node) execute(r client.Reply, ts uint64, recs []byte) client.Reply {
 		r.Status = client.Malformed
 		return r
 	}
-	n.anchorTick = n.ticks
-	r.Status, r.Time = client.OK, at
-	for _, f := range fails {
-		r.Body = binary.BigEndian.AppendUint32(r.Body, uint32(f.Index)) //nolint:gosec
-		r.Body = binary.BigEndian.AppendUint32(r.Body, uint32(f.Reason))
+	if n.appliedTerm != n.leading {
+		n.anchor, n.anchorTick = n.sm.Last(), n.ticks
 	}
+	r.Status, r.Time, r.Body = client.OK, at, client.AppendFailures(r.Body, fails)
 	return r
 }
 
 func (n *Node) lookup(req client.Request) client.Reply {
-	ids := make([]u128.Uint128, 0, len(req.Body)/idSize)
-	for b := req.Body; len(b) >= idSize; b = b[idSize:] {
-		ids = append(ids, u128.FromBytes(b))
-	}
+	ids := client.DecodeIDs(req.Body)
 	var body []byte
 	if req.Op == client.LookupAccounts {
 		for _, a := range n.sm.LookupAccounts(ids, nil) {

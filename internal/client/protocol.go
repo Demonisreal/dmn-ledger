@@ -1,12 +1,18 @@
 package client
 
 import (
+	"encoding/binary"
 	"fmt"
 
+	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
-const MaxBody = 1 << 20
+const (
+	MaxBody     = 1 << 20
+	IDSize      = 16
+	FailureSize = 8
+)
 
 type Op uint8
 
@@ -82,4 +88,38 @@ type Reply struct {
 	Leader uint64
 	Time   uint64
 	Body   []byte
+}
+
+func AppendIDs(dst []byte, ids []u128.Uint128) []byte {
+	for _, id := range ids {
+		dst = id.AppendBytes(dst)
+	}
+	return dst
+}
+
+func DecodeIDs(body []byte) []u128.Uint128 {
+	ids := make([]u128.Uint128, 0, len(body)/IDSize)
+	for ; len(body) >= IDSize; body = body[IDSize:] {
+		ids = append(ids, u128.FromBytes(body))
+	}
+	return ids
+}
+
+func AppendFailures(dst []byte, fails []state.Failure) []byte {
+	for _, f := range fails {
+		dst = binary.BigEndian.AppendUint32(dst, uint32(f.Index)) //nolint:gosec // G115: an index into a batch below MaxBody
+		dst = binary.BigEndian.AppendUint32(dst, uint32(f.Reason))
+	}
+	return dst
+}
+
+func DecodeFailures(body []byte) []state.Failure {
+	fails := make([]state.Failure, 0, len(body)/FailureSize)
+	for ; len(body) >= FailureSize; body = body[FailureSize:] {
+		fails = append(fails, state.Failure{
+			Index:  int(binary.BigEndian.Uint32(body)),
+			Reason: state.Reason(binary.BigEndian.Uint32(body[4:])),
+		})
+	}
+	return fails
 }

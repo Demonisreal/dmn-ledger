@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Demonisreal/dmn-ledger/internal/state"
+	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
 func TestSameSeedSameBatches(t *testing.T) {
@@ -48,21 +49,36 @@ func TestLookupPicksKnownIDs(t *testing.T) {
 	for range 50 {
 		g.Settle(g.Batch(), nil)
 	}
-	known := 0
-	for range 200 {
-		accounts, ids := g.Lookup()
+	accounts, transfers := make(map[u128.Uint128]bool), make(map[u128.Uint128]bool)
+	for _, a := range g.accts {
+		accounts[a.ID] = true
+	}
+	for _, tr := range g.sent {
+		transfers[tr.ID] = true
+	}
+	type tally struct{ known, unknown int }
+	var acct, xfer tally
+	for range 400 {
+		forAccounts, ids := g.Lookup()
 		for _, id := range ids {
-			if accounts {
-				for _, a := range g.accts {
-					if a.ID == id {
-						known++
-						break
-					}
-				}
+			switch {
+			case forAccounts && accounts[id]:
+				acct.known++
+			case forAccounts:
+				acct.unknown++
+			case transfers[id]:
+				xfer.known++
+			default:
+				xfer.unknown++
 			}
 		}
 	}
-	if known == 0 {
-		t.Fatal("lookups never ask for a known account")
+	for _, c := range []struct {
+		kind string
+		n    tally
+	}{{"account", acct}, {"transfer", xfer}} {
+		if c.n.unknown == 0 || c.n.known < 4*c.n.unknown {
+			t.Errorf("%s lookups: %d known and %d unknown ids, want mostly known and some unknown", c.kind, c.n.known, c.n.unknown)
+		}
 	}
 }

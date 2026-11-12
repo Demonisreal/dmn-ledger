@@ -86,6 +86,7 @@ type host struct {
 	paused  int
 	missed  bool
 	commit  uint64
+	led     bool
 	waiting bool
 	outbox  []Msg
 	backlog []input
@@ -109,7 +110,11 @@ func New(cfg Config) (*World, error) {
 		return nil, errors.New("sim: need at least one node")
 	}
 	root := pcg(cfg.Seed, 0)
-	pl, err := newPlan(fork(root), cfg.Profile, cfg.Nodes, cfg.Nodes+cfg.Clients)
+	faults := cfg.Profile
+	if faults == ProfileEvict {
+		faults = ProfileAll
+	}
+	pl, err := newPlan(fork(root), faults, cfg.Nodes, cfg.Nodes+cfg.Clients)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +168,7 @@ func fork(r *rand.Rand) *rand.Rand {
 }
 
 func pcg(seed1, seed2 uint64) *rand.Rand {
-	return rand.New(rand.NewPCG(seed1, seed2)) //nolint:gosec
+	return rand.New(rand.NewPCG(seed1, seed2)) //nolint:gosec // G404: seeded on purpose, a run must replay
 }
 
 func nonces(r *rand.Rand) *rand.ChaCha8 {
@@ -258,6 +263,10 @@ func (w *World) step() {
 		}
 	case evNudge:
 		w.nudge(h, &w.plan.windows[ev.win], ev.win)
+	case evKill:
+		if ev.epoch == h.epoch && h.proc != nil {
+			w.down(h)
+		}
 	}
 }
 
@@ -357,16 +366,21 @@ func (w *World) hunted(h *host) bool {
 		return false
 	}
 	commit, lead := w.cfg.Leading(h.id)
-	rose := commit > h.commit
-	h.commit = commit
+	rose, crowned := commit > h.commit, lead && !h.led
+	h.commit, h.led = commit, lead
 	if !lead {
 		return false
 	}
 	for _, i := range w.hunts {
-		if win := &w.plan.windows[i]; win.hit == 0 && (rose || !win.rise) {
-			w.kill(h, win)
-			return true
+		win := &w.plan.windows[i]
+		if win.hit != 0 || win.when == onCommit && !rose || win.when == onElection && !crowned {
+			continue
 		}
+		win.hit = h.id
+		h.crashes++
+		h.waiting = true
+		w.push(event{at: w.now, kind: evKill, id: h.id, epoch: h.epoch})
+		return true
 	}
 	return false
 }
@@ -386,6 +400,10 @@ func (w *World) leader() *host {
 func (w *World) kill(h *host, win *window) {
 	win.hit = h.id
 	h.crashes++
+	w.down(h)
+}
+
+func (w *World) down(h *host) {
 	power := h.rng.IntN(2) == 0
 	w.stop(h, power)
 	w.trace("kill %s %s", h.name, outage(power))
@@ -451,6 +469,7 @@ func (w *World) stop(h *host, power bool) {
 	h.waiting = false
 	h.missed = false
 	h.commit = 0
+	h.led = false
 	h.outbox = nil
 	h.backlog = nil
 	h.meter.cost = 0
@@ -504,9 +523,7 @@ func (w *World) fault(i int, heal bool) {
 			w.stop(h, false)
 			w.trace("kill %s down", h.name)
 		default:
-			power := h.rng.IntN(2) == 0
-			w.stop(h, power)
-			w.trace("kill %s %s", h.name, outage(power))
+			w.down(h)
 		}
 	case blackout:
 		for _, n := range w.nodes() {
@@ -602,7 +619,7 @@ func (w *World) hunt(i int, heal bool) {
 	win := &w.plan.windows[i]
 	if !heal {
 		w.hunts = append(w.hunts, i)
-		if lead := w.leader(); !win.rise && lead != nil {
+		if lead := w.leader(); win.when == atOnce && lead != nil {
 			w.kill(lead, win)
 		}
 		return
@@ -675,8 +692,11 @@ func (w *World) describe(win *window) string {
 		}
 		return span + " " + name
 	case leadercrash:
-		if win.rise {
+		switch win.when {
+		case onCommit:
 			return span + " on commit"
+		case onElection:
+			return span + " on election"
 		}
 		return span
 	}

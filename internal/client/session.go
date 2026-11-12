@@ -8,7 +8,10 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
-const busyTicks = 2
+const (
+	busyTicks = 2
+	busyHops  = 3
+)
 
 var (
 	ErrEvicted  = errors.New("client: session evicted")
@@ -34,6 +37,7 @@ type Session struct {
 	target   int
 	ticks    int
 	due      int
+	busy     int
 	hop      bool
 	sent     bool
 
@@ -47,7 +51,7 @@ func New(id u128.Uint128, nodes []uint64, retryTicks int) *Session {
 		panic("client: New needs at least one node and retryTicks of at least 1")
 	}
 	s := &Session{id: id, nodes: slices.Clone(nodes), retry: retryTicks}
-	s.target = int(id.Lo % uint64(len(nodes))) //nolint:gosec
+	s.target = int(id.Lo % uint64(len(nodes))) //nolint:gosec // G115: below len(nodes)
 	s.start(Request{Client: id, Op: Register})
 	return s
 }
@@ -62,12 +66,12 @@ func (s *Session) Submit(op Op, body []byte) error {
 		return ErrOp
 	}
 	s.number++
-	s.start(Request{Client: s.id, Session: s.session, Number: s.number, Op: op, Body: body})
+	s.start(Request{Client: s.id, Session: s.session, Number: s.number, Op: op, Body: slices.Clone(body)})
 	return nil
 }
 
 func (s *Session) start(req Request) {
-	s.req, s.inflight = req, true
+	s.req, s.inflight, s.busy = req, true, 0
 	s.send()
 }
 
@@ -87,7 +91,7 @@ func (s *Session) Tick() {
 		return
 	}
 	if s.hop {
-		s.target = (s.target + 1) % len(s.nodes)
+		s.target, s.busy = (s.target+1)%len(s.nodes), 0
 	}
 	s.send()
 }
@@ -103,6 +107,7 @@ func (s *Session) Step(r Reply) {
 		} else {
 			s.target = (s.target + 1) % len(s.nodes)
 		}
+		s.busy = 0
 		if !s.sent {
 			s.send()
 		} else {
@@ -110,7 +115,8 @@ func (s *Session) Step(r Reply) {
 		}
 		return
 	case Busy, BadClock:
-		s.ticks, s.due, s.hop = 0, busyTicks, false
+		s.busy++
+		s.ticks, s.due, s.hop = 0, busyTicks, s.busy >= busyHops
 		return
 	case SessionUnknown:
 		s.evicted = true
@@ -124,6 +130,10 @@ func (s *Session) Step(r Reply) {
 	}
 	s.inflight = false
 	s.done, s.ready = r, true
+}
+
+func (s *Session) Since() uint64 {
+	return s.session
 }
 
 func (s *Session) Outbox() []Message {

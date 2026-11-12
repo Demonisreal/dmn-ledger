@@ -7,13 +7,17 @@ import (
 	"slices"
 )
 
-var Names = []string{"B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11", "B12"}
+var names = []string{"B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11", "B12"}
 
 var active string
 
+func Names() []string {
+	return slices.Clone(names)
+}
+
 func Set(name string) error {
-	if name != "" && !slices.Contains(Names, name) {
-		return fmt.Errorf("simbug: unknown bug %q, want one of %v", name, Names)
+	if name != "" && !slices.Contains(names, name) {
+		return fmt.Errorf("simbug: unknown bug %q, want one of %v", name, names)
 	}
 	active = name
 	return nil

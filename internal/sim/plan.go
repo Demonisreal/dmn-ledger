@@ -8,12 +8,19 @@ import (
 type Profile string
 
 const (
-	ProfileCalm  Profile = "calm"
-	ProfileNet   Profile = "net"
-	ProfileCrash Profile = "crash"
-	ProfileClock Profile = "clock"
-	ProfileAll   Profile = "all"
+	ProfileCalm    Profile = "calm"
+	ProfileNet     Profile = "net"
+	ProfileCrash   Profile = "crash"
+	ProfileClock   Profile = "clock"
+	ProfileAll     Profile = "all"
+	ProfileEvict   Profile = "evict"
+	ProfileLeaders Profile = "leaders"
+	ProfileSplit   Profile = "split"
 )
+
+func Profiles() []Profile {
+	return []Profile{ProfileCalm, ProfileNet, ProfileCrash, ProfileClock, ProfileAll, ProfileEvict, ProfileLeaders, ProfileSplit}
+}
 
 const (
 	microsecond uint64 = 1000
@@ -87,6 +94,14 @@ func (f fault) String() string {
 	return faultNames[f]
 }
 
+type moment uint8
+
+const (
+	onCommit moment = iota
+	onElection
+	atOnce
+)
+
 type window struct {
 	kind       fault
 	start, end uint64
@@ -96,7 +111,8 @@ type window struct {
 	shift      uint64
 	back, keep bool
 	step       uint64
-	lead, rise bool
+	lead       bool
+	when       moment
 	hit        uint64
 }
 
@@ -123,6 +139,10 @@ func profileFaults(p Profile) ([]fault, error) {
 		return []fault{jump, pause}, nil
 	case ProfileAll:
 		return append(append(netFaults, diskFaults...), jump, pause), nil
+	case ProfileLeaders:
+		return []fault{leadercrash, leadercrash, leadercrash, crash, isolate, bridge}, nil
+	case ProfileSplit:
+		return []fault{split}, nil
 	}
 	return nil, fmt.Errorf("sim: unknown profile %q", p)
 }
@@ -139,9 +159,12 @@ func newPlan(rng *rand.Rand, p Profile, nodes, hosts uint64) (plan, error) {
 			pl.journal[i] = float64(1+rng.IntN(50)) / 100
 		}
 	}
-	if p == ProfileNet || p == ProfileAll {
+	switch p {
+	case ProfileNet, ProfileAll:
 		pl.loss = float64(rng.IntN(201)) / 1000
 		pl.dup = float64(rng.IntN(101)) / 1000
+	case ProfileLeaders:
+		pl.loss = float64(rng.IntN(201)) / 1000
 	}
 	pl.rearm = p == ProfileCrash || p == ProfileAll
 	if len(faults) == 0 {
@@ -182,7 +205,7 @@ func newPlan(rng *rand.Rand, p Profile, nodes, hosts uint64) (plan, error) {
 				win.step = crawlMin + rng.Uint64N(crawlSpan)
 			}
 		case leadercrash:
-			win.rise = rng.IntN(2) == 0
+			win.when = moment(rng.IntN(3)) //nolint:gosec // G115: 0 to 2
 		}
 		pl.windows = append(pl.windows, win)
 	}

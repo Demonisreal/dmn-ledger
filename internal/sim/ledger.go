@@ -2,7 +2,6 @@ package sim
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -20,28 +19,27 @@ import (
 )
 
 const (
-	ledgerDir   = "/ledger"
-	windowSize  = 32
-	thinkTicks  = 20
-	lookupOdds  = 5
-	cutLookups  = 2
-	maxSessions = 64
-	drainTime   = second
-	joinTicks   = 200
-	rejoinOdds  = 8
+	ledgerDir     = "/ledger"
+	windowSize    = 32
+	thinkTicks    = 20
+	lookupOdds    = 5
+	cutLookups    = 2
+	maxSessions   = 64
+	evictSessions = 2
+	drainTime     = second
+	joinTicks     = 200
+	rejoinOdds    = 8
 )
 
 type ClusterConfig struct {
-	Seed        uint64
-	Profile     Profile
-	Nodes       uint64
-	MaxSessions int
-	Churn       bool
-	Trace       io.Writer
-	Disk        func(id uint64, fsys disk.FS) disk.FS
-	Said        func(id uint64, msgs []raft.Message) error
-	Check       func(c *Cluster) error
-	Failed      func(id uint64, err error) error
+	Seed    uint64
+	Profile Profile
+	Nodes   uint64
+	Trace   io.Writer
+	Disk    func(id uint64, fsys disk.FS) disk.FS
+	Said    func(id uint64, msgs []raft.Message) error
+	Check   func(c *Cluster) error
+	Failed  func(id uint64, err error) error
 }
 
 type Call struct {
@@ -58,6 +56,8 @@ type Cluster struct {
 	cfg       ClusterConfig
 	w         *World
 	gen       *workload.Gen
+	sessions  int
+	churn     bool
 	snapEvery uint64
 	segSize   int64
 	appendMax int64
@@ -81,9 +81,13 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 	}
 	c.gen.MaxBatch = 1 + rng.IntN(8)
 	c.appendMax = rng.Int64N(8<<10 + 1)
+	if cfg.Profile == ProfileLeaders {
+		c.appendMax = 0
+	}
 	c.retry = 2 + rng.IntN(19)
-	if c.cfg.MaxSessions == 0 {
-		c.cfg.MaxSessions = maxSessions
+	c.sessions = maxSessions
+	if cfg.Profile == ProfileEvict {
+		c.sessions, c.churn = evictSessions, true
 	}
 	nodes := cfg.Nodes
 	if nodes == 0 {
@@ -129,6 +133,10 @@ func (c *Cluster) Node(id uint64) *replica.Node {
 		return p.n
 	}
 	return nil
+}
+
+func (c *Cluster) MaxSessions() int {
+	return c.sessions
 }
 
 func (c *Cluster) Calls() []Call {
@@ -216,10 +224,10 @@ func (c *Cluster) openNode(env NodeEnv) (*replica.Node, error) {
 		Clock:          env.Clock,
 		Rand:           env.Rand,
 		Nonces:         env.Nonces,
-		MaxSessions:    c.cfg.MaxSessions,
+		MaxSessions:    c.sessions,
 		SnapshotEvery:  c.snapEvery,
 		SegmentSize:    c.segSize,
-		ClockStep:      2 * tick,
+		ClockStep:      tick + tick/4,
 		ElectionTicks:  10,
 		HeartbeatTicks: 2,
 		SnapshotTicks:  50,
@@ -232,7 +240,7 @@ func (c *Cluster) startClient(env ClientEnv) Process {
 	p := &ledgerClient{c: c, addr: env.ID, nodes: env.Nodes, rng: env.Rand, now: env.Now, call: -1}
 	p.join()
 	p.left = 30 + env.Rand.IntN(31)
-	if c.cfg.Churn {
+	if c.churn {
 		p.wait = env.Rand.IntN(joinTicks)
 	}
 	return p
@@ -335,7 +343,9 @@ func (p *ledgerClient) Tick() {
 		return
 	}
 	p.s.Tick()
-	p.pause--
+	if p.pause > 0 {
+		p.pause--
+	}
 	p.submit()
 }
 
@@ -356,9 +366,7 @@ func (p *ledgerClient) submit() {
 		if accounts {
 			op = client.LookupAccounts
 		}
-		for _, id := range ids {
-			body = id.AppendBytes(body)
-		}
+		body = client.AppendIDs(nil, ids)
 		p.batch = workload.Batch{}
 	} else {
 		p.batch = c.gen.Batch()
@@ -372,7 +380,7 @@ func (p *ledgerClient) submit() {
 		return
 	}
 	p.call = len(c.calls)
-	c.calls = append(c.calls, Call{Client: p.addr, ID: p.id, Session: p.session, Op: op, Body: body, Start: p.now()})
+	c.calls = append(c.calls, Call{Client: p.addr - c.Nodes(), ID: p.id, Session: p.session, Op: op, Body: body, Start: p.now()})
 	p.left--
 }
 
@@ -388,9 +396,7 @@ func (p *ledgerClient) Receive(m Msg) {
 		return
 	case p.call < 0:
 		p.ready = r.Status == client.OK
-		if p.ready {
-			p.session = binary.BigEndian.Uint64(r.Body)
-		}
+		p.session = p.s.Since()
 		return
 	}
 	call := &p.c.calls[p.call]
@@ -398,10 +404,10 @@ func (p *ledgerClient) Receive(m Msg) {
 	p.call = -1
 	p.c.open--
 	if r.Status == client.OK && !call.Op.Lookup() {
-		p.c.gen.Settle(p.batch, failures(r.Body))
+		p.c.gen.Settle(p.batch, client.DecodeFailures(r.Body))
 	}
 	switch {
-	case p.c.cfg.Churn && (r.Status == client.SessionUnknown || p.rng.IntN(rejoinOdds) == 0):
+	case p.c.churn && (r.Status == client.SessionUnknown || p.rng.IntN(rejoinOdds) == 0):
 		p.join()
 	case r.Status == client.SessionUnknown:
 		p.left = 0
@@ -419,17 +425,6 @@ func (p *ledgerClient) Run() ([]Msg, error) {
 		msgs[i] = Msg{To: m.To, Body: &requestBody{m.Request}}
 	}
 	return msgs, nil
-}
-
-func failures(body []byte) []state.Failure {
-	var fails []state.Failure
-	for ; len(body) >= 8; body = body[8:] {
-		fails = append(fails, state.Failure{
-			Index:  int(binary.BigEndian.Uint32(body)),
-			Reason: state.Reason(binary.BigEndian.Uint32(body[4:])),
-		})
-	}
-	return fails
 }
 
 type raftBody struct {

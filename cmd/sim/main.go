@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -32,11 +34,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.Uint64Var(&o.seed, "seed", 0, "run this one seed")
 	fs.Uint64Var(&o.seeds, "seeds", 0, "run this many seeds on all cores, starting at -from")
 	fs.Uint64Var(&o.from, "from", 0, "first seed for -seeds")
-	fs.StringVar(&o.profile, "profile", string(sim.ProfileAll), "fault profile: calm, net, crash, clock, all or evict")
+	var profiles []string
+	for _, p := range sim.Profiles() {
+		profiles = append(profiles, string(p))
+	}
+	fs.StringVar(&o.profile, "profile", string(sim.ProfileAll), "fault profile: "+strings.Join(profiles, ", "))
 	fs.Uint64Var(&o.nodes, "nodes", 0, "nodes per cluster: 1, 3 or 5, 0 takes 5 for every fifth seed and 3 otherwise")
 	fs.BoolVar(&o.trace, "trace", false, "print the trace of -seed")
 	fs.StringVar(&o.bug, "bug", "", "planted bug B1 to B12, needs a build with -tags simbug")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if err := o.validate(fs); err != nil {
@@ -56,12 +65,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 func (o *options) validate(fs *flag.FlagSet) error {
 	seen := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
-	switch sim.Profile(o.profile) {
-	case sim.ProfileCalm, sim.ProfileNet, sim.ProfileCrash, sim.ProfileClock, sim.ProfileAll, check.ProfileEvict:
-	default:
-		return fmt.Errorf("unknown profile %q", o.profile)
-	}
 	switch {
+	case !slices.Contains(sim.Profiles(), sim.Profile(o.profile)):
+		return fmt.Errorf("unknown profile %q", o.profile)
 	case fs.NArg() > 0:
 		return fmt.Errorf("unexpected arguments %v", fs.Args())
 	case o.nodes != 0 && o.nodes != 1 && o.nodes != 3 && o.nodes != 5:
@@ -72,6 +78,8 @@ func (o *options) validate(fs *flag.FlagSet) error {
 		return errors.New("-seed and -trace run one seed, -seeds runs many")
 	case seen["from"] && o.seeds == 0:
 		return errors.New("-from needs -seeds")
+	case o.seeds > 0 && o.from > math.MaxUint64-(o.seeds-1):
+		return errors.New("-from plus -seeds runs past the last seed")
 	}
 	return nil
 }
@@ -85,10 +93,14 @@ func (o *options) single(stdout io.Writer) int {
 	if o.trace {
 		cfg.Trace = stdout
 	}
-	rep, err := check.Run(cfg)
+	var rep check.Report
+	_, err := check.Sweep(o.seed, 1, 1, func(uint64) error {
+		var err error
+		rep, err = check.Run(cfg)
+		return err
+	})
 	if err != nil {
-		o.report(stdout, o.seed, err)
-		return 1
+		return o.report(stdout, o.seed, err)
 	}
 	fmt.Fprintf(stdout, "seed %d profile %s: ok, %d calls in %d windows, widest %d, trace %x\n",
 		o.seed, o.profile, rep.Calls, rep.Windows, rep.Widest, rep.Trace)
@@ -107,25 +119,28 @@ func (o *options) sweep(stdout io.Writer) int {
 		return err
 	})
 	if err != nil {
-		o.report(stdout, seed, err)
-		return 1
+		return o.report(stdout, seed, err)
 	}
 	fmt.Fprintf(stdout, "seeds %d to %d profile %s: ok, widest window %d, %s on %d cores\n",
 		o.from, o.from+o.seeds-1, o.profile, widest, time.Since(start).Round(time.Millisecond), runtime.GOMAXPROCS(0))
 	return 0
 }
 
-func (o *options) report(stdout io.Writer, seed uint64, err error) {
+func (o *options) report(stdout io.Writer, seed uint64, err error) int {
+	_, found := errors.AsType[*check.Violation](err)
+	if _, panicked := errors.AsType[*check.Panic](err); !found && !panicked {
+		fmt.Fprintf(stdout, "seed %d profile %s: run error: %v\n", seed, o.profile, err)
+		return 3
+	}
 	fmt.Fprintf(stdout, "seed %d profile %s failed: %v\n", seed, o.profile, err)
-	cmd := []string{"go run"}
+	cmd := "go run ./cmd/sim"
 	if o.bug != "" {
-		cmd = append(cmd, "-tags simbug ./cmd/sim -bug "+o.bug)
-	} else {
-		cmd = append(cmd, "./cmd/sim")
+		cmd = "go run -tags simbug ./cmd/sim -bug " + o.bug
 	}
-	cmd = append(cmd, fmt.Sprintf("-seed %d -profile %s", seed, o.profile))
+	nodes := ""
 	if o.nodes != 0 {
-		cmd = append(cmd, fmt.Sprintf("-nodes %d", o.nodes))
+		nodes = fmt.Sprintf(" -nodes %d", o.nodes)
 	}
-	fmt.Fprintf(stdout, "reproduce: %s -trace\n", strings.Join(cmd, " "))
+	fmt.Fprintf(stdout, "reproduce: %s -seed %d -profile %s%s -trace\n", cmd, seed, o.profile, nodes)
+	return 1
 }

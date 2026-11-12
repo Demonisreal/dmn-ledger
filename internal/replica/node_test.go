@@ -2,6 +2,7 @@ package replica
 
 import (
 	"bytes"
+	"errors"
 	"math/rand/v2"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/wal"
 )
 
-func ok(t *testing.T, r client.Reply) client.Reply {
+func ok(t testing.TB, r client.Reply) client.Reply {
 	t.Helper()
 	if r.Status != client.OK {
 		t.Fatalf("reply %+v, want OK", r)
@@ -82,6 +83,59 @@ func TestStaleAndUnknownSessions(t *testing.T) {
 	forged.Session++
 	if r := tn.call(0, forged); r.Status != client.SessionUnknown {
 		t.Fatalf("wrong session number: %+v", r)
+	}
+}
+
+func TestStaleRequestIsNotExecuted(t *testing.T) {
+	tn := newTestNet(t, 1, nil)
+	tn.elect(0)
+	c := tn.register(0, 1)
+	ok(t, c.do(client.CreateAccounts, accounts(1, 2)))
+	old := c.request(client.CreateTransfers, transfer(10, 1, 2, 5))
+	ok(t, tn.call(0, old))
+	ok(t, c.do(client.CreateTransfers, transfer(11, 1, 2, 7)))
+	old.Body = transfer(12, 1, 2, 100)
+	if r := tn.call(0, old); r.Status != client.Stale {
+		t.Fatalf("old number with a new body: %+v, want Stale", r)
+	}
+	if got := debits(t, c, 1); got != 12 {
+		t.Fatalf("debits %d, want 12", got)
+	}
+}
+
+func TestRegisterOfAKnownSessionChangesNothing(t *testing.T) {
+	tn := newTestNet(t, 1, nil)
+	tn.elect(0)
+	c := tn.register(0, 1)
+	ok(t, c.do(client.CreateAccounts, accounts(1, 2)))
+	old := c.request(client.CreateTransfers, transfer(10, 1, 2, 5))
+	ok(t, tn.call(0, old))
+	again := tn.register(0, 1)
+	if again.session != c.session {
+		t.Fatalf("second register named session %d, the first %d", again.session, c.session)
+	}
+	old.Body = transfer(11, 1, 2, 100)
+	if r := tn.call(0, old); r.Status != client.OK || r.Time == 0 {
+		t.Fatalf("retry after a second register: %+v, want the stored reply", r)
+	}
+	if got := debits(t, c, 1); got != 5 {
+		t.Fatalf("debits %d, want 5", got)
+	}
+}
+
+func TestTermFromAMessageSurvivesAPowerLoss(t *testing.T) {
+	tn := newTestNet(t, 3, nil)
+	tn.elect(0)
+	term := tn.nodes[2].Status().Term
+	tn.nodes[2].Receive(raft.Message{Type: raft.MsgApp, From: 2, To: 3, Term: term + 1}, nil)
+	tn.run(2)
+	if st := tn.nodes[2].Status(); st.Term != term+1 || st.Vote != 0 {
+		t.Fatalf("status %+v, want term %d without a vote", st, term+1)
+	}
+	tn.crash(2)
+	tn.open(2)
+	if got := tn.nodes[2].Status().Term; got != term+1 {
+		t.Fatalf("term %d after a power loss, want %d", got, term+1)
 	}
 }
 
@@ -196,6 +250,37 @@ func TestReadBeforeOwnCommitIsBusy(t *testing.T) {
 	}
 }
 
+func TestReadAheadOfTheAppliedIndexStops(t *testing.T) {
+	tn := newTestNet(t, 1, nil)
+	tn.elect(0)
+	n := tn.nodes[0]
+	if err := n.confirm([]raft.Read{{Tag: 1, Index: n.applied}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.confirm([]raft.Read{{Tag: 2, Index: n.applied + 1}}); !errors.Is(err, raft.ErrSafety) {
+		t.Fatalf("read confirmed past the applied index: %v, want ErrSafety", err)
+	}
+}
+
+func TestRestartKeepsSessionsAsTheyWere(t *testing.T) {
+	tn := newTestNet(t, 1, func(cfg *Config) { cfg.SnapshotEvery = 4 })
+	tn.elect(0)
+	a, b := tn.register(0, 1), tn.register(0, 2)
+	for i := uint64(1); i < 6 || tn.nodes[0].snap.Index != tn.nodes[0].Status().Applied; i++ {
+		c := a
+		if i%3 == 0 {
+			c = b
+		}
+		ok(t, c.do(client.CreateAccounts, accounts(i)))
+	}
+	before := tn.nodes[0].Digest()
+	tn.crash(0)
+	tn.open(0)
+	if got := tn.nodes[0].Digest(); got != before {
+		t.Fatalf("digest %x after a restart from the snapshot, %x before", got[:4], before[:4])
+	}
+}
+
 func TestRestartRebuildsSessions(t *testing.T) {
 	for _, every := range []uint64{1000, 3} {
 		tn := newTestNet(t, 1, func(cfg *Config) { cfg.SnapshotEvery = every })
@@ -220,7 +305,7 @@ func TestRestartRebuildsSessions(t *testing.T) {
 	}
 }
 
-func filled(t *testing.T) (*testNet, raft.Snapshot) {
+func filled(t *testing.T) (*testNet, *tester, raft.Snapshot) {
 	t.Helper()
 	tn := newTestNet(t, 1, func(cfg *Config) { cfg.SnapshotEvery = 4 })
 	tn.elect(0)
@@ -235,7 +320,7 @@ func filled(t *testing.T) (*testNet, raft.Snapshot) {
 	if err := tn.nodes[0].Close(); err != nil {
 		t.Fatal(err)
 	}
-	return tn, s
+	return tn, c, s
 }
 
 func editLog(t *testing.T, tn *testNet, edit func(*wal.WAL) error) {
@@ -257,15 +342,20 @@ func editLog(t *testing.T, tn *testNet, edit func(*wal.WAL) error) {
 
 func TestOpenReconcilesLogWithSnapshot(t *testing.T) {
 	t.Run("log ends before the snapshot", func(t *testing.T) {
-		tn, s := filled(t)
+		tn, c, s := filled(t)
 		editLog(t, tn, func(w *wal.WAL) error { return w.TruncateAfter(s.Index - 1) })
 		tn.open(0)
 		if st := tn.nodes[0].Status(); st.Last != s.Index || st.Applied != s.Index {
 			t.Fatalf("status %+v, want log emptied at snapshot %d", st, s.Index)
 		}
+		if last, _ := tn.nodes[0].log.LastIndex(); last != 0 {
+			t.Fatalf("log still ends at %d", last)
+		}
+		tn.elect(0)
+		ok(t, c.do(client.CreateAccounts, accounts(50)))
 	})
 	t.Run("other term at the snapshot index", func(t *testing.T) {
-		tn, s := filled(t)
+		tn, _, s := filled(t)
 		editLog(t, tn, func(w *wal.WAL) error {
 			if err := w.TruncateAfter(s.Index - 1); err != nil {
 				return err
@@ -278,7 +368,7 @@ func TestOpenReconcilesLogWithSnapshot(t *testing.T) {
 		}
 	})
 	t.Run("log starts after the snapshot", func(t *testing.T) {
-		tn, s := filled(t)
+		tn, _, s := filled(t)
 		editLog(t, tn, func(w *wal.WAL) error {
 			if err := w.TruncateAfter(0); err != nil {
 				return err

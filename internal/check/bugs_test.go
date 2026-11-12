@@ -5,13 +5,12 @@ package check
 import (
 	"errors"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/Demonisreal/dmn-ledger/internal/sim"
 	"github.com/Demonisreal/dmn-ledger/internal/simbug"
 )
-
-const masked = "B6"
 
 func TestBugsAreFound(t *testing.T) {
 	t.Cleanup(func() { _ = simbug.Set("") })
@@ -19,20 +18,32 @@ func TestBugsAreFound(t *testing.T) {
 		bug     string
 		profile sim.Profile
 		seeds   uint64
+		by      []string
 	}
-	var hunts []hunt
-	for _, name := range simbug.Names {
-		seeds := uint64(1000)
-		if name == "B10" {
-			seeds = 2000
+	hunts := []hunt{
+		{"B1", sim.ProfileAll, 500, []string{"S5", "F1"}},
+		{"B2", sim.ProfileAll, 500, []string{"S5"}},
+		{"B3", sim.ProfileAll, 500, []string{"S5"}},
+		{"B4", sim.ProfileAll, 500, []string{"S5"}},
+		{"B5", sim.ProfileAll, 1000, []string{"S5", "F1"}},
+		{"B6", sim.ProfileLeaders, 6000, []string{"S3"}},
+		{"B7", sim.ProfileAll, 500, []string{"S3"}},
+		{"B8", sim.ProfileAll, 500, []string{"S3"}},
+		{"B9", sim.ProfileAll, 500, []string{"S3"}},
+		{"B10", sim.ProfileSplit, 6000, []string{"S9"}},
+		{"B11", sim.ProfileAll, 500, []string{"S8", "S9"}},
+		{"B11", sim.ProfileEvict, 500, []string{"S8"}},
+		{"B12", sim.ProfileAll, 500, []string{"S7"}},
+	}
+	for _, name := range simbug.Names() {
+		if !slices.ContainsFunc(hunts, func(h hunt) bool { return h.bug == name }) {
+			t.Errorf("%s is not hunted", name)
 		}
-		hunts = append(hunts, hunt{name, sim.ProfileAll, seeds})
 	}
-	hunts = append(hunts, hunt{"B11", ProfileEvict, 1000})
 	for _, h := range hunts {
 		t.Run(h.bug+"/"+string(h.profile), func(t *testing.T) {
-			if h.bug == masked {
-				t.Skip("not found in 10 000 seeds: the old entries need two leaders to die within one round trip each, raft's TestCommitOnlyOwnTerm and TestFigure8 catch it")
+			if testing.Short() && h.seeds > 1000 {
+				t.Skipf("hunts %d seeds", h.seeds)
 			}
 			if err := simbug.Set(h.bug); err != nil {
 				t.Fatal(err)
@@ -42,10 +53,13 @@ func TestBugsAreFound(t *testing.T) {
 				return err
 			})
 			v, ok := errors.AsType[*Violation](err)
-			if !ok {
+			switch {
+			case !ok:
 				t.Fatalf("no violation in %d seeds, run error %v", h.seeds, err)
+			case !slices.Contains(h.by, v.Check):
+				t.Fatalf("found by %s in seed %d, want one of %v: %v", v.Check, seed, h.by, v)
 			}
-			t.Logf("found by %s in seed %d: %v", v.Check, seed, v)
+			t.Logf("found by %s in seed %d of %d: %v", v.Check, seed, h.seeds, v)
 		})
 	}
 }

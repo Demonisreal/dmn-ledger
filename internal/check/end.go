@@ -53,9 +53,9 @@ func (w *watch) answered() error {
 	for i, call := range w.c.Calls() {
 		switch {
 		case call.End == 0:
-			return w.fail("L1", 0, "c%d call %d (%s) sent at %d never answered", call.Client-w.c.Nodes(), i, call.Op, call.Start)
+			return w.fail("L1", 0, "c%d call %d (%s) sent at %d never answered", call.Client, i, call.Op, call.Start)
 		case call.End > quiet && call.End-max(quiet, call.Start) > answerBound:
-			return w.fail("L1", 0, "c%d call %d (%s) answered %d ns into the quiet phase", call.Client-w.c.Nodes(), i, call.Op, call.End-max(quiet, call.Start))
+			return w.fail("L1", 0, "c%d call %d (%s) answered %d ns into the quiet phase", call.Client, i, call.Op, call.End-max(quiet, call.Start))
 		}
 	}
 	return nil
@@ -64,26 +64,23 @@ func (w *watch) answered() error {
 func (w *watch) owners(nodes []*replica.Node) error {
 	numbers := make(map[u128.Uint128]uint64)
 	for i, call := range w.c.Calls() {
-		r, who := call.Reply, call.Client-w.c.Nodes()
+		r := call.Reply
 		numbers[call.ID]++
 		if r.Client != call.ID || r.Number != numbers[call.ID] || r.Op != call.Op {
-			return w.fail("E1", 0, "c%d call %d (%s #%d of %v) got the reply to %s #%d of %v", who, i, call.Op, numbers[call.ID], call.ID, r.Op, r.Number, r.Client)
+			return w.fail("E1", 0, "c%d call %d (%s #%d of %v) got the reply to %s #%d of %v", call.Client, i, call.Op, numbers[call.ID], call.ID, r.Op, r.Number, r.Client)
 		}
 		if r.Status != client.SessionUnknown {
 			continue
 		}
 		for k, n := range nodes {
 			if since, ok := n.Session(r.Client); ok && since == call.Session {
-				return w.fail("E2", uint64(k)+1, "c%d call %d got SessionUnknown, the node still holds session %d", who, i, since)
+				return w.fail("E2", uint64(k)+1, "c%d call %d got SessionUnknown, the node still holds session %d", call.Client, i, since)
 			}
 		}
 	}
-	if w.cfg.Profile != ProfileEvict {
-		return nil
-	}
 	for k, n := range nodes {
-		if s := n.Status().Sessions; s > evictSessions {
-			return w.fail("E2", uint64(k)+1, "%d sessions, the limit is %d", s, evictSessions)
+		if s := n.Status().Sessions; s > w.c.MaxSessions() {
+			return w.fail("E2", uint64(k)+1, "%d sessions, the limit is %d", s, w.c.MaxSessions())
 		}
 	}
 	return nil

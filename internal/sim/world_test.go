@@ -813,28 +813,62 @@ func TestPauseHitsTheLeader(t *testing.T) {
 	}
 }
 
+func TestHuntedLeaderTakesNoInputBeforeItDies(t *testing.T) {
+	lead := false
+	pl := testPlan(3, 4*second, 4*second)
+	pl.windows = []window{{kind: leadercrash, start: second, end: 2 * second, node: 1, when: atOnce}}
+	w, trace := counterWorld(t, pl, 3, 0, func(_ *World, id uint64) (uint64, bool) { return 0, lead && id == 3 })
+	runUntil(w, second)
+	lead = true
+	h, c := w.hosts[2], counted(w, 3)
+	if !w.hunted(h) {
+		t.Fatal("the leader was not hunted")
+	}
+	ticks := c.ticks
+	w.input(h, input{tick: true})
+	if c.ticks != ticks {
+		t.Fatal("the hunted leader took a tick before it died")
+	}
+	runUntil(w, second)
+	if counted(w, 3) != nil || !strings.Contains(trace.String(), "kill n3") {
+		t.Fatalf("n3 still runs\n%s", trace)
+	}
+}
+
 func TestLeaderCrash(t *testing.T) {
+	late := tick * 12 / 10
 	cases := []struct {
-		name    string
-		rise    bool
-		leading func(w *World, id uint64) (uint64, bool)
-		kill    bool
+		name     string
+		when     moment
+		leading  func(w *World, id uint64) (uint64, bool)
+		from, to uint64
 	}{
-		{"at once", false, func(_ *World, id uint64) (uint64, bool) { return 0, id == 3 }, true},
-		{"on commit", true, func(w *World, id uint64) (uint64, bool) {
+		{"at once", atOnce, func(_ *World, id uint64) (uint64, bool) { return 0, id == 3 }, second, second},
+		{"on commit", onCommit, func(w *World, id uint64) (uint64, bool) {
 			if w.now < second {
 				return 0, id == 3
 			}
 			return uint64(counted(w, id).ticks), id == 3
-		}, true},
-		{"commit stands still", true, func(_ *World, id uint64) (uint64, bool) { return 7, id == 3 }, false},
-		{"no leader", false, func(*World, uint64) (uint64, bool) { return 0, false }, false},
+		}, second + 1, second + late},
+		{"commit stands still", onCommit, func(_ *World, id uint64) (uint64, bool) { return 7, id == 3 }, 0, 0},
+		{"on election", onElection, func(w *World, id uint64) (uint64, bool) { return 0, id == 3 && w.now >= 3*second/2 }, 3 * second / 2, 3*second/2 + late},
+		{"leader from the start", onElection, func(_ *World, id uint64) (uint64, bool) { return 0, id == 3 }, 0, 0},
+		{"no leader", atOnce, func(*World, uint64) (uint64, bool) { return 0, false }, 0, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			pl := testPlan(3, 4*second, 4*second)
-			pl.windows = []window{{kind: leadercrash, start: second, end: 2 * second, node: 1, rise: tc.rise}}
+			pl.windows = []window{{kind: leadercrash, start: second, end: 2 * second, node: 1, when: tc.when}}
 			w, trace := counterWorld(t, pl, 3, 0, tc.leading)
+			var seen []uint64
+			w.cfg.Check = func() error {
+				if counted(w, 3) != nil {
+					if _, lead := tc.leading(w, 3); lead {
+						seen = append(seen, w.now)
+					}
+				}
+				return nil
+			}
 			if err := w.Run(); err != nil {
 				t.Fatal(err)
 			}
@@ -850,15 +884,15 @@ func TestLeaderCrash(t *testing.T) {
 				}
 			}
 			switch {
-			case !tc.kill && len(kills) > 0:
+			case tc.to == 0 && len(kills) > 0:
 				t.Fatalf("killed n3 at %v", kills)
-			case !tc.kill:
+			case tc.to == 0:
 			case len(kills) != 1 || len(starts) != 1 || starts[0] != 2*second:
 				t.Fatalf("kills %v, restarts %v\n%s", kills, starts, trace)
-			case tc.rise && (kills[0] == second || kills[0] > second+tick*12/10):
-				t.Fatalf("killed at %d, want at the first tick after %d", kills[0], second)
-			case !tc.rise && kills[0] != second:
-				t.Fatalf("killed at %d, want %d", kills[0], second)
+			case kills[0] < tc.from || kills[0] > tc.to:
+				t.Fatalf("killed at %d, want between %d and %d", kills[0], tc.from, tc.to)
+			case tc.when != atOnce && !slices.Contains(seen, kills[0]):
+				t.Fatalf("killed at %d before a check saw the round that led to it", kills[0])
 			}
 		})
 	}

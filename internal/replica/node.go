@@ -49,16 +49,16 @@ type Output struct {
 }
 
 type Status struct {
-	ID       uint64
-	Role     raft.Role
-	Term     uint64
-	Vote     uint64
-	Lead     uint64
-	Commit   uint64
-	Applied  uint64
-	Last     uint64
-	Hash     [sha256.Size]byte
-	Sessions int
+	ID        uint64
+	Role      raft.Role
+	Term      uint64
+	Vote      uint64
+	Lead      uint64
+	Commit    uint64
+	Applied   uint64
+	Last      uint64
+	ApplyHash [sha256.Size]byte
+	Sessions  int
 }
 
 type proposal struct {
@@ -89,6 +89,7 @@ type Node struct {
 	ticks      uint64
 	leading    uint64
 	lead       uint64
+	anchor     uint64
 	anchorTick uint64
 
 	inbox    []client.Request
@@ -96,7 +97,7 @@ type Node struct {
 	lookups  []client.Request
 	reads    []readBatch
 	tag      uint64
-	payloads map[raft.Snapshot]io.Reader
+	incoming map[raft.Snapshot]io.Reader
 
 	msgs    []raft.Message
 	replies []client.Reply
@@ -114,7 +115,7 @@ func Open(cfg Config) (_ *Node, err error) {
 		cfg:      cfg,
 		sessions: make(map[u128.Uint128]*session),
 		hasher:   sha256.New(),
-		payloads: make(map[raft.Snapshot]io.Reader),
+		incoming: make(map[raft.Snapshot]io.Reader),
 	}
 	var hs wal.HardState
 	n.hs, hs, err = wal.OpenHardState(cfg.FS, cfg.Dir)
@@ -168,8 +169,14 @@ func (n *Node) snapDir() string {
 }
 
 func (n *Node) reconcile() error {
-	first, _ := n.log.FirstIndex()
-	last, _ := n.log.LastIndex()
+	first, err := n.log.FirstIndex()
+	if err != nil {
+		return err
+	}
+	last, err := n.log.LastIndex()
+	if err != nil {
+		return err
+	}
 	s := n.snap
 	switch {
 	case last == 0:
@@ -204,8 +211,8 @@ func (n *Node) Receive(m raft.Message, snap io.Reader) {
 	}
 	if m.Type == raft.MsgSnap && snap != nil {
 		key := raft.Snapshot{Index: m.Index, Term: m.LogTerm}
-		if _, ok := n.payloads[key]; !ok {
-			n.payloads[key] = snap
+		if _, ok := n.incoming[key]; !ok {
+			n.incoming[key] = snap
 		}
 	}
 	n.err = n.raft.Step(m)
@@ -219,7 +226,7 @@ func (n *Node) Process() (Output, error) {
 	if n.err == nil {
 		n.err = n.process()
 	}
-	clear(n.payloads)
+	clear(n.incoming)
 	if n.err != nil {
 		return Output{}, n.err
 	}
@@ -256,7 +263,9 @@ func (n *Node) round() error {
 	if err := n.applyTo(rd.Commit); err != nil {
 		return err
 	}
-	n.confirm(rd.Reads)
+	if err := n.confirm(rd.Reads); err != nil {
+		return err
+	}
 	n.raft.Advance()
 	n.follow()
 	return nil
@@ -356,11 +365,19 @@ func (n *Node) propose(req client.Request) error {
 }
 
 func (n *Node) stamp() uint64 {
-	clock, last := n.cfg.Clock(), n.sm.Last()
-	if last == 0 {
+	clock := n.cfg.Clock()
+	if n.anchor == 0 {
+		if clock < stampLimit {
+			n.anchor, n.anchorTick = clock, n.ticks
+		}
 		return clock
 	}
-	return min(clock, last+(n.ticks-n.anchorTick+1)*n.cfg.ClockStep)
+	trusted := n.anchor + (n.ticks-n.anchorTick)*n.cfg.ClockStep
+	if clock > trusted+n.cfg.ClockStep {
+		return trusted + n.cfg.ClockStep
+	}
+	n.anchor, n.anchorTick = min(max(clock, n.sm.Last()), trusted), n.ticks
+	return clock
 }
 
 func (n *Node) readIndex() error {
@@ -384,8 +401,11 @@ func (n *Node) readIndex() error {
 	return nil
 }
 
-func (n *Node) confirm(reads []raft.Read) {
+func (n *Node) confirm(reads []raft.Read) error {
 	for _, rd := range reads {
+		if rd.Index > n.applied {
+			return fmt.Errorf("%w: read %d confirmed at index %d, applied %d", raft.ErrSafety, rd.Tag, rd.Index, n.applied)
+		}
 		i := slices.IndexFunc(n.reads, func(b readBatch) bool { return b.tag == rd.Tag })
 		if i < 0 {
 			continue
@@ -395,6 +415,7 @@ func (n *Node) confirm(reads []raft.Read) {
 		}
 		n.reads = slices.Delete(n.reads, i, i+1)
 	}
+	return nil
 }
 
 func (n *Node) refuse(req client.Request, st client.Status) {
@@ -404,17 +425,21 @@ func (n *Node) refuse(req client.Request, st client.Status) {
 func (n *Node) Status() Status {
 	st := n.raft.Status()
 	return Status{
-		ID:       st.ID,
-		Role:     st.Role,
-		Term:     st.Term,
-		Vote:     st.Vote,
-		Lead:     st.Lead,
-		Commit:   st.Commit,
-		Applied:  n.applied,
-		Last:     st.Last,
-		Hash:     n.hash,
-		Sessions: len(n.sessions),
+		ID:        st.ID,
+		Role:      st.Role,
+		Term:      st.Term,
+		Vote:      st.Vote,
+		Lead:      st.Lead,
+		Commit:    st.Commit,
+		Applied:   n.applied,
+		Last:      st.Last,
+		ApplyHash: n.hash,
+		Sessions:  len(n.sessions),
 	}
+}
+
+func (n *Node) EntryTerm(i uint64) (uint64, error) {
+	return logView{n}.Term(i)
 }
 
 func (n *Node) CheckInvariants() error {

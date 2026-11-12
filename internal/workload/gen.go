@@ -133,7 +133,7 @@ func (g *Gen) account() state.Account {
 			a.Code++
 		}
 	} else {
-		a = state.Account{ID: g.id(), Ledger: 1 + r.Uint32N(g.Ledgers), Code: uint16(1 + r.IntN(3))} //nolint:gosec
+		a = state.Account{ID: g.id(), Ledger: 1 + r.Uint32N(g.Ledgers), Code: uint16(1 + r.IntN(3))} //nolint:gosec // G115: 1 to 3
 		switch n := r.IntN(100); {
 		case n < g.LimitPct/2:
 			a.Flags = state.DebitsMustNotExceedCredits
@@ -235,7 +235,7 @@ func (g *Gen) transfer() state.Transfer {
 			CreditAccountID: cr.ID,
 			Amount:          g.amount(),
 			Ledger:          dr.Ledger,
-			Code:            uint16(1 + r.IntN(3)), //nolint:gosec
+			Code:            uint16(1 + r.IntN(3)), //nolint:gosec // G115: 1 to 3
 		}
 		if r.IntN(100) < g.PendingPct {
 			tr.Flags = state.Pending

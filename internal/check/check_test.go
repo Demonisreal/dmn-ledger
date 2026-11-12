@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -21,7 +23,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
-var profiles = []sim.Profile{sim.ProfileCalm, sim.ProfileNet, sim.ProfileCrash, sim.ProfileClock, sim.ProfileAll, ProfileEvict}
+var profiles = sim.Profiles()
 
 func TestSeeds(t *testing.T) {
 	for seed := range uint64(50) {
@@ -59,9 +61,6 @@ func TestTraceHashFullStack(t *testing.T) {
 			if a.Trace != b.Trace {
 				t.Fatalf("profile %s: trace hash %x then %x", p, a.Trace, b.Trace)
 			}
-			if p == ProfileEvict {
-				return
-			}
 			c, err := sim.NewCluster(sim.ClusterConfig{Seed: seed, Profile: p})
 			if err != nil {
 				t.Fatal(err)
@@ -79,7 +78,7 @@ func TestTraceHashFullStack(t *testing.T) {
 func TestEvictProfileEvicts(t *testing.T) {
 	evicted, rejoined, late := 0, 0, 0
 	for seed := range uint64(20) {
-		c, err := sim.NewCluster(sim.ClusterConfig{Seed: seed, Profile: sim.ProfileAll, MaxSessions: evictSessions, Churn: true})
+		c, err := sim.NewCluster(sim.ClusterConfig{Seed: seed, Profile: sim.ProfileEvict})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,32 +152,36 @@ func TestStartFailureIsAFinding(t *testing.T) {
 }
 
 func TestSaidFindsTwoLeadersAndTwoVotes(t *testing.T) {
+	type said struct {
+		from uint64
+		m    raft.Message
+	}
 	cases := []struct {
 		name  string
 		check string
-		msgs  [][2]any
+		msgs  []said
 	}{
-		{"two leaders", "S1", [][2]any{
-			{uint64(1), raft.Message{Type: raft.MsgApp, To: 2, Term: 3}},
-			{uint64(2), raft.Message{Type: raft.MsgSnap, To: 3, Term: 3}},
+		{"two leaders", "S1", []said{
+			{1, raft.Message{Type: raft.MsgApp, To: 2, Term: 3}},
+			{2, raft.Message{Type: raft.MsgSnap, To: 3, Term: 3}},
 		}},
-		{"two votes", "S2", [][2]any{
-			{uint64(3), raft.Message{Type: raft.MsgVoteResp, To: 1, Term: 4}},
-			{uint64(3), raft.Message{Type: raft.MsgVoteResp, To: 2, Term: 4}},
+		{"two votes", "S2", []said{
+			{3, raft.Message{Type: raft.MsgVoteResp, To: 1, Term: 4}},
+			{3, raft.Message{Type: raft.MsgVoteResp, To: 2, Term: 4}},
 		}},
-		{"leaders of different terms", "", [][2]any{
-			{uint64(1), raft.Message{Type: raft.MsgApp, To: 2, Term: 3}},
-			{uint64(2), raft.Message{Type: raft.MsgApp, To: 1, Term: 4}},
-			{uint64(3), raft.Message{Type: raft.MsgVoteResp, To: 1, Term: 4, Reject: true}},
-			{uint64(3), raft.Message{Type: raft.MsgVoteResp, To: 2, Term: 4}},
+		{"leaders of different terms", "", []said{
+			{1, raft.Message{Type: raft.MsgApp, To: 2, Term: 3}},
+			{2, raft.Message{Type: raft.MsgApp, To: 1, Term: 4}},
+			{3, raft.Message{Type: raft.MsgVoteResp, To: 1, Term: 4, Reject: true}},
+			{3, raft.Message{Type: raft.MsgVoteResp, To: 2, Term: 4}},
 		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := &watch{leaders: make(map[uint64]uint64), votes: make(map[[2]uint64]uint64)}
+			w := newWatch(Config{})
 			var err error
 			for _, s := range tc.msgs {
-				if err = w.said(s[0].(uint64), []raft.Message{s[1].(raft.Message)}); err != nil {
+				if err = w.said(s.from, []raft.Message{s.m}); err != nil {
 					break
 				}
 			}
@@ -265,7 +268,59 @@ func TestSweepReportsTheFirstFailingSeed(t *testing.T) {
 			t.Fatalf("%d workers: seed %d, error %v, want 34", workers, seed, err)
 		}
 	}
-	if _, err := Sweep(0, 50, 4, func(uint64) error { return nil }); err != nil {
+	var mu sync.Mutex
+	var tried []uint64
+	if _, err := Sweep(10, 100, 4, func(seed uint64) error {
+		mu.Lock()
+		tried = append(tried, seed)
+		mu.Unlock()
+		return nil
+	}); err != nil {
 		t.Fatal(err)
+	}
+	slices.Sort(tried)
+	if len(tried) != 100 {
+		t.Fatalf("tried %d seeds, want 100", len(tried))
+	}
+	for i, seed := range tried {
+		if seed != 10+uint64(i) {
+			t.Fatalf("tried %v, want 10 to 109 once each", tried)
+		}
+	}
+}
+
+func TestSweepWaitsForTheSmallerSeed(t *testing.T) {
+	late := make(chan struct{})
+	seed, err := Sweep(10, 100, 4, func(seed uint64) error {
+		switch seed {
+		case 34:
+			<-late
+			return errors.New("bad")
+		case 60:
+			close(late)
+			return errors.New("bad")
+		}
+		return nil
+	})
+	if err == nil || seed != 34 {
+		t.Fatalf("seed %d, error %v, want 34", seed, err)
+	}
+}
+
+func TestSweepTurnsAPanicIntoAFinding(t *testing.T) {
+	for _, workers := range []int{1, 4} {
+		seed, err := Sweep(10, 100, workers, func(seed uint64) error {
+			switch seed {
+			case 34:
+				panic("no log for n2")
+			case 60:
+				return errors.New("bad")
+			}
+			return nil
+		})
+		p, ok := errors.AsType[*Panic](err)
+		if !ok || seed != 34 || p.Seed != 34 || !strings.Contains(p.Error(), "no log for n2") {
+			t.Fatalf("%d workers: seed %d, error %v, want the panic of seed 34", workers, seed, err)
+		}
 	}
 }

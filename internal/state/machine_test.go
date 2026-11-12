@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"math"
-	"runtime"
+	"runtime/debug"
 	"slices"
 	"testing"
 
@@ -595,6 +595,9 @@ func TestChainAcrossBlockBoundary(t *testing.T) {
 }
 
 func TestApplyDoesNotAllocate(t *testing.T) {
+	if bi, ok := debug.ReadBuildInfo(); ok && slices.Contains(bi.Settings, debug.BuildSetting{Key: "-race", Value: "true"}) {
+		t.Skip("the race detector allocates on its own")
+	}
 	m := state.New(8, 8192)
 	if fails, err := m.Apply(state.CreateAccounts, 1, encodeAccounts(
 		state.Account{ID: id128(1), Ledger: 1, Code: 1},
@@ -605,7 +608,7 @@ func TestApplyDoesNotAllocate(t *testing.T) {
 
 	id, ts := uint64(1000), uint64(1e9)
 	var fails []state.Failure
-	measure := func(trs ...state.Transfer) uint64 {
+	measure := func(trs ...state.Transfer) float64 {
 		body := encodeTransfers(trs...)
 		apply := func() {
 			for i := range trs {
@@ -621,14 +624,7 @@ func TestApplyDoesNotAllocate(t *testing.T) {
 			}
 			ts += 1e6
 		}
-		apply()
-		var before, after runtime.MemStats
-		runtime.ReadMemStats(&before)
-		for range 1000 {
-			apply()
-		}
-		runtime.ReadMemStats(&after)
-		return after.Mallocs - before.Mallocs
+		return testing.AllocsPerRun(1000, apply)
 	}
 	transfer := state.Transfer{DebitAccountID: id128(1), CreditAccountID: id128(2), Amount: id128(1), Ledger: 1, Code: 1}
 	pending := transfer

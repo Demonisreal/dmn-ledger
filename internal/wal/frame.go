@@ -63,7 +63,7 @@ func seedOf(nonce uint64) uint32 {
 
 func appendFrame(dst []byte, e Entry, synced uint64, seed uint32) []byte {
 	start := len(dst)
-	dst = binary.LittleEndian.AppendUint32(dst, uint32(len(e.Body))) //nolint:gosec
+	dst = binary.LittleEndian.AppendUint32(dst, uint32(len(e.Body))) //nolint:gosec // G115: Append rejects bodies over MaxBodySize
 	dst = append(dst, make([]byte, 8)...)
 	dst = binary.LittleEndian.AppendUint64(dst, e.Index)
 	dst = binary.LittleEndian.AppendUint64(dst, e.Term)
