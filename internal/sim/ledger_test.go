@@ -139,6 +139,33 @@ func TestLedgerTraceHashDeterministic(t *testing.T) {
 	}
 }
 
+func TestSickNodeIsCuredWhenItsRepairEnds(t *testing.T) {
+	repairs := 0
+	for seed := range seedCount(60) {
+		var sick uint64
+		c, err := NewCluster(ClusterConfig{Seed: seed, Profile: ProfileRot, Nodes: 3, Check: func(c *Cluster) error {
+			was := sick
+			sick = c.w.sick
+			switch {
+			case was != 0 && sick != was && c.repairing(was):
+				return fmt.Errorf("n%d counts as cured while it is in repair", was)
+			case sick != 0 && c.repairing(sick):
+				repairs++
+			}
+			return nil
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Run(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if repairs == 0 {
+		t.Fatal("no node was ever seen in repair")
+	}
+}
+
 func TestClusterKnobsComeFromTheSeed(t *testing.T) {
 	appends, retries := make(map[int64]bool), make(map[int]bool)
 	for seed := range uint64(100) {

@@ -346,7 +346,7 @@ func TestSaidFindsTwoBodiesForOneEntry(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := newWatch(Config{})
+			w, _, _ := calmWatch(t)
 			sent := first
 			sent.Body = slices.Clone(first.Body)
 			if err := w.said(1, []raft.Message{{Type: raft.MsgApp, To: 2, Term: 4, Entries: []raft.Entry{sent}}}); err != nil {

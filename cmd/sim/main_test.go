@@ -14,6 +14,9 @@ func TestUsage(t *testing.T) {
 	for _, args := range [][]string{
 		{"-profile", "storm"},
 		{"-nodes", "4"},
+		{"-nodes", "2", "-profile", "rot"},
+		{"-nodes", "1", "-profile", "rot"},
+		{"-nodes", "1", "-profile", "beyond", "-seeds", "5"},
 		{"-seeds", "0"},
 		{"-seeds", "5", "-trace"},
 		{"-seeds", "5", "-seed", "3"},
@@ -34,6 +37,9 @@ func TestRuns(t *testing.T) {
 		{"-seed", "7", "-profile", "crash"},
 		{"-seeds", "20", "-from", "100", "-profile", "evict"},
 		{"-seeds", "5", "-nodes", "5"},
+		{"-seeds", "20", "-profile", "rot"},
+		{"-seeds", "5", "-nodes", "5", "-profile", "rot"},
+		{"-seed", "8", "-nodes", "3", "-profile", "beyond"},
 		{"-seeds", "1", "-from", "18446744073709551615", "-profile", "calm"},
 	} {
 		var out, errs bytes.Buffer
@@ -63,6 +69,9 @@ func TestHelpExitsZero(t *testing.T) {
 		if !strings.Contains(errs.String(), " "+string(p)) {
 			t.Errorf("help does not name profile %s", p)
 		}
+	}
+	if !strings.Contains(errs.String(), "B1 to B18") {
+		t.Errorf("help does not name the planted bugs: %q", errs.String())
 	}
 }
 

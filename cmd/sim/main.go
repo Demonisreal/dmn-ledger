@@ -39,9 +39,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		profiles = append(profiles, string(p))
 	}
 	fs.StringVar(&o.profile, "profile", string(sim.ProfileAll), "fault profile: "+strings.Join(profiles, ", "))
-	fs.Uint64Var(&o.nodes, "nodes", 0, "nodes per cluster: 1, 3 or 5, 0 takes 5 for every fifth seed and 3 otherwise")
+	fs.Uint64Var(&o.nodes, "nodes", 0, "nodes per cluster: 1, 3 or 5, 0 takes 5 for every fifth seed and 3 otherwise; rot and beyond need 3 or 5")
 	fs.BoolVar(&o.trace, "trace", false, "print the trace of -seed")
-	fs.StringVar(&o.bug, "bug", "", "planted bug B1 to B12, needs a build with -tags simbug")
+	fs.StringVar(&o.bug, "bug", "", "planted bug B1 to B18, needs a build with -tags simbug")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -72,6 +72,8 @@ func (o *options) validate(fs *flag.FlagSet) error {
 		return fmt.Errorf("unexpected arguments %v", fs.Args())
 	case o.nodes != 0 && o.nodes != 1 && o.nodes != 3 && o.nodes != 5:
 		return fmt.Errorf("-nodes %d, want 1, 3 or 5", o.nodes)
+	case o.nodes == 1 && (sim.Profile(o.profile) == sim.ProfileRot || sim.Profile(o.profile) == sim.ProfileBeyond):
+		return fmt.Errorf("profile %s damages one disk and repairs it from the others, it needs -nodes 3 or 5", o.profile)
 	case seen["seeds"] && o.seeds == 0:
 		return errors.New("-seeds must be at least 1")
 	case o.seeds > 0 && (seen["seed"] || o.trace):

@@ -3,13 +3,15 @@ package check
 import (
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
 )
 
 const syncSample = 20
 
 type receipt struct {
 	vote, voteTerm uint64
-	term, acked    uint64
+	term, reach    uint64
+	fed            uint64
 }
 
 type watchedFS struct {
@@ -66,6 +68,11 @@ func (f watchedFile) Sync() error {
 }
 
 func (w *watch) note(id uint64, m raft.Message) {
+	if m.Type == raft.MsgSnap || m.Type == raft.MsgApp && len(m.Entries) > 0 {
+		to := w.receipts[m.To]
+		to.fed = max(to.fed, m.Term)
+		w.receipts[m.To] = to
+	}
 	r := w.receipts[id]
 	switch {
 	case m.Type == raft.MsgVote:
@@ -74,9 +81,14 @@ func (w *watch) note(id uint64, m raft.Message) {
 		r.vote, r.voteTerm = m.To, m.Term
 	case m.Type == raft.MsgAppResp && !m.Reject && m.Index > 0:
 		if m.Term != r.term {
-			r.term, r.acked = m.Term, 0
+			r.term, r.reach = m.Term, 0
 		}
-		r.acked = max(r.acked, m.Index)
+		r.reach = max(r.reach, m.Index)
+	case m.Type == raft.MsgApp && len(m.Entries) > 0:
+		if m.Term != r.term {
+			r.term, r.reach = m.Term, 0
+		}
+		r.reach = max(r.reach, m.Entries[len(m.Entries)-1].Index)
 	default:
 		return
 	}
@@ -84,7 +96,7 @@ func (w *watch) note(id uint64, m raft.Message) {
 }
 
 func (w *watch) synced(id uint64) {
-	if w.c == nil || w.stuck != nil || w.c.Node(id) == nil {
+	if w.c == nil || w.stuck != nil {
 		return
 	}
 	w.syncs++
@@ -94,9 +106,16 @@ func (w *watch) synced(id uint64) {
 	d := w.c.World().Disk(id).Clone(w.rng)
 	d.WriteErrRate, d.SyncErrRate, d.MetaErrRate, d.ReadErrRate = 0, 0, 0, 0
 	d.Crash()
+	when := "a power loss in the middle of a round"
+	if w.c.Node(id) == nil {
+		when = "a power loss during the start"
+	}
 	n, err := w.c.Open(id, d)
-	if err != nil {
-		w.stuck = w.fail("S5", id, "a power loss in the middle of a round leaves a disk that does not open: %v", err)
+	switch {
+	case err != nil && w.unreadable(id, err):
+		return
+	case err != nil:
+		w.stuck = w.fail("S5", id, "%s leaves a disk that does not open: %v", when, err)
 		return
 	}
 	st := n.Status()
@@ -104,13 +123,21 @@ func (w *watch) synced(id uint64) {
 		w.stuck = err
 		return
 	}
+	w.stuck = w.owes(id, st, when)
+	if w.stuck == nil && w.groundless(id, st) {
+		w.stuck = w.fail("F2", id, "%s leaves the node in repair, the plan never damaged its disk", when)
+	}
+}
+
+func (w *watch) owes(id uint64, st replica.Status, when string) error {
 	r := w.receipts[id]
 	switch {
 	case st.Term < max(r.term, r.voteTerm):
-		w.stuck = w.fail("S5", id, "promised in term %d, a power loss in the middle of a round leaves term %d", max(r.term, r.voteTerm), st.Term)
+		return w.fail("S5", id, "promised in term %d, %s leaves term %d", max(r.term, r.voteTerm), when, st.Term)
 	case st.Term == r.voteTerm && st.Vote != r.vote:
-		w.stuck = w.fail("S5", id, "voted for n%d in term %d, a power loss in the middle of a round leaves a vote for n%d", r.vote, r.voteTerm, st.Vote)
-	case st.Term == r.term && st.Last < r.acked:
-		w.stuck = w.fail("S5", id, "acknowledged up to %d in term %d, a power loss in the middle of a round leaves a log that ends at %d", r.acked, r.term, st.Last)
+		return w.fail("S5", id, "voted for n%d in term %d, %s leaves a vote for n%d", r.vote, r.voteTerm, when, st.Vote)
+	case (st.Term == r.term || r.fed <= r.term) && st.Last < r.reach && !st.Repair:
+		return w.fail("S5", id, "promised its log up to %d in term %d, %s leaves a log that ends at %d and no repair flag", r.reach, r.term, when, st.Last)
 	}
+	return nil
 }

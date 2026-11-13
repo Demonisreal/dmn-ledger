@@ -65,6 +65,7 @@ type watch struct {
 	entries   map[[2]uint64]raft.Entry
 	checked   map[*replica.Node]uint64
 	receipts  map[uint64]receipt
+	repairs   map[*replica.Node]bool
 	promises  int
 	sample    int
 	syncs     int
@@ -89,6 +90,7 @@ func newWatch(cfg Config) *watch {
 		entries:   make(map[[2]uint64]raft.Entry),
 		checked:   make(map[*replica.Node]uint64),
 		receipts:  make(map[uint64]receipt),
+		repairs:   make(map[*replica.Node]bool),
 		sample:    syncSample,
 	}
 }
@@ -111,7 +113,7 @@ func (w *watch) run(fsys func(uint64, disk.FS) disk.FS) (Report, error) {
 	w.c = c
 	w.terms = make([]uint64, c.Nodes())
 	err = c.Run()
-	if err == nil {
+	if err == nil && !w.beyond() {
 		w.over = true
 		err = w.end()
 	}
@@ -143,15 +145,49 @@ func (w *watch) fail(check string, node uint64, format string, args ...any) erro
 	return v
 }
 
+func (w *watch) beyond() bool {
+	return w.cfg.Profile == sim.ProfileBeyond
+}
+
+func (w *watch) rotted(id uint64) bool {
+	return w.c != nil && w.c.World().Rotted(id)
+}
+
+func (w *watch) groundless(id uint64, st replica.Status) bool {
+	return st.Repair && !w.beyond() && !w.rotted(id)
+}
+
+func (w *watch) unreadable(id uint64, err error) bool {
+	return w.beyond() && w.rotted(id) && errors.Is(err, wal.ErrCorrupt)
+}
+
 func (w *watch) failed(id uint64, err error) error {
-	if errors.Is(err, syscall.EIO) {
+	rot := w.rotted(id) && errors.Is(err, wal.ErrCorrupt)
+	switch {
+	case errors.Is(err, syscall.EIO), rot && w.c.Node(id) != nil, rot && w.beyond():
 		return nil
+	case rot:
+		return w.fail("F1", id, "does not start on its damaged disk: %v", err)
 	}
 	return w.fail("F1", id, "stopped without a disk error: %v", err)
 }
 
+func ofAVoter(m raft.Message) bool {
+	switch m.Type {
+	case raft.MsgVote, raft.MsgPreVote, raft.MsgApp, raft.MsgSnap:
+		return true
+	case raft.MsgVoteResp, raft.MsgPreVoteResp:
+		return !m.Reject
+	}
+	return false
+}
+
 func (w *watch) said(id uint64, msgs []raft.Message) error {
+	repair := w.c.Node(id).Status().Repair
 	for _, m := range msgs {
+		if repair && ofAVoter(m) {
+			return w.fail("S10", id, "sent %s to n%d while in repair", m.Type, m.To)
+		}
 		if err := w.logged(id, m.Entries); err != nil {
 			return err
 		}
@@ -192,7 +228,10 @@ func (w *watch) keeps(id uint64, m raft.Message) error {
 	d.WriteErrRate, d.SyncErrRate, d.MetaErrRate, d.ReadErrRate = 0, 0, 0, 0
 	d.Crash()
 	n, err := w.c.Open(id, d)
-	if err != nil {
+	switch {
+	case err != nil && w.unreadable(id, err):
+		return nil
+	case err != nil:
 		return w.fail("S5", id, "after %s to n%d a power loss leaves a disk that does not open: %v", m.Type, m.To, err)
 	}
 	st := n.Status()
@@ -206,8 +245,10 @@ func (w *watch) keeps(id uint64, m raft.Message) error {
 		return w.fail("S5", id, "asked for votes in term %d, after a power loss the disk holds a vote for n%d", m.Term, st.Vote)
 	case m.Type == raft.MsgVoteResp && st.Vote != m.To:
 		return w.fail("S5", id, "granted n%d its vote in term %d, after a power loss the disk holds a vote for n%d", m.To, m.Term, st.Vote)
-	case m.Type == raft.MsgAppResp && st.Last < m.Index:
-		return w.fail("S5", id, "acknowledged up to %d in term %d, after a power loss the disk ends at %d", m.Index, m.Term, st.Last)
+	case w.groundless(id, st):
+		return w.fail("F2", id, "after %s to n%d a power loss leaves the node in repair, the plan never damaged its disk", m.Type, m.To)
+	case m.Type == raft.MsgAppResp && st.Last < m.Index && !st.Repair:
+		return w.fail("S5", id, "acknowledged up to %d in term %d, after a power loss the disk ends at %d and holds no repair flag", m.Index, m.Term, st.Last)
 	}
 	return nil
 }
@@ -226,6 +267,21 @@ func (w *watch) check(c *sim.Cluster) error {
 			continue
 		}
 		st := n.Status()
+		if w.groundless(id, st) {
+			return w.fail("F2", id, "in repair, the plan never damaged its disk")
+		}
+		was, seen := w.repairs[n]
+		w.repairs[n] = st.Repair
+		switch {
+		case !seen:
+			if err := w.owes(id, st, "the restart"); err != nil {
+				return err
+			}
+		case was && !st.Repair:
+			if err := w.owes(id, st, "the end of the repair"); err != nil {
+				return err
+			}
+		}
 		if h, ok := w.hashes[st.Applied]; !ok {
 			w.hashes[st.Applied] = st.ApplyHash
 		} else if h != st.ApplyHash {

@@ -22,23 +22,27 @@ func TestBugsAreFound(t *testing.T) {
 	}
 	hunts := []hunt{
 		{"B1", sim.ProfileAll, 500, []string{"S5", "F1"}},
-		{"B2", sim.ProfileAll, 500, []string{"S5"}},
-		{"B3", sim.ProfileAll, 500, []string{"S5"}},
-		{"B4", sim.ProfileAll, 500, []string{"S5"}},
+		{"B2", sim.ProfileAll, 500, []string{"F2", "S5"}},
+		{"B3", sim.ProfileAll, 500, []string{"F2", "S5"}},
+		{"B4", sim.ProfileAll, 500, []string{"F2", "S5"}},
 		{"B5", sim.ProfileAll, 1000, []string{"S5", "F1"}},
 		{"B6", sim.ProfileLeaders, 6000, []string{"S3"}},
 		{"B7", sim.ProfileAll, 500, []string{"S3", "S7"}},
 		{"B8", sim.ProfileAll, 500, []string{"S3"}},
 		{"B9", sim.ProfileAll, 1500, []string{"S3"}},
-		{"B10", sim.ProfileSplit, 6000, []string{"S9"}},
-		{"B11", sim.ProfileAll, 500, []string{"S8", "S9"}},
+		{"B10", sim.ProfileSplit, 8000, []string{"S9"}},
+		{"B11", sim.ProfileAll, 500, []string{"S8", "S9", "S11"}},
 		{"B11", sim.ProfileEvict, 500, []string{"S11"}},
 		{"B12", sim.ProfileAll, 500, []string{"S7"}},
+		{"B13", sim.ProfileRot, 500, []string{"S5"}},
+		{"B14", sim.ProfileCrash, 500, []string{"F2"}},
+		{"B15", sim.ProfileRot, 500, []string{"S10"}},
+		{"B17", sim.ProfileRot, 4000, []string{"S5"}},
+		{"B18", sim.ProfileRot, 500, []string{"S5"}},
 	}
-	huntedInRaft := []string{"B15", "B16", "B17"}
-	huntedInReplica := []string{"B13", "B14", "B18"}
+	huntedInRaft := []string{"B16"}
 	for _, name := range simbug.Names() {
-		if !slices.Contains(huntedInRaft, name) && !slices.Contains(huntedInReplica, name) && !slices.ContainsFunc(hunts, func(h hunt) bool { return h.bug == name }) {
+		if !slices.Contains(huntedInRaft, name) && !slices.ContainsFunc(hunts, func(h hunt) bool { return h.bug == name }) {
 			t.Errorf("%s is not hunted", name)
 		}
 	}

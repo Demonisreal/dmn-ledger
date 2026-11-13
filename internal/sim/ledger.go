@@ -97,17 +97,18 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 		}
 	}
 	w, err := New(Config{
-		Seed:    cfg.Seed,
-		Profile: cfg.Profile,
-		Nodes:   nodes,
-		Clients: 3 + cfg.Seed%4,
-		Node:    c.startNode,
-		Client:  c.startClient,
-		Disk:    cfg.Disk,
-		Said:    c.said,
-		Check:   c.check,
-		Leading: c.leading,
-		Trace:   cfg.Trace,
+		Seed:      cfg.Seed,
+		Profile:   cfg.Profile,
+		Nodes:     nodes,
+		Clients:   3 + cfg.Seed%4,
+		Node:      c.startNode,
+		Client:    c.startClient,
+		Disk:      cfg.Disk,
+		Said:      c.said,
+		Check:     c.check,
+		Leading:   c.leading,
+		Repairing: c.repairing,
+		Trace:     cfg.Trace,
 	})
 	if err != nil {
 		return nil, err
@@ -174,6 +175,11 @@ func (c *Cluster) leading(id uint64) (uint64, bool) {
 	}
 	st := n.Status()
 	return st.Commit, st.Role == raft.Leader
+}
+
+func (c *Cluster) repairing(id uint64) bool {
+	n := c.Node(id)
+	return n != nil && n.Status().Repair
 }
 
 func (c *Cluster) failed(id uint64, err error) {

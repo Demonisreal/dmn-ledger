@@ -178,7 +178,7 @@ func TestSaidFindsTwoLeadersAndTwoVotes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := newWatch(Config{})
+			w, _, _ := calmWatch(t)
 			var err error
 			for _, s := range tc.msgs {
 				if err = w.said(s.from, []raft.Message{s.m}); err != nil {

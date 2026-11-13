@@ -87,7 +87,7 @@ func TestReceiptsAreCheckedOnSync(t *testing.T) {
 		}, false, "voted for"},
 		{"acknowledged past the end", func(_, follower replica.Status) []said {
 			return []said{{follower.ID, raft.Message{Type: raft.MsgAppResp, Index: follower.Last + 1, Term: follower.Term}}}
-		}, true, "acknowledged up to"},
+		}, true, "promised its log up to"},
 		{"acknowledgement of an older term", func(_, follower replica.Status) []said {
 			return []said{
 				{follower.ID, raft.Message{Type: raft.MsgAppResp, Index: follower.Last + 100, Term: follower.Term - 1}},
@@ -99,7 +99,16 @@ func TestReceiptsAreCheckedOnSync(t *testing.T) {
 				{follower.ID, raft.Message{Type: raft.MsgAppResp, Index: follower.Last + 1, Term: follower.Term}},
 				{follower.ID, raft.Message{Type: raft.MsgAppResp, Index: follower.Last - 1, Term: follower.Term}},
 			}
-		}, false, "acknowledged up to"},
+		}, false, "promised its log up to"},
+		{"leader sent what it holds", func(lead, follower replica.Status) []said {
+			return []said{{lead.ID, raft.Message{Type: raft.MsgApp, To: follower.ID, Term: lead.Term, Index: lead.Last - 1, LogTerm: lead.Term, Entries: []raft.Entry{{Index: lead.Last, Term: lead.Term}}}}}
+		}, true, ""},
+		{"leader sent past its end", func(lead, follower replica.Status) []said {
+			return []said{{lead.ID, raft.Message{Type: raft.MsgApp, To: follower.ID, Term: lead.Term, Index: lead.Last, LogTerm: lead.Term, Entries: []raft.Entry{{Index: lead.Last + 1, Term: lead.Term}}}}}
+		}, true, "promised its log up to"},
+		{"heartbeat past the end", func(lead, follower replica.Status) []said {
+			return []said{{lead.ID, raft.Message{Type: raft.MsgApp, To: follower.ID, Term: lead.Term, Index: lead.Last + 1, LogTerm: lead.Term}}}
+		}, false, ""},
 		{"later term", func(lead, _ replica.Status) []said {
 			return []said{{lead.ID, raft.Message{Type: raft.MsgVote, Term: lead.Term + 1}}}
 		}, false, "promised in term"},
@@ -129,6 +138,60 @@ func TestReceiptsAreCheckedOnSync(t *testing.T) {
 			wantViolation(t, w.stuck, "S5", tc.reason)
 		})
 	}
+}
+
+func TestOlderPromiseHoldsUntilALaterLeaderSendsEntries(t *testing.T) {
+	cases := []struct {
+		name   string
+		sent   func(lead, follower replica.Status) raft.Message
+		reason string
+	}{
+		{"nothing", func(_, _ replica.Status) raft.Message {
+			return raft.Message{Type: raft.MsgRepairInfo}
+		}, "promised its log up to"},
+		{"heartbeat", func(lead, follower replica.Status) raft.Message {
+			return raft.Message{Type: raft.MsgApp, To: follower.ID, Term: lead.Term, Index: lead.Last, LogTerm: lead.Term}
+		}, "promised its log up to"},
+		{"entries", func(lead, follower replica.Status) raft.Message {
+			return raft.Message{Type: raft.MsgApp, To: follower.ID, Term: lead.Term, Index: lead.Last - 1, LogTerm: lead.Term, Entries: []raft.Entry{{Index: lead.Last, Term: lead.Term}}}
+		}, ""},
+		{"snapshot", func(lead, follower replica.Status) raft.Message {
+			return raft.Message{Type: raft.MsgSnap, To: follower.ID, Term: lead.Term, Index: lead.Last, LogTerm: lead.Term}
+		}, ""},
+		{"entries for another node", func(lead, follower replica.Status) raft.Message {
+			return raft.Message{Type: raft.MsgApp, To: 6 - lead.ID - follower.ID, Term: lead.Term, Index: lead.Last - 1, LogTerm: lead.Term, Entries: []raft.Entry{{Index: lead.Last, Term: lead.Term}}}
+		}, "promised its log up to"},
+		{"entries from a leader of the promise's term", func(lead, follower replica.Status) raft.Message {
+			return raft.Message{Type: raft.MsgApp, To: follower.ID, Term: follower.Term - 1, Index: lead.Last - 1, LogTerm: lead.Term, Entries: []raft.Entry{{Index: lead.Last, Term: lead.Term}}}
+		}, "promised its log up to"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, lead, follower := calmWatch(t)
+			old := raft.Message{Type: raft.MsgAppResp, To: lead.ID, Index: follower.Last + 1, Term: follower.Term - 1}
+			if err := w.said(follower.ID, []raft.Message{old}); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.said(lead.ID, []raft.Message{tc.sent(lead, follower)}); err != nil {
+				t.Fatal(err)
+			}
+			syncDir(t, w, follower.ID)
+			wantViolation(t, w.stuck, "S5", tc.reason)
+		})
+	}
+	t.Run("the disk is still in the promise's term", func(t *testing.T) {
+		w, lead, follower := calmWatch(t)
+		ack := raft.Message{Type: raft.MsgAppResp, To: lead.ID, Index: follower.Last + 1, Term: follower.Term}
+		later := raft.Message{Type: raft.MsgApp, To: follower.ID, Term: lead.Term + 1, Index: lead.Last - 1, LogTerm: lead.Term, Entries: []raft.Entry{{Index: lead.Last, Term: lead.Term}}}
+		if err := w.said(follower.ID, []raft.Message{ack}); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.said(lead.ID, []raft.Message{later}); err != nil {
+			t.Fatal(err)
+		}
+		syncDir(t, w, follower.ID)
+		wantViolation(t, w.stuck, "S5", "promised its log up to")
+	})
 }
 
 func TestSaidChecksVoteRequestsAgainstTheDisk(t *testing.T) {

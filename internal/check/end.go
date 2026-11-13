@@ -18,6 +18,9 @@ func (w *watch) end() error {
 		if err := n.CheckInvariants(); err != nil {
 			return w.fail("S6", id, "at the end: %v", err)
 		}
+		if n.Status().Repair {
+			return w.fail("L4", id, "still in repair at the end")
+		}
 		nodes[i] = n
 	}
 	head, digest := nodes[0].Status(), nodes[0].Digest()

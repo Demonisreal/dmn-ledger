@@ -22,7 +22,7 @@ const (
 )
 
 func Profiles() []Profile {
-	return []Profile{ProfileCalm, ProfileNet, ProfileCrash, ProfileClock, ProfileAll, ProfileEvict, ProfileLeaders, ProfileSplit}
+	return []Profile{ProfileCalm, ProfileNet, ProfileCrash, ProfileClock, ProfileAll, ProfileEvict, ProfileLeaders, ProfileSplit, ProfileRot, ProfileBeyond}
 }
 
 const (
