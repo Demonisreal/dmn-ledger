@@ -116,7 +116,7 @@ func TestReceiptsAreCheckedOnSync(t *testing.T) {
 			}
 			fsys := &watchedFS{FS: w.c.World().Disk(id), w: w, id: id}
 			if tc.viaFile {
-				f, err := fsys.Open("/ledger/hardstate")
+				f, err := fsys.Open("/ledger/meta")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -151,7 +151,7 @@ func (unsyncedFile) Sync() error {
 
 func (u unsyncedHardState) Create(name string) (disk.File, error) {
 	f, err := u.FS.Create(name)
-	if err != nil || !strings.HasPrefix(filepath.Base(name), "hardstate") {
+	if err != nil || !strings.HasPrefix(filepath.Base(name), "meta") {
 		return f, err
 	}
 	return unsyncedFile{f}, nil
@@ -159,7 +159,7 @@ func (u unsyncedHardState) Create(name string) (disk.File, error) {
 
 func (u unsyncedHardState) Open(name string) (disk.File, error) {
 	f, err := u.FS.Open(name)
-	if err != nil || !strings.HasPrefix(filepath.Base(name), "hardstate") {
+	if err != nil || !strings.HasPrefix(filepath.Base(name), "meta") {
 		return f, err
 	}
 	return unsyncedFile{f}, nil

@@ -59,11 +59,23 @@ type Status struct {
 	Last      uint64
 	ApplyHash [sha256.Size]byte
 	Sessions  int
+	Repair    bool
 }
 
 type proposal struct {
 	index uint64
 	req   client.Request
+}
+
+type reqKey struct {
+	client  u128.Uint128
+	session uint64
+	number  uint64
+	op      client.Op
+}
+
+func keyOf(req client.Request) reqKey {
+	return reqKey{client: req.Client, session: req.Session, number: req.Number, op: req.Op}
 }
 
 type readBatch struct {
@@ -74,7 +86,7 @@ type readBatch struct {
 type Node struct {
 	cfg  Config
 	raft *raft.Raft
-	hs   *wal.HardStateFile
+	meta *wal.MetaFile
 	log  *wal.WAL
 	snap raft.Snapshot
 
@@ -94,6 +106,7 @@ type Node struct {
 
 	inbox    []client.Request
 	waiting  []proposal
+	proposed map[reqKey]bool
 	lookups  []client.Request
 	reads    []readBatch
 	tag      uint64
@@ -115,10 +128,11 @@ func Open(cfg Config) (_ *Node, err error) {
 		cfg:      cfg,
 		sessions: make(map[u128.Uint128]*session),
 		hasher:   sha256.New(),
+		proposed: make(map[reqKey]bool),
 		incoming: make(map[raft.Snapshot]io.Reader),
 	}
-	var hs wal.HardState
-	n.hs, hs, err = wal.OpenHardState(cfg.FS, cfg.Dir)
+	var hs wal.Meta
+	n.meta, hs, err = wal.OpenMeta(cfg.FS, cfg.Dir)
 	if err != nil {
 		return nil, err
 	}
@@ -128,22 +142,27 @@ func Open(cfg Config) (_ *Node, err error) {
 		}
 	}()
 
-	meta, _, err := wal.LoadSnapshot(cfg.FS, n.snapDir(), n.load)
+	base, broken, err := wal.LoadSnapshot(cfg.FS, n.snapDir(), n.load)
 	switch {
 	case errors.Is(err, wal.ErrNoSnapshot):
 		n.sm = state.New(0, 0)
 	case err != nil:
 		return nil, err
-	case n.applied != meta.Index || n.appliedTerm != meta.Term:
-		return nil, fmt.Errorf("replica: snapshot file %d/%d holds %d/%d", meta.Index, meta.Term, n.applied, n.appliedTerm)
+	case n.applied != base.Index || n.appliedTerm != base.Term:
+		return nil, fmt.Errorf("replica: snapshot file %d/%d holds %d/%d", base.Index, base.Term, n.applied, n.appliedTerm)
 	}
-	n.snap = raft.Snapshot(meta)
+	n.snap = raft.Snapshot(base)
 
-	n.log, err = wal.Open(cfg.FS, filepath.Join(cfg.Dir, "wal"), wal.Options{SegmentSize: cfg.SegmentSize, Nonces: cfg.Nonces})
-	if err != nil {
+	opts := wal.Options{SegmentSize: cfg.SegmentSize, Nonces: cfg.Nonces, Sealed: hs.Sealed, Strict: !n.meta.Intact()}
+	n.log, err = wal.Open(cfg.FS, n.walDir(), opts)
+	if err != nil && !errors.Is(err, wal.ErrCorrupt) {
 		return nil, err
 	}
-	if err := n.reconcile(); err != nil {
+	damage := err
+	if damage == nil {
+		damage = n.uncovered(hs.Sealed, broken)
+	}
+	if err := n.mend(&hs, damage, broken, opts); err != nil {
 		return nil, err
 	}
 	n.raft, err = raft.New(raft.Config{
@@ -156,7 +175,7 @@ func Open(cfg Config) (_ *Node, err error) {
 		MaxUncommitted: cfg.MaxUncommitted,
 		Rand:           cfg.Rand,
 		Log:            logView{n},
-		HardState:      raft.HardState{Term: hs.Term, Vote: hs.Vote},
+		HardState:      raft.HardState{Term: hs.Term, Vote: hs.Vote, Repair: hs.Repair},
 	})
 	if err != nil {
 		return nil, err
@@ -168,23 +187,48 @@ func (n *Node) snapDir() string {
 	return filepath.Join(n.cfg.Dir, "snap")
 }
 
-func (n *Node) reconcile() error {
-	first, err := n.log.FirstIndex()
-	if err != nil {
-		return err
+func (n *Node) walDir() string {
+	return filepath.Join(n.cfg.Dir, "wal")
+}
+
+func (n *Node) uncovered(sealed uint64, broken []wal.SnapshotMeta) error {
+	first, _ := n.log.FirstIndex()
+	last, _ := n.log.LastIndex()
+	switch {
+	case len(broken) > 0 && !n.meta.Intact():
+		return fmt.Errorf("replica: %w: snapshot at %d is broken and the seal may be older than it", wal.ErrCorrupt, broken[0].Index)
+	case sealed <= n.snap.Index, last >= sealed && first <= n.snap.Index+1:
+		return nil
 	}
-	last, err := n.log.LastIndex()
-	if err != nil {
-		return err
+	return fmt.Errorf("replica: %w: sealed up to %d, snapshot at %d, log from %d to %d", wal.ErrCorrupt, sealed, n.snap.Index, first, last)
+}
+
+func (n *Node) discard(broken []wal.SnapshotMeta, opts wal.Options) error {
+	for _, s := range broken {
+		if err := wal.RemoveSnapshot(n.cfg.FS, n.snapDir(), s); err != nil {
+			return err
+		}
 	}
+	if n.log != nil {
+		return nil
+	}
+	opts.Salvage = true
+	var err error
+	n.log, err = wal.Open(n.cfg.FS, n.walDir(), opts)
+	return err
+}
+
+func (n *Node) reconcile(repair bool) error {
+	first, _ := n.log.FirstIndex()
+	last, _ := n.log.LastIndex()
 	s := n.snap
 	switch {
 	case last == 0:
 		return nil
-	case first > s.Index+1:
+	case first > s.Index+1 && !repair:
 		return fmt.Errorf("replica: log starts at %d, after snapshot %d", first, s.Index)
-	case last < s.Index:
-		return n.log.TruncateAfter(0)
+	case first > s.Index+1, last < s.Index:
+		return n.empty()
 	case first > s.Index:
 		return nil
 	}
@@ -193,9 +237,23 @@ func (n *Node) reconcile() error {
 		return err
 	}
 	if term != s.Term {
-		return n.log.TruncateAfter(0)
+		return n.empty()
 	}
 	return nil
+}
+
+func (n *Node) empty() error {
+	if err := n.lower(n.snap.Index); err != nil {
+		return err
+	}
+	return n.log.TruncateAfter(0)
+}
+
+func (n *Node) lower(index uint64) error {
+	if index >= n.meta.Sealed() {
+		return nil
+	}
+	return n.meta.Seal(index)
 }
 
 func (n *Node) Tick() {
@@ -272,7 +330,11 @@ func (n *Node) round() error {
 }
 
 func (n *Node) store(ents []raft.Entry) error {
-	if err := n.log.TruncateAfter(ents[0].Index - 1); err != nil {
+	keep := ents[0].Index - 1
+	if err := n.lower(keep); err != nil {
+		return err
+	}
+	if err := n.log.TruncateAfter(keep); err != nil {
 		return err
 	}
 	batch := make([]wal.Entry, len(ents))
@@ -305,6 +367,7 @@ func (n *Node) follow() {
 		n.refuse(p.req, client.NotLeader)
 	}
 	n.waiting = nil
+	clear(n.proposed)
 	for _, b := range n.reads {
 		for _, req := range b.reqs {
 			n.refuse(req, client.NotLeader)
@@ -326,6 +389,7 @@ func (n *Node) accept() error {
 			n.refuse(req, client.Malformed)
 		case req.Op.Lookup():
 			n.lookups = append(n.lookups, req)
+		case n.proposed[keyOf(req)]:
 		default:
 			if err := n.propose(req); err != nil {
 				return err
@@ -361,6 +425,7 @@ func (n *Node) propose(req client.Request) error {
 	}
 	req.Body = nil
 	n.waiting = append(n.waiting, proposal{index: index, req: req})
+	n.proposed[keyOf(req)] = true
 	return nil
 }
 
@@ -435,6 +500,7 @@ func (n *Node) Status() Status {
 		Last:      st.Last,
 		ApplyHash: n.hash,
 		Sessions:  len(n.sessions),
+		Repair:    st.Repair,
 	}
 }
 
@@ -463,8 +529,8 @@ func (n *Node) Close() error {
 	if n.log != nil {
 		errs = append(errs, n.log.Close())
 	}
-	if n.hs != nil {
-		errs = append(errs, n.hs.Close())
+	if n.meta != nil {
+		errs = append(errs, n.meta.Close())
 	}
 	return errors.Join(errs...)
 }

@@ -71,6 +71,7 @@ func (n *Node) apply(e wal.Entry) {
 		r = n.request(e.Index, e.Body)
 	}
 	if len(n.waiting) > 0 && n.waiting[0].index == e.Index {
+		delete(n.proposed, keyOf(n.waiting[0].req))
 		n.waiting = n.waiting[1:]
 		r.Leader = n.cfg.ID
 		n.replies = append(n.replies, r)

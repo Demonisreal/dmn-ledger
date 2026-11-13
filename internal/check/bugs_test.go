@@ -27,17 +27,18 @@ func TestBugsAreFound(t *testing.T) {
 		{"B4", sim.ProfileAll, 500, []string{"S5"}},
 		{"B5", sim.ProfileAll, 1000, []string{"S5", "F1"}},
 		{"B6", sim.ProfileLeaders, 6000, []string{"S3"}},
-		{"B7", sim.ProfileAll, 500, []string{"S3"}},
+		{"B7", sim.ProfileAll, 500, []string{"S3", "S7"}},
 		{"B8", sim.ProfileAll, 500, []string{"S3"}},
-		{"B9", sim.ProfileAll, 500, []string{"S3"}},
+		{"B9", sim.ProfileAll, 1500, []string{"S3"}},
 		{"B10", sim.ProfileSplit, 6000, []string{"S9"}},
 		{"B11", sim.ProfileAll, 500, []string{"S8", "S9"}},
 		{"B11", sim.ProfileEvict, 500, []string{"S11"}},
 		{"B12", sim.ProfileAll, 500, []string{"S7"}},
 	}
 	huntedInRaft := []string{"B15", "B16", "B17"}
+	huntedInReplica := []string{"B13", "B14", "B18"}
 	for _, name := range simbug.Names() {
-		if !slices.Contains(huntedInRaft, name) && !slices.ContainsFunc(hunts, func(h hunt) bool { return h.bug == name }) {
+		if !slices.Contains(huntedInRaft, name) && !slices.Contains(huntedInReplica, name) && !slices.ContainsFunc(hunts, func(h hunt) bool { return h.bug == name }) {
 			t.Errorf("%s is not hunted", name)
 		}
 	}

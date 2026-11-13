@@ -1253,6 +1253,29 @@ func TestEmptyLastSegmentIsRemoved(t *testing.T) {
 	}
 }
 
+type meteredFS struct {
+	*disk.Sim
+	bytes int64
+}
+
+type meteredFile struct {
+	disk.File
+	fs *meteredFS
+}
+
+func (m *meteredFS) Open(name string) (disk.File, error) {
+	f, err := m.Sim.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return meteredFile{f, m}, nil
+}
+
+func (f meteredFile) WriteAt(p []byte, off int64) (int, error) {
+	f.fs.bytes += int64(len(p))
+	return f.File.WriteAt(p, off)
+}
+
 func TestOpenRewritesOnlyUnprovenTail(t *testing.T) {
 	sim := newSim(1)
 	w := mustOpen(t, sim, opts(0))
@@ -1266,7 +1289,7 @@ func TestOpenRewritesOnlyUnprovenTail(t *testing.T) {
 	}
 	_ = w.Close()
 
-	fsys := &windowFS{Sim: sim, open: map[int64]bool{}}
+	fsys := &meteredFS{Sim: sim}
 	w = mustOpen(t, fsys, opts(0))
 	if batch := int64(1000 * (frameHdrLen + 128)); fsys.bytes != batch {
 		t.Fatalf("open rewrote %d bytes, the last unproven batch has %d", fsys.bytes, batch)

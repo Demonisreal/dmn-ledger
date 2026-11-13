@@ -40,7 +40,7 @@ func (l *lyingFS) lie(name string, f disk.File, err error) (disk.File, error) {
 	switch {
 	case err != nil:
 		return nil, err
-	case simbug.On("B1") && strings.HasPrefix(filepath.Base(name), "hardstate"),
+	case simbug.On("B1") && strings.HasPrefix(filepath.Base(name), "meta"),
 		simbug.On("B2") && inWAL(name):
 		return lyingFile{f}, nil
 	}

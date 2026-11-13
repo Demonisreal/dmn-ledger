@@ -136,8 +136,7 @@ func (n *Node) install(s raft.Snapshot) error {
 	if head.index != s.Index || head.term != s.Term {
 		return fmt.Errorf("%w: payload holds %d/%d, raft wants %d/%d", errBadSnapshot, head.index, head.term, s.Index, s.Term)
 	}
-	meta := wal.SnapshotMeta(s)
-	err = wal.SaveSnapshot(n.cfg.FS, n.snapDir(), meta, func(w io.Writer) error {
+	err = wal.SaveSnapshot(n.cfg.FS, n.snapDir(), wal.SnapshotMeta(s), func(w io.Writer) error {
 		if _, err := w.Write(buf[:]); err != nil {
 			return err
 		}
@@ -147,7 +146,10 @@ func (n *Node) install(s raft.Snapshot) error {
 	if err != nil {
 		return err
 	}
-	if err := wal.ReadSnapshot(n.cfg.FS, n.snapDir(), meta, n.load); err != nil {
+	if err := wal.ReadSnapshot(n.cfg.FS, n.snapDir(), wal.SnapshotMeta(s), n.load); err != nil {
+		return err
+	}
+	if err := n.meta.Seal(s.Index); err != nil {
 		return err
 	}
 	if err := n.log.TruncateAfter(0); err != nil {

@@ -116,7 +116,7 @@ type refusingFS struct {
 }
 
 func (r refusingFS) Open(name string) (disk.File, error) {
-	if strings.HasSuffix(name, "hardstate") {
+	if strings.HasSuffix(name, "meta") {
 		return nil, errors.New("hard state refused")
 	}
 	return r.FS.Open(name)
@@ -124,7 +124,7 @@ func (r refusingFS) Open(name string) (disk.File, error) {
 
 func TestStartFailureIsAFinding(t *testing.T) {
 	w := &watch{cfg: Config{Seed: 3}}
-	eio := fmt.Errorf("replica: %w", &fs.PathError{Op: "write", Path: "/ledger/hardstate", Err: syscall.EIO})
+	eio := fmt.Errorf("replica: %w", &fs.PathError{Op: "write", Path: "/ledger/meta", Err: syscall.EIO})
 	if err := w.failed(2, eio); err != nil {
 		t.Fatalf("a disk error is no finding: %v", err)
 	}

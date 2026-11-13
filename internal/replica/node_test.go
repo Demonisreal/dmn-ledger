@@ -3,10 +3,12 @@ package replica
 import (
 	"bytes"
 	"errors"
-	"math/rand/v2"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Demonisreal/dmn-ledger/internal/client"
+	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
@@ -323,7 +325,7 @@ func filled(t *testing.T) (*testNet, *tester, raft.Snapshot) {
 	return tn, c, s
 }
 
-func editLog(t *testing.T, tn *testNet, edit func(*wal.WAL) error) {
+func editLog(t *testing.T, tn *testNet, sealed uint64, edit func(*wal.WAL) error) {
 	t.Helper()
 	w, err := wal.Open(tn.disks[0], "/n/wal", wal.Options{})
 	if err != nil {
@@ -338,12 +340,19 @@ func editLog(t *testing.T, tn *testNet, edit func(*wal.WAL) error) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
+	m, _, err := wal.OpenMeta(tn.disks[0], "/n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(m.Settle(), m.Seal(sealed), m.Close()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestOpenReconcilesLogWithSnapshot(t *testing.T) {
 	t.Run("log ends before the snapshot", func(t *testing.T) {
 		tn, c, s := filled(t)
-		editLog(t, tn, func(w *wal.WAL) error { return w.TruncateAfter(s.Index - 1) })
+		editLog(t, tn, s.Index-1, func(w *wal.WAL) error { return w.TruncateAfter(s.Index - 1) })
 		tn.open(0)
 		if st := tn.nodes[0].Status(); st.Last != s.Index || st.Applied != s.Index {
 			t.Fatalf("status %+v, want log emptied at snapshot %d", st, s.Index)
@@ -356,7 +365,7 @@ func TestOpenReconcilesLogWithSnapshot(t *testing.T) {
 	})
 	t.Run("other term at the snapshot index", func(t *testing.T) {
 		tn, _, s := filled(t)
-		editLog(t, tn, func(w *wal.WAL) error {
+		editLog(t, tn, s.Index+1, func(w *wal.WAL) error {
 			if err := w.TruncateAfter(s.Index - 1); err != nil {
 				return err
 			}
@@ -366,19 +375,20 @@ func TestOpenReconcilesLogWithSnapshot(t *testing.T) {
 		if last, _ := tn.nodes[0].log.LastIndex(); last != 0 {
 			t.Fatalf("log still ends at %d", last)
 		}
+		if sealed := tn.nodes[0].meta.Sealed(); sealed != s.Index {
+			t.Fatalf("sealed up to %d over a log emptied at snapshot %d", sealed, s.Index)
+		}
 	})
 	t.Run("log starts after the snapshot", func(t *testing.T) {
 		tn, _, s := filled(t)
-		editLog(t, tn, func(w *wal.WAL) error {
+		editLog(t, tn, s.Index, func(w *wal.WAL) error {
 			if err := w.TruncateAfter(0); err != nil {
 				return err
 			}
 			return w.Append(wal.Entry{Index: s.Index + 2, Term: s.Term})
 		})
-		cfg := tn.cfgs[0]
-		cfg.FS, cfg.Clock, cfg.Rand = tn.disks[0], func() uint64 { return start }, rand.New(rand.NewPCG(1, 1))
-		if _, err := Open(cfg); err == nil {
-			t.Fatal("opened a log with a gap after the snapshot")
+		if _, err := tn.probe(0, tn.disks[0]); err == nil || errors.Is(err, wal.ErrCorrupt) {
+			t.Fatalf("a log with a gap after the snapshot and nothing sealed in it: %v, want an error that is not damage", err)
 		}
 	})
 }
@@ -525,5 +535,117 @@ func TestBrokenEntryIsStoredAsMalformed(t *testing.T) {
 	}
 	if r := ok(t, c.do(client.LookupAccounts, ids(1))); len(r.Body) != 0 {
 		t.Fatalf("broken entry created %d bytes of accounts", len(r.Body))
+	}
+}
+
+func TestWaitingRequestIsProposedOnce(t *testing.T) {
+	tn := newTestNet(t, 3, nil)
+	tn.elect(0)
+	c := tn.register(0, 1)
+	ok(t, c.do(client.CreateAccounts, accounts(1, 2)))
+	n := tn.nodes[0]
+	answers := func(req client.Request) []client.Reply {
+		var got []client.Reply
+		for _, r := range tn.take() {
+			if r.Number == req.Number && r.Op == req.Op {
+				got = append(got, r)
+			}
+		}
+		return got
+	}
+
+	tn.cut[2], tn.cut[3] = true, true
+	last := n.Status().Last
+	req := c.request(client.CreateTransfers, transfer(10, 1, 2, 5))
+	for range 5 {
+		tn.send(0, req)
+	}
+	for range 5 {
+		n.Request(req)
+	}
+	tn.run(0)
+	if got := n.Status().Last; got != last+1 || len(tn.take()) != 0 {
+		t.Fatalf("ten sends of a waiting request: log grew from %d to %d", last, got)
+	}
+	tn.cut[2], tn.cut[3] = false, false
+	for range 4 {
+		tn.tick(tn.all()...)
+	}
+	first := answers(req)
+	if len(first) != 1 || first[0].Status != client.OK {
+		t.Fatalf("replies %+v, want one OK", first)
+	}
+	again := ok(t, tn.call(0, req))
+	if again.Time != first[0].Time || n.Status().Last != last+2 {
+		t.Fatalf("retry after the apply: %+v, log ends at %d, want the stored reply from a new entry", again, n.Status().Last)
+	}
+	if got := debits(t, c, 1); got != 5 {
+		t.Fatalf("debits %d, want 5", got)
+	}
+
+	read := c.request(client.LookupAccounts, ids(1))
+	n.Request(read)
+	n.Request(read)
+	tn.run(0)
+	tn.deliver()
+	tn.tick(tn.all()...)
+	if got := answers(read); len(got) != 2 {
+		t.Fatalf("two lookups got %d replies", len(got))
+	}
+
+	tn.cut[2], tn.cut[3] = true, true
+	req = c.request(client.CreateTransfers, transfer(11, 1, 2, 5))
+	for range 10 {
+		tn.send(0, req)
+	}
+	n.Receive(raft.Message{Type: raft.MsgApp, From: 2, To: 1, Term: n.Status().Term + 1}, nil)
+	tn.run(0)
+	if got := answers(req); len(got) != 1 || got[0].Status != client.NotLeader {
+		t.Fatalf("replies %+v after losing the term, want one NotLeader", got)
+	}
+	if len(n.proposed) != 0 {
+		t.Fatalf("%d requests still marked as waiting", len(n.proposed))
+	}
+}
+
+func TestSealCostsOneSyncPerRound(t *testing.T) {
+	for _, size := range []int{1, 3} {
+		tn := stoppedTestNet(t, size, nil)
+		syncs, sealed := 0, make([]int, size)
+		tn.tap = func(i int, fsys disk.FS) disk.FS {
+			return tapFS{fsys, func(op, name string) {
+				if !strings.HasPrefix(op, "sync") {
+					return
+				}
+				syncs++
+				if strings.HasPrefix(name, "/n/meta") {
+					sealed[i]++
+				}
+			}}
+		}
+		for i := range size {
+			tn.open(i)
+		}
+		tn.elect(0)
+		c := tn.register(0, 1)
+		ok(t, c.do(client.CreateAccounts, accounts(1, 2)))
+		for range 5 {
+			tn.tick(tn.all()...)
+		}
+		syncs = 0
+		for range 20 {
+			tn.tick(tn.all()...)
+		}
+		if syncs != 0 {
+			t.Fatalf("%d nodes: %d syncs in 20 idle ticks", size, syncs)
+		}
+		clear(sealed)
+		ok(t, c.do(client.CreateTransfers, transfer(10, 1, 2, 5)))
+		for range 5 {
+			tn.tick(tn.all()...)
+		}
+		if syncs != 2*size || slices.Min(sealed) != 1 || slices.Max(sealed) != 1 {
+			t.Fatalf("%d nodes: one transfer cost %d syncs, of meta per node %v, want %d and one each", size, syncs, sealed, 2*size)
+		}
 	}
 }
