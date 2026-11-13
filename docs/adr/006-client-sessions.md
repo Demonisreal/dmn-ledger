@@ -27,8 +27,8 @@ Transfer IDs stay as a second layer for clients that restart and resubmit.
 
 ## Consequences
 
-- The planted bug B11 (sessions do not recognise repeats) is found in the first seed by the
-  oracle replay S8, in `all` and in `evict`.
+- The planted bug B11 (sessions do not recognise repeats) is found by the oracle replay S8 in
+  the first seed of `all`, and by the log replay S11 in seed 2 of `evict`, where S8 cannot run.
 - The session number closes a gap a plain client ID would leave: a register request that arrives
   late, after its session was evicted, creates a new session with a new number, and delayed
   requests of the old one get `SessionUnknown` instead of applying a second time.

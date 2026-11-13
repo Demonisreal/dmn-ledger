@@ -1,6 +1,6 @@
 # ADR-002: The Raft log is the WAL, one request is one entry
 
-Status: accepted, 2026-11-11.
+Status: accepted, 2026-11-11. Amended 2026-11-13: the metadata file and its seal (ADR-009).
 
 ## Context
 
@@ -22,28 +22,31 @@ history: after a crash the state is the newest snapshot plus the committed entri
 applied again.
 
 - Segment files `wal-<first index>.log` hold frames with length, CRC32C of header and body,
-  index, term, kind, a sync mark and the body. The hard state (term and vote) lives in its own
-  file with two slots, snapshots in their own directory.
+  index, term, kind, a sync mark and the body. Term, vote, the repair flag and the seal live in
+  a file of their own with two slots (ADR-009), snapshots in their own directory.
 - The core reads the log through its `Log` interface. The node appends, syncs, and applies
   committed entries by reading them back from the log, never from the memory they came from.
 - One client request is one entry: kind 1 registers a session, kind 2 carries one batch of up to
   1 MiB of records with its timestamp, kind 0 is a new leader's empty entry.
 - Grouping comes from the node loop. `Tick`, `Receive` and `Request` only change memory;
-  `Process` turns everything that arrived since the last call into one `Ready`, one append and one
-  fsync. While a node waits for its disk, new input piles up and goes into the next fsync. There
-  is no timer and no batch size to tune.
+  `Process` turns everything that arrived since the last call into one `Ready`, one append, one
+  fsync of the log and one of the seal. While a node waits for its disk, new input piles up and
+  goes into the next round. There is no timer and no batch size to tune.
 
 ## Consequences
 
-- One recovery path: hard state, newest snapshot, then the WAL checked against the snapshot.
+- One recovery path: the metadata, the newest valid snapshot, then the WAL, judged by the seal and
+  checked against the snapshot.
 - The WAL knows about replication: terms must not fall, `TruncateAfter` drops a conflicting tail,
   also in the middle of a segment, and `CompactBefore` removes whole segments after a snapshot.
 - Groups grow with load and with disk latency. Under light load every request costs its own
-  fsync. How large the groups get in a running cluster is not measured yet.
+  round, two fsyncs with the seal. How large the groups get in a running cluster is not measured
+  yet.
 - Applying reads each entry back from the WAL, with a second read through the page cache and a
   second CRC check. That is the price of applying only what is on disk; it is not measured either.
-- A bit flip in the last synced batch can look like a torn write and be cut off on start
-  (`TestBitFlipInLastSyncedBatchLooksTorn`). Detecting it needs a seal on disk, which is not built.
+- A checksum alone cannot tell a bit flip in the last synced batch from a torn write. The seal in
+  the metadata file can (ADR-009): a broken frame up to the seal is damage, a broken frame behind
+  it at the end of the log is cut off (`TestOpenJudgesDamageByTheSeal`).
 
 ## Rejected alternatives
 

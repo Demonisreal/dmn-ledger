@@ -1,6 +1,7 @@
 # ADR-010: Snapshots of the whole state, blocking, two kept plus the log
 
-Status: accepted, 2026-11-11.
+Status: accepted, 2026-11-11. Amended 2026-11-13: a start falls back to the older snapshot
+(ADR-009).
 
 ## Context
 
@@ -20,7 +21,10 @@ A node writes a snapshot of its whole state after `SnapshotEvery` applied entrie
 - Afterwards the WAL is compacted before the previous snapshot, by whole segments. Every entry
   after the older of the two kept snapshots stays in the log.
 - A follower that gets a snapshot from the leader checks its header against what the core asked
-  for, stores it the same way, loads it back from disk and only then empties its log.
+  for, stores it the same way, loads it back from disk, seals the snapshot index (ADR-009) and
+  only then empties its log.
+- On start a node loads the newest snapshot whose checksum holds and deletes the broken ones above
+  it.
 
 ## Consequences
 
@@ -34,10 +38,20 @@ A node writes a snapshot of its whole state after `SnapshotEvery` applied entrie
   two and a half to four times as much. The pause of a node writing to a real disk, fsync
   included, is not measured yet. It grows with the ledger, because nothing is ever deleted.
 - The second snapshot and the log behind it exist so that a broken newest snapshot can be replaced
-  from the older one and the log on the same node. That repair is not built: `wal.LoadSnapshot`
-  reads only the newest snapshot, and if its checksum fails, the node does not start.
+  on the same node. If the log still reaches from the loaded snapshot to the seal, the node
+  replays it and nothing else happens (`TestBrokenNewestSnapshotFallsBackToTheOlder`). With no
+  snapshot left and a log that starts at 1, it replays from the start (`TestAllSnapshotsBroken`).
+- The broken file is deleted because it would otherwise count as one of the two newest at the next
+  snapshot and push out the healthy older one.
 - Right after installing a snapshot from the leader, the log starts after that snapshot and does
-  not reach back to the older one, until the node has taken a snapshot itself.
+  not reach back to the older one, until the node has taken a snapshot itself. If the installed
+  snapshot breaks in that time, the gap cannot be closed on the node: it is damaged and repairs
+  from the leader (ADR-009, `TestBrokenInstalledSnapshotIsDamage`). The same goes when every
+  snapshot is broken and the log no longer starts at 1.
+- The install seals the snapshot index so that this case is noticed. A seal still standing at the
+  older snapshot would let the node fall back to it as if nothing had been acknowledged since.
+- A snapshot whose checksum holds and whose content cannot be read is not a disk fault. The start
+  fails.
 - A snapshot travels to a follower as one payload. There is no chunking.
 
 ## Rejected alternatives
