@@ -70,6 +70,27 @@ jobs:
       - name: five nodes
         run: '"$RUNNER_TEMP/sim" -seeds 500 -nodes 5 -profile all'
 
+  rot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go build -o "$RUNNER_TEMP/sim" ./cmd/sim
+      - name: disk corruption, 1000 fixed seeds
+        run: '"$RUNNER_TEMP/sim" -seeds 1000 -from 0 -profile rot'
+      - name: disk corruption, 1000 new seeds
+        run: |
+          from=$((1000000 + GITHUB_RUN_NUMBER * 2000))
+          echo "first seed $from"
+          "$RUNNER_TEMP/sim" -seeds 1000 -from "$from" -profile rot
+      - name: beyond the fault model
+        run: '"$RUNNER_TEMP/sim" -seeds 500 -profile beyond'
+
   simbug:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -98,6 +119,7 @@ jobs:
           - { pkg: ./internal/wal, target: FuzzDecodeFrame }
           - { pkg: ./internal/wal, target: FuzzOpen }
           - { pkg: ./internal/replica, target: FuzzLoadSnapshot }
+          - { pkg: ./internal/replica, target: FuzzOpenDamaged }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
