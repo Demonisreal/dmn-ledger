@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 )
 
 type Process interface {
@@ -38,17 +39,18 @@ type ClientEnv struct {
 }
 
 type Config struct {
-	Seed    uint64
-	Profile Profile
-	Nodes   uint64
-	Clients uint64
-	Node    func(NodeEnv) (Process, error)
-	Client  func(ClientEnv) Process
-	Disk    func(id uint64, fsys disk.FS) disk.FS
-	Said    func(id uint64, msgs []Msg) error
-	Check   func() error
-	Leading func(id uint64) (commit uint64, ok bool)
-	Trace   io.Writer
+	Seed      uint64
+	Profile   Profile
+	Nodes     uint64
+	Clients   uint64
+	Node      func(NodeEnv) (Process, error)
+	Client    func(ClientEnv) Process
+	Disk      func(id uint64, fsys disk.FS) disk.FS
+	Said      func(id uint64, msgs []Msg) error
+	Check     func() error
+	Leading   func(id uint64) (commit uint64, ok bool)
+	Repairing func(id uint64) bool
+	Trace     io.Writer
 }
 
 type World struct {
@@ -62,6 +64,7 @@ type World struct {
 	hosts  []*host
 	peers  []uint64
 	hunts  []int
+	sick   uint64
 	hash   hash.Hash
 	out    io.Writer
 	line   []byte
@@ -87,6 +90,8 @@ type host struct {
 	missed  bool
 	commit  uint64
 	led     bool
+	latent  bool
+	rotted  bool
 	waiting bool
 	outbox  []Msg
 	backlog []input
@@ -136,6 +141,9 @@ func newWorld(cfg Config, root *rand.Rand, pl plan) *World {
 			h.name = fmt.Sprintf("n%d", h.id)
 			h.disk = disk.NewSim(fork(h.rng))
 			h.disk.JournalRate = pl.journal[h.id-1]
+			if pl.beyond {
+				h.disk.ShredRate = shredRate
+			}
 			h.meter = &meter{fsys: h.disk, rng: fork(h.rng)}
 			h.fsys = h.meter
 			if cfg.Disk != nil {
@@ -211,6 +219,10 @@ func (w *World) End() uint64 {
 
 func (w *World) Disk(id uint64) *disk.Sim {
 	return w.hosts[id-1].disk
+}
+
+func (w *World) Rotted(id uint64) bool {
+	return w.hosts[id-1].rotted
 }
 
 func (w *World) nodes() []*host {
@@ -311,8 +323,18 @@ func (w *World) start(h *host) {
 		return
 	}
 	h.proc = p
+	h.latent = false
+	w.cured(h)
 	w.push(event{at: w.now + h.rng.Uint64N(h.period), kind: evTick, id: h.id, epoch: h.epoch})
 	w.settle(h, nil)
+}
+
+func (w *World) cured(h *host) {
+	if w.sick != h.id || h.latent || w.cfg.Repairing != nil && w.cfg.Repairing(h.id) {
+		return
+	}
+	w.sick = 0
+	w.trace("cured %s", h.name)
 }
 
 func (w *World) arm(h *host) {
@@ -355,6 +377,7 @@ func (w *World) run(h *host) {
 			return
 		}
 	}
+	w.cured(h)
 	if h.node && w.hunted(h) {
 		return
 	}
@@ -579,6 +602,8 @@ func (w *World) fault(i int, heal bool) {
 		w.pause(i, heal)
 	case leadercrash:
 		w.hunt(i, heal)
+	case rot:
+		w.rot(i, heal)
 	}
 }
 
@@ -635,6 +660,80 @@ func (w *World) hunt(i int, heal bool) {
 	}
 }
 
+func (w *World) rot(i int, heal bool) {
+	win := &w.plan.windows[i]
+	h := w.hosts[win.node-1]
+	switch {
+	case heal && win.hit == 0:
+		return
+	case heal:
+		h.crashes--
+		if h.crashes == 0 && h.proc == nil {
+			w.start(h)
+		}
+		return
+	case w.sick != 0:
+		w.trace("rot %s skipped", h.name)
+		return
+	}
+	meta := win.meta && (w.plan.beyond || h.proc != nil)
+	if win.down {
+		win.hit = h.id
+		h.crashes++
+		power := w.plan.beyond || !meta
+		w.stop(h, power)
+		w.trace("kill %s %s", h.name, outage(power))
+	}
+	name, off, ok := rotTarget(h, meta)
+	if !ok {
+		w.trace("rot %s nothing", h.name)
+		return
+	}
+	spoil, unit := h.disk.Corrupt, "bit"
+	if win.sector {
+		spoil, unit = h.disk.Garble, "sector"
+	}
+	if err := spoil(name, off); err != nil {
+		w.abort(err)
+		return
+	}
+	h.latent, h.rotted = true, true
+	if !w.plan.beyond {
+		w.sick = h.id
+	}
+	w.trace("rot %s %s %d %s", h.name, filepath.ToSlash(name), off, unit)
+}
+
+func rotTarget(h *host, meta bool) (string, int64, bool) {
+	var files []disk.DurableFile
+	tail := -1
+	for _, f := range h.disk.Durable() {
+		base := filepath.Base(f.Name)
+		if f.Size == 0 || strings.HasSuffix(base, ".tmp") || (base == wal.MetaName) != meta {
+			continue
+		}
+		if strings.HasPrefix(base, wal.SegmentPrefix) {
+			tail = len(files)
+		}
+		files = append(files, f)
+	}
+	if len(files) == 0 {
+		return "", 0, false
+	}
+	k := h.rng.IntN(len(files))
+	if tail >= 0 && h.rng.IntN(2) == 0 {
+		k = tail
+	}
+	f := files[k]
+	switch {
+	case meta:
+		return f.Name, h.rng.Int64N(2)*wal.MetaStride + h.rng.Int64N(wal.MetaSlotLen), true
+	case k == tail && h.rng.IntN(2) == 0:
+		return f.Name, f.Size - 1 - h.rng.Int64N(min(f.Size, rotTail)), true
+	}
+	return f.Name, h.rng.Int64N(f.Size), true
+}
+
 func (w *World) quiet() {
 	w.calm = true
 	w.trace("quiet")
@@ -642,6 +741,10 @@ func (w *World) quiet() {
 	for _, h := range w.nodes() {
 		h.disk.FailAfter(0)
 		h.disk.FailSyncAfter(0)
+		if h.latent && h.proc != nil {
+			w.stop(h, false)
+			w.trace("kill %s scrub", h.name)
+		}
 	}
 	for _, h := range w.hosts {
 		if h.proc == nil {
@@ -699,6 +802,16 @@ func (w *World) describe(win *window) string {
 			return span + " on election"
 		}
 		return span
+	case rot:
+		if win.down {
+			name += " down"
+		}
+		if win.meta {
+			name += " meta"
+		}
+		if win.sector {
+			name += " sector"
+		}
 	}
 	return span + " " + name
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 )
 
-var metaPath = filepath.Join(dir, metaName)
+var metaPath = filepath.Join(dir, MetaName)
 
 func mustOpenMeta(t *testing.T, fsys disk.FS) (*MetaFile, Meta) {
 	t.Helper()
@@ -41,13 +41,13 @@ func metaSlots(t *testing.T, sim *disk.Sim) (slots [2]Meta, valid [2]bool) {
 		t.Fatalf("meta is %d bytes long, want %d", len(raw), metaLen)
 	}
 	for k := range slots {
-		_, slots[k], valid[k] = decodeMeta(raw[k*metaStride : k*metaStride+metaSlotLen])
+		_, slots[k], valid[k] = decodeMeta(raw[k*MetaStride : k*MetaStride+MetaSlotLen])
 	}
 	return slots, valid
 }
 
 func newestSlot(m *MetaFile) int64 {
-	return int64(m.seq%2) * metaStride
+	return int64(m.seq%2) * MetaStride
 }
 
 func TestMetaRoundTrip(t *testing.T) {
@@ -85,7 +85,7 @@ func TestMetaRoundTrip(t *testing.T) {
 }
 
 func TestMetaStartsWithTwoValidSlots(t *testing.T) {
-	for _, off := range []int64{3, metaStride + 3} {
+	for _, off := range []int64{3, MetaStride + 3} {
 		sim := newSim(1)
 		m, _ := mustSettle(t, sim)
 		_ = m.Close()
@@ -121,7 +121,7 @@ func TestMetaSaveLeavesBothSlotsEqual(t *testing.T) {
 		sealed := want
 		sealed.Sealed = term * 10
 		slots, _ := metaSlots(t, sim)
-		newest := newestSlot(m) / metaStride
+		newest := newestSlot(m) / MetaStride
 		if slots[newest] != sealed || slots[1-newest] != want {
 			t.Fatalf("after Seal: slots %+v, want %+v newest and %+v untouched", slots, sealed, want)
 		}
@@ -182,7 +182,7 @@ func TestMetaWritesOneSlotAtATime(t *testing.T) {
 		t.Fatalf("OpenMeta wrote at %v", offs)
 	}
 	read := newestSlot(m)
-	spare := metaStride - read
+	spare := MetaStride - read
 
 	if err := m.Settle(); err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestMetaWritesOneSlotAtATime(t *testing.T) {
 }
 
 func TestMetaSettleLeavesTheOnlyValidSlotAlone(t *testing.T) {
-	for _, off := range []int64{20, metaStride + 20} {
+	for _, off := range []int64{20, MetaStride + 20} {
 		sim := newSim(1)
 		m, _ := mustSettle(t, sim)
 		_ = m.Save(3, 2, false)
@@ -237,7 +237,7 @@ func TestMetaSettleLeavesTheOnlyValidSlotAlone(t *testing.T) {
 		if err := m.Seal(st.Sealed + 1); err != nil {
 			t.Fatal(err)
 		}
-		if offs := log.take(); !slices.Equal(offs, []int64{metaStride - valid}) {
+		if offs := log.take(); !slices.Equal(offs, []int64{MetaStride - valid}) {
 			t.Fatalf("first write went to %v, the only valid slot is at %d", offs, valid)
 		}
 		_ = m.Close()
@@ -266,7 +266,7 @@ func TestMetaDamagedSlotKeepsTheVote(t *testing.T) {
 	_ = m.Close()
 
 	for name, harm := range harms {
-		for _, off := range []int64{9, metaStride + 9} {
+		for _, off := range []int64{9, MetaStride + 9} {
 			c := fork(sim, uint64(off))
 			if err := harm(c, metaPath, off); err != nil {
 				t.Fatal(err)
@@ -284,7 +284,7 @@ func TestMetaDamagedSlotKeepsTheVote(t *testing.T) {
 		}
 	}
 
-	for _, off := range []int64{9, metaStride + 9} {
+	for _, off := range []int64{9, MetaStride + 9} {
 		if err := sim.Corrupt(metaPath, off); err != nil {
 			t.Fatal(err)
 		}
@@ -305,7 +305,7 @@ func TestMetaShortFileIsOneBrokenSlot(t *testing.T) {
 	_ = m.Save(4, 1, false)
 	_ = m.Close()
 	f, _ := sim.Open(metaPath)
-	_ = f.Truncate(metaStride + metaSlotLen/2)
+	_ = f.Truncate(MetaStride + MetaSlotLen/2)
 	_ = f.Sync()
 
 	m, st := mustSettle(t, sim)
@@ -323,7 +323,7 @@ func TestMetaShortFileIsOneBrokenSlot(t *testing.T) {
 	_ = m.Close()
 
 	f, _ = sim.Open(metaPath)
-	_ = f.Truncate(metaSlotLen - 1)
+	_ = f.Truncate(MetaSlotLen - 1)
 	_ = f.Sync()
 	if _, _, err := OpenMeta(sim, dir); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("file without a whole slot: %v", err)
@@ -336,14 +336,14 @@ func TestMetaUnknownFlagIsAVersionError(t *testing.T) {
 		m, _ := mustSettle(t, sim)
 		_ = m.Save(2, 1, true)
 		_ = m.Seal(5)
-		off := metaStride - newestSlot(m)
+		off := MetaStride - newestSlot(m)
 		if newest {
 			off = newestSlot(m)
 		}
 		_ = m.Close()
 
 		f, _ := sim.Open(metaPath)
-		var slot [metaSlotLen]byte
+		var slot [MetaSlotLen]byte
 		if _, err := f.ReadAt(slot[:], off); err != nil {
 			t.Fatal(err)
 		}

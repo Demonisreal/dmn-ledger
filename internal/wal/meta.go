@@ -13,15 +13,15 @@ import (
 )
 
 const (
-	metaName      = "meta"
-	metaStride    = 4096
+	MetaName      = "meta"
+	MetaStride    = 4096
 	metaOffTerm   = 8
 	metaOffVote   = 16
 	metaOffSealed = 24
 	metaOffFlags  = 32
 	metaOffCRC    = 36
-	metaSlotLen   = 40
-	metaLen       = metaStride + metaSlotLen
+	MetaSlotLen   = 40
+	metaLen       = MetaStride + MetaSlotLen
 
 	metaRepair uint32 = 1
 )
@@ -58,7 +58,7 @@ func OpenMeta(fsys disk.FS, dir string) (_ *MetaFile, _ Meta, err error) {
 			_ = m.Close()
 		}
 	}()
-	path := filepath.Join(dir, metaName)
+	path := filepath.Join(dir, MetaName)
 	m.f, err = fsys.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		m.f, err = createMeta(fsys, path)
@@ -81,7 +81,7 @@ func createMeta(fsys disk.FS, path string) (disk.File, error) {
 	var raw [metaLen]byte
 	for seq := range uint64(2) {
 		slot := encodeMeta(seq, Meta{})
-		copy(raw[seq*metaStride:], slot[:])
+		copy(raw[seq*MetaStride:], slot[:])
 	}
 	_, err = f.WriteAt(raw[:], 0)
 	if err == nil {
@@ -103,8 +103,8 @@ func (m *MetaFile) load(path string) error {
 		return err
 	}
 	valid := 0
-	for off := 0; off < metaLen; off += metaStride {
-		slot := raw[off : off+metaSlotLen]
+	for off := 0; off < metaLen; off += MetaStride {
+		slot := raw[off : off+MetaSlotLen]
 		seq, st, ok := decodeMeta(slot)
 		if !ok {
 			continue
@@ -124,8 +124,8 @@ func (m *MetaFile) load(path string) error {
 	return nil
 }
 
-func encodeMeta(seq uint64, st Meta) [metaSlotLen]byte {
-	var slot [metaSlotLen]byte
+func encodeMeta(seq uint64, st Meta) [MetaSlotLen]byte {
+	var slot [MetaSlotLen]byte
 	binary.LittleEndian.PutUint64(slot[:], seq)
 	binary.LittleEndian.PutUint64(slot[metaOffTerm:], st.Term)
 	binary.LittleEndian.PutUint64(slot[metaOffVote:], st.Vote)
@@ -195,7 +195,7 @@ func (m *MetaFile) Seal(index uint64) error {
 
 func (m *MetaFile) put(seq uint64, st Meta) error {
 	slot := encodeMeta(seq, st)
-	if _, err := m.f.WriteAt(slot[:], int64(seq%2)*metaStride); err != nil {
+	if _, err := m.f.WriteAt(slot[:], int64(seq%2)*MetaStride); err != nil {
 		return m.fail(err)
 	}
 	if err := m.f.Sync(); err != nil {

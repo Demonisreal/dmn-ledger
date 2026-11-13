@@ -3,6 +3,7 @@ package sim
 import (
 	"fmt"
 	"math/rand/v2"
+	"slices"
 )
 
 type Profile string
@@ -16,6 +17,8 @@ const (
 	ProfileEvict   Profile = "evict"
 	ProfileLeaders Profile = "leaders"
 	ProfileSplit   Profile = "split"
+	ProfileRot     Profile = "rot"
+	ProfileBeyond  Profile = "beyond"
 )
 
 func Profiles() []Profile {
@@ -64,6 +67,9 @@ const (
 
 	crawlMin  = 20 * millisecond
 	crawlSpan = 180 * millisecond
+
+	rotTail   = 200
+	shredRate = 0.3
 )
 
 type fault uint8
@@ -82,12 +88,13 @@ const (
 	jump
 	pause
 	leadercrash
+	rot
 )
 
 var faultNames = [...]string{
 	split: "split", oneway: "oneway", isolate: "isolate", bridge: "bridge", crash: "crash", midway: "midway",
 	blackout: "blackout", slow: "slow", eio: "eio", fsyncgate: "fsyncgate", jump: "jump", pause: "pause",
-	leadercrash: "leadercrash",
+	leadercrash: "leadercrash", rot: "rot",
 }
 
 func (f fault) String() string {
@@ -114,6 +121,9 @@ type window struct {
 	lead       bool
 	when       moment
 	hit        uint64
+	down       bool
+	sector     bool
+	meta       bool
 }
 
 type plan struct {
@@ -123,11 +133,13 @@ type plan struct {
 	loss, dup float64
 	journal   []float64
 	rearm     bool
+	beyond    bool
 }
 
 func profileFaults(p Profile) ([]fault, error) {
 	netFaults := []fault{split, oneway, isolate, bridge}
 	diskFaults := []fault{crash, midway, midway, midway, blackout, slow, eio, fsyncgate, leadercrash}
+	all := append(append(netFaults, diskFaults...), jump, pause)
 	switch p {
 	case ProfileCalm, "":
 		return nil, nil
@@ -138,7 +150,9 @@ func profileFaults(p Profile) ([]fault, error) {
 	case ProfileClock:
 		return []fault{jump, pause}, nil
 	case ProfileAll:
-		return append(append(netFaults, diskFaults...), jump, pause), nil
+		return all, nil
+	case ProfileRot, ProfileBeyond:
+		return append(all, rot, rot, rot, rot, rot), nil
 	case ProfileLeaders:
 		return []fault{leadercrash, leadercrash, leadercrash, crash, isolate, bridge}, nil
 	case ProfileSplit:
@@ -152,6 +166,9 @@ func newPlan(rng *rand.Rand, p Profile, nodes, hosts uint64) (plan, error) {
 	if err != nil {
 		return plan{}, err
 	}
+	if slices.Contains(faults, rot) && nodes < 3 {
+		return plan{}, fmt.Errorf("sim: profile %s needs at least three nodes", p)
+	}
 	pl := plan{quiet: stormMin + rng.Uint64N(stormSpan), journal: make([]float64, nodes)}
 	pl.end = pl.quiet + quietLen
 	for i := range pl.journal {
@@ -160,13 +177,14 @@ func newPlan(rng *rand.Rand, p Profile, nodes, hosts uint64) (plan, error) {
 		}
 	}
 	switch p {
-	case ProfileNet, ProfileAll:
+	case ProfileNet, ProfileAll, ProfileRot, ProfileBeyond:
 		pl.loss = float64(rng.IntN(201)) / 1000
 		pl.dup = float64(rng.IntN(101)) / 1000
 	case ProfileLeaders:
 		pl.loss = float64(rng.IntN(201)) / 1000
 	}
-	pl.rearm = p == ProfileCrash || p == ProfileAll
+	pl.rearm = p == ProfileCrash || p == ProfileAll || p == ProfileRot || p == ProfileBeyond
+	pl.beyond = p == ProfileBeyond
 	if len(faults) == 0 {
 		return pl, nil
 	}
@@ -206,6 +224,10 @@ func newPlan(rng *rand.Rand, p Profile, nodes, hosts uint64) (plan, error) {
 			}
 		case leadercrash:
 			win.when = moment(rng.IntN(3)) //nolint:gosec // G115: 0 to 2
+		case rot:
+			win.down = rng.IntN(2) == 0
+			win.sector = rng.IntN(4) == 0
+			win.meta = win.down && rng.IntN(3) == 0
 		}
 		pl.windows = append(pl.windows, win)
 	}

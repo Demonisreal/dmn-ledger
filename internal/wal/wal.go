@@ -17,6 +17,7 @@ import (
 )
 
 const (
+	SegmentPrefix  = "wal-"
 	MaxSegmentSize = 64 << 20
 	maxSegmentFile = MaxSegmentSize + segHdrLen + frameHdrLen + MaxBodySize
 )
@@ -90,11 +91,11 @@ func (s *segment) end(k uint64) int64 {
 }
 
 func segmentName(first uint64) string {
-	return fmt.Sprintf("wal-%020d.log", first)
+	return fmt.Sprintf("%s%020d.log", SegmentPrefix, first)
 }
 
 func parseSegmentName(name string) (uint64, bool) {
-	digits, ok := strings.CutPrefix(name, "wal-")
+	digits, ok := strings.CutPrefix(name, SegmentPrefix)
 	if !ok {
 		return 0, false
 	}
