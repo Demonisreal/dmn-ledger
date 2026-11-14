@@ -37,7 +37,7 @@ A node writes a snapshot of its whole state after `SnapshotEvery` applied entrie
   the full invariant check in 15 to 17 ms. Under load from other processes the same command gave
   two and a half to four times as much. The pause of a node writing to a real disk, fsync
   included, is not measured yet. It grows with the ledger, because nothing is ever deleted.
-- The second snapshot and the log behind it exist so that a broken newest snapshot can be replaced
+- The second snapshot and the log after it exist so that a broken newest snapshot can be replaced
   on the same node. If the log still reaches from the loaded snapshot to the seal, the node
   replays it and nothing else happens (`TestBrokenNewestSnapshotFallsBackToTheOlder`). With no
   snapshot left and a log that starts at 1, it replays from the start (`TestAllSnapshotsBroken`).

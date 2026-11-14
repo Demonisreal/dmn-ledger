@@ -24,7 +24,7 @@ The reasons:
   to R24 are listed under "Rules" in [ARCHITECTURE.md](../ARCHITECTURE.md), and each has a table
   test in `internal/raft/rules_test.go`.
 - The handling of disk corruption reaches into the core (ADR-009): a node that found damage on its
-  disk must not vote until the leader has filled it up again, and a leader has to believe a
+  disk must not vote until the leader has caught it up again, and a leader has to believe a
   follower that says it holds less than it once acknowledged. In a core written for the project
   both were small changes; with a library they would have meant maintaining a fork.
 

@@ -36,7 +36,7 @@ do not exist.
 
 - Every failure is a seed. `go run ./cmd/sim -seed N -trace` shows it again, event by event.
 - `go run ./cmd/sim -seeds 10000 -profile all` takes about 85 s on the 16 threads of an otherwise
-  idle i5-12500H laptop, and about 115 s with `GOMAXPROCS=4`. The profile `rot` takes the same.
+  idle i5-12500H laptop, and about 115 s with `GOMAXPROCS=4`. The profile `rot` takes as long.
   CI runs 2000 fixed and 2000 new seeds of `all` on every pull request, 1000 fixed and 1000 new
   seeds of `rot`, 500 of `beyond`, plus short sweeps of `crash`, `evict`, `leaders`, `split` and
   five-node clusters. Longer runs happen at night outside CI (`scripts/nightly-sim.sh`): 200 000
@@ -48,10 +48,10 @@ do not exist.
   (seed 563) than in `all` (seed 3820). B16, a wrong goal for a repair, shows in `rot` at seed
   2987 and is left to the nightly run and to the tests of the core, which catch it at once. The
   table is under "Planted bugs" in [ARCHITECTURE.md](../ARCHITECTURE.md).
-- Finding the planted bugs does not mean finding every bug in the core. Four other mutations of
-  the core, two in replication and reads and two in the repair rules, passed between 4 000 and
-  20 000 seeds of the profiles made for them and were caught only by the rule tests. The numbers
-  are under "Planted bugs" in [ARCHITECTURE.md](../ARCHITECTURE.md).
+- Finding the planted bugs does not mean finding every bug in the core. Three other mutations of
+  the core, two in replication and reads and one in the repair rules, passed between 4 000 and
+  20 000 seeds of the profiles made for them and were caught only by the tests of the core. The
+  numbers are under "Planted bugs" in [ARCHITECTURE.md](../ARCHITECTURE.md).
 - The simulator checks, it does not prove. It knows disks only as well as `disk.Sim` models them,
   and a run is only as good as the faults its plan contains.
 - porcupine's search can grow exponentially. It is bounded by the input, not by a timeout: few

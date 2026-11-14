@@ -45,7 +45,7 @@ applied again.
 - Applying reads each entry back from the WAL, with a second read through the page cache and a
   second CRC check. That is the price of applying only what is on disk; it is not measured either.
 - A checksum alone cannot tell a bit flip in the last synced batch from a torn write. The seal in
-  the metadata file can (ADR-009): a broken frame up to the seal is damage, a broken frame behind
+  the metadata file can (ADR-009): a broken frame up to the seal is damage, a broken frame after
   it at the end of the log is cut off (`TestOpenJudgesDamageByTheSeal`).
 
 ## Rejected alternatives

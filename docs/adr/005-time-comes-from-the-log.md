@@ -40,11 +40,10 @@ its own term, so it starts from the newest time of the cluster. The details are 
 - An honest clock passes unchanged as long as the same node leads and its ticks keep pace. After a
   stall that swallowed ticks, or after a leader change, the bound is below the clock and is stamped
   instead. Counted with a counter added to `stamp`, which is not part of the repository, over 400
-  seeds per profile, the bound was stamped for a quarter to half of the writes: about 29 % in `net`
-  and `split`, 46 % in `leaders` and 52 % in `crash`, on average 0.8 to 1.6 s behind the leader's
-  clock, and never in `calm`. The cause is mostly leader changes: the lag is
-  the time since the last write the new leader had applied, and it shrinks at a quarter of real
-  time.
+  seeds per profile, the bound was stamped for a quarter to half of the writes: about 28 % in `net`
+  and `split`, 47 % in `leaders` and 51 % in `crash`, on average 0.9 to 1.6 s behind the leader's
+  clock, and never in `calm`. The cause is mostly leader changes: the lag is the time since the
+  last write the new leader had applied, and it shrinks at a quarter of real time.
 - A clock that jumps back cannot move ledger time back. If writes arrive while it is behind, ledger
   time trails by as long as the clock was behind and catches up at a quarter of real time.
 - `BadClock` (a reading of 2^62 or more) is only possible before a node has an anchor. Until then

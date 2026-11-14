@@ -43,9 +43,9 @@ The core is a state machine. The driver feeds it events and carries out what it 
 - `Status()` for role, term, leader, commit index, last index and whether the node is in repair
 
 Pre-vote, check-quorum and ReadIndex are built in. A node whose disk has lost data runs as a
-non-voter until the leader has filled it up again (R19 to R24). There are no leases, no leadership
-transfer, no membership changes and no reads from followers. Messages are Go values; there is no
-wire format yet.
+non-voter until the leader has brought it up to date again (R19 to R24). There are no leases, no
+leadership transfer, no membership changes and no reads from followers. Messages are Go values;
+there is no wire format yet.
 
 ### Driver contract
 
@@ -78,6 +78,11 @@ start at all.
 
 The driver sets `Repair` in `Config.HardState` when its disk has forgotten something, and only
 then. The core clears it (R24). Between two starts the driver never changes it.
+
+`Rand` must be seeded anew on every start. A core that starts in repair draws its nonce from it
+(R19), and a nonce that repeats lets the answer to a probe of an earlier process end the repair
+(`TestRepeatedNonceLetsAnOldAnswerEndTheRepair`). The simulator forks a new generator for every
+start.
 
 Sending in parallel with the leader's own sync (Raft dissertation, section 10.2.1) would save
 latency and is deliberately not done.
@@ -215,7 +220,7 @@ Replication:
   more; a success beyond its own last index is dropped. A refusal with index 0, the R2 answer to an
   old message, changes nothing. Neither does one whose hint is at or above `next`: a fresh refusal
   always lies below `next`, so this one is old, and nothing is sent again. Every other refusal is
-  believed, also below `match`: `next = hint`, `match = min(match, hint-1)`, and the leader sends
+  believed, even below `match`: `next = hint`, `match = min(match, hint-1)`, and the leader sends
   again at once. Lowering `match` is safe: the commit index never falls, and a lower `match` only
   makes the count more careful. Without it a follower that lost entries it had acknowledged would
   refuse the same append again and again. (`TestLeaderHandlesAppResp`,
@@ -266,25 +271,28 @@ Repair:
   probe with a lower term gets no answer. (`TestRepairProbe`, `TestProbeGoesOnlyToTheKnownLeader`)
 - R23. The first `MsgRepairInfo` in the node's term that carries its nonce sets the goal, a pair
   of term and index. A goal counts only while its term is the current one. The answer to a probe
-  of an earlier process carries another nonce and is ignored. (`TestRepairGoal`,
-  `TestRepairIgnoresOtherNonce`, `TestRepairGoalIsBoundToTheTerm`)
+  of an earlier process carries another nonce and is ignored. A node that is not in repair
+  ignores `MsgRepairInfo` and never probes. (`TestRepairGoal`, `TestRepairIgnoresOtherNonce`,
+  `TestRepairGoalIsBoundToTheTerm`, `TestHealthyNodeNeitherProbesNorTakesAGoal`)
 - R24. The core remembers the highest index it has acknowledged in the current term, for `MsgApp`
   and `MsgSnap` alike, and forgets it on every term change. In `Advance()`, once there is a goal
   for the current term and that index has reached it, the core clears repair and draws a new
   election timeout. The next `Ready` carries the hard state without repair. That is one `Ready`
   after the entries up to the goal were stored, so a crash in between never leaves a voter without
   them. (`TestRepairCountsOnlyAcksOfTheTerm`, `TestRepairCountsEveryAcknowledgement`,
-  `TestRepairEndsOneReadyLater`, `TestRepairedNodeVotesAgain`)
+  `TestCampaignForgetsWhatWasAcknowledged`, `TestRepairEndsOneReadyLater`,
+  `TestRepairedNodeVotesAgain`, `TestHealedNodeKeepsItsElectionTimer`)
 
 The goal is the leader's last index, not its commit index. The node may have acknowledged an entry
 whose acknowledgement the leader has not processed yet, and that entry lies above the commit
 index. A node that crashes while in repair starts again with the flag and a new nonce.
 
 With three nodes and one of them in repair, the cluster stops when the leader becomes unreachable,
-until the leader is back: the two that are left cannot elect (`TestRepairingNodeDoesNotHelpElect`).
-It does not answer wrongly. While the leader is in office, the node in repair and the leader are
-a majority for commits, check-quorum and reads, also with the third node unreachable
-(`TestRepairingNodeCountsForCommitAndReads`). Why this is safe and where it ends is in
+until the leader is back: the two that are left cannot elect a leader
+(`TestRepairingNodeDoesNotHelpElect`). It gives no wrong answer meanwhile. As long as the leader
+keeps its role, the node in repair and the leader are a majority for commits, check-quorum and
+reads, even with the third node unreachable (`TestRepairingNodeCountsForCommitAndReads`). Why
+this is safe, and what its limits are, is in
 [ADR-009](adr/009-disk-corruption-seal-and-repair.md).
 
 ## Node (`internal/replica`)
@@ -323,7 +331,7 @@ the newest. `Open` takes these steps in this order:
    valid slot nothing is written. No earlier step writes to `meta`: a power loss must not leave a
    torn slot next to a torn end of the log.
 6. On damage the repair flag is stored, before anything is deleted. A cluster of one node fails
-   here with `wal.ErrCorrupt` instead, because there is nobody to fill it up again.
+   here with `wal.ErrCorrupt` instead, because there is no other node to repair it from.
 7. Broken snapshot files are deleted. A damaged WAL is cut back to its valid beginning: the
    segment is cut at the first broken place, and all later segments are removed.
 8. The log is checked against the snapshot. If it ends before the snapshot index or holds another
@@ -332,18 +340,19 @@ the newest. `Open` takes these steps in this order:
    the middle of an install. A log that starts after index + 1 makes `Open` fail, unless the
    repair flag is set: then it is emptied as well.
 9. The last index is sealed, always. That restores a slot that was invalid, and it takes in valid
-   frames behind the old seal, left by a crash between the sync of the log and the seal.
+   frames after the old seal, left by a crash between the sync of the log and the seal.
 10. The core starts with term, vote and repair flag, and with a log view whose last index is
     `max(wal last, snapshot index)`.
 
 A power loss at any disk access of these steps leaves a disk that the next start judges the same
 way, or one that already carries the flag. `TestCrashAtEveryDiskAccess` cuts the power at every
-disk access of a three-node run, also during `Open`, and `FuzzOpenDamaged` adds up to three broken
-places. The verdicts on the WAL are the cases of `TestOpenJudgesDamageByTheSeal`.
+disk access of a three-node run, including during `Open`, and `FuzzOpenDamaged` puts several broken
+places on the disk at one such point. The verdicts on the WAL are the cases of
+`TestOpenJudgesDamageByTheSeal`.
 
 | Found on start | Verdict |
 |---|---|
-| broken frame at the end of the last segment, behind the seal, both slots valid | torn write, cut off |
+| broken frame at the end of the last segment, after the seal, both slots valid | torn write, cut off |
 | the same, but a later valid frame has a sync mark that covers it | damage |
 | broken frame up to the seal | damage |
 | any broken end of the log when one slot was invalid | damage, the seal may be one round old |
@@ -354,6 +363,7 @@ places. The verdicts on the WAL are the cases of `TestOpenJudgesDamageByTheSeal`
 | newest snapshot fails its checksum | the next older one is loaded and the file deleted; damage only if the log then leaves a gap up to the seal |
 | broken snapshot when one slot was invalid | damage, the seal may be older than the snapshot |
 | checksum of a snapshot holds, content cannot be read | not a disk fault, `Open` fails |
+| checksum of a snapshot holds, its footer names another index or term than the file name | not a disk fault, `Open` fails with `wal.ErrMisnamed` |
 | unknown version of a segment, unknown flag in `meta` | not damage, `Open` fails with `wal.ErrVersion` |
 | read error (EIO) | fail-stop |
 
@@ -567,7 +577,9 @@ of them; the same seed gives the same hash.
   reads that place, or at the process restart that every such node gets when the quiet seconds
   begin. The plan damages one node at a time: until that node has started again and left repair,
   further corruption windows are skipped. The profile needs at least three nodes, and `cmd/sim`
-  refuses it with `-nodes 1`.
+  refuses `rot`, `beyond` and `evict` with `-nodes 1`. `world.go` knows nothing about a node's
+  files: where a fault lands is decided by the hook `Config.Rot`, which the ledger adapter fills
+  with `rotTarget` in `sim/ledger.go`.
 - **Corruption of `meta`.** A third of the `rot` windows that take the node down damage `meta`
   instead: one byte in one of the two slots, after a process stop without a power loss. This
   happens only to a node that is running at that moment, because then both slots are valid and
@@ -579,10 +591,11 @@ of them; the same seed gives the same hash.
   Several nodes can be damaged at once, `meta` is hit after a power loss and whether the node
   runs or not, and on every power loss each sector written since the last fsync turns into
   garbage with probability 0.3, together with bytes in it that were already synced. Nothing is
-  claimed about progress: a node may end in repair or never start again. Only the checkers that
-  watch a run are on, F1, S1 to S6, S10 and L3, and the checks at the end are skipped. `beyond`
-  therefore shows that nodes do not diverge, do not forget without knowing it and do not vote
-  when they must not. It does not check a single answer to a client.
+  claimed about progress: a node may end in repair or never start again. The checkers that watch
+  a run are on: F1, S1 to S6, S10 and L3. Of the checks at the end only S11 runs, and without
+  its last requirement, because nodes may be down or behind and nothing can be compared with
+  them. `beyond` therefore shows that nodes do not diverge, do not forget without knowing it and
+  do not vote when they must not, and that no answer a client got is wrong.
 
 ## Checkers (`internal/check`)
 
@@ -629,8 +642,8 @@ four points:
    the node's disk is cloned, the clone loses power and a node is opened on it. The term and the
    vote of that message must be there, and the acknowledged index or the repair flag.
 2. At every 20th successful sync the same clone is held against the whole book, in the middle of
-   a round and also while a node is still in `Open`. This finds writes in the wrong order within
-   a round or within a start, which a check after the round cannot see.
+   a round and while a node is still in `Open`. This finds writes in the wrong order within a
+   round or within a start, which a check after the round cannot see.
 3. At the first status of every new process, without a clone.
 4. At the moment a node leaves repair.
 
@@ -658,7 +671,7 @@ S10 reads the status after a step: a node that is in repair then has sent no `Ms
 `MsgPreVote`, no granted vote or pre-vote, no `MsgApp` and no `MsgSnap` in that step. The step in
 which a node leaves repair is not judged. L4 looks only at the end, when the faults have healed
 for five virtual seconds, and says nothing about how long a repair took. It is off in `beyond`
-with all other checks at the end.
+with all other checks at the end except the replay of S11.
 
 A panic in a seed is a finding like a violation: `check.Sweep` reports it with the seed, and
 `cmd/sim` prints the command that replays it.
@@ -676,8 +689,8 @@ requires:
   and with the time and failures of the reply; a write with an unknown outcome that the log
   executes must have the client's op and body as well;
 - the log executes nothing that no client sent;
-- every read that ended with `OK` names a time at which the log leaves the ledger and shows
-  exactly the ledger of that time;
+- every read that ended with `OK` names a ledger time that the ledger has after some prefix of
+  the log, and shows exactly the ledger after that prefix;
 - no such read shows an older ledger time than a call that ended with `OK` before the read began,
   measured in the simulator's time;
 - on every node the ledger digest and the sessions with their numbers are those of the replay.
@@ -687,9 +700,16 @@ ends with another ledger, another session table or a reply the log does not give
 the age of a read follows from linearizability and needs only confirmed calls, so it applies in
 `evict` too. What S11 does not check: two calls that overlap stay unordered, and a write with an
 unknown outcome sets no lower bound for later reads, even where the log executed it. The full
-order inside a window stays with S9, in the runs where S9 runs. S11 runs in every profile. A
-cluster of one node sends no entries and is left out. A committed entry that no message carried
-is a finding by itself.
+order inside a window stays with S9, in the runs where S9 runs. A committed entry that no
+message carried is a finding by itself.
+
+S11 runs in every profile. In `beyond` it replays the log up to the highest index that any node
+showed as committed and leaves out the comparison with the nodes. A call that never got an
+answer is allowed there, but what the log executes must still be a request some client sent
+(`TestBeyondChecksTheAnswers`). S11 counts the request numbers of a client itself, in the order
+of its calls, so a call without an answer keeps its number. A cluster of one node sends no
+entries and is left out. In `evict` that would leave no check of any answer, so `cmd/sim`
+refuses `-nodes 1 -profile evict`.
 
 S9's model is the oracle itself. A write steps only if its reply time is later than the model's
 last time and its failures match what the oracle computes; a read steps only if it shows the
@@ -733,7 +753,9 @@ The table gives the first failing seed counted from 0, measured with
 | B9 | a follower commits up to its own log end | `all` | 265 | S3 |
 | B10 | reads without confirmation by a majority | `split` | 563 | S9 |
 | B11 | sessions do not recognise a repeated request | `all`, `evict` | 0, 2 | S8 in `all`, S11 in `evict` |
+| B11 | the same | `beyond` | 0 | S11 |
 | B12 | entries are applied with the replica's own clock | `all` | 0 | S7 |
+| B12 | the same | `beyond` | 0 | S11 |
 | B13 | no seal | `rot` | 16 | S5, during a start |
 | B14 | the seal is written before the WAL sync | `crash` | 0 | F2 |
 | B15 | a node in repair votes and stands for election | `rot` | 11 | S10 |
@@ -742,14 +764,16 @@ The table gives the first failing seed counted from 0, measured with
 | B18 | the repair flag is stored after the clean-up and the new seal | `rot` | 28 | S5, during a start |
 
 B2 to B4 are reported by F2 and not by S5. After a power loss frames are missing below the seal,
-the next start takes that for damage and goes into repair, and the plan never touched that disk.
+the next start treats that as damage and goes into repair, and the plan never touched that disk.
 The seal turns a sync of the log that did nothing into detected damage.
 
-`TestBugsAreFound` hunts every bug except B16 in its profile and checks that an expected checker
-reports it. Counted from five starting seeds (0, 100 000, 200 000, 300 000, 400 000), the first
-finds are 7 to 29 seeds for B5, 26 to 265 for B9, 36 to 841 for B17, 75 to 1468 for B6 in
-`leaders` and 50 to 2217 for B10 in `split`. The test gives B5 1000 seeds, B9 1500, B17 4000, B6
-6000 and B10 8000, so that a change that only reshuffles the random draws should not turn it red.
+`TestBugsAreFound` hunts every bug except B16 in its profile, in twenty hunts for seventeen bugs,
+and checks that an expected checker reports it. B11 and B12 are also hunted in `beyond`, where
+only the log replay can see a wrong answer. Counted from five starting seeds (0, 100 000,
+200 000, 300 000, 400 000), the first finds are 7 to 29 seeds for B5, 26 to 265 for B9, 36 to 841
+for B17, 75 to 1468 for B6 in `leaders` and 50 to 2217 for B10 in `split`. The test gives B5 1000
+seeds, B9 1500, B17 4000, B6 6000 and B10 8000, so that a change that only reshuffles the random
+draws should not turn it red.
 
 B16 is the one bug the simulator is slow to find. It needs an acknowledgement that is on its way
 while the node is damaged, restarts and gets its probe answered, and a leader that has not
@@ -771,13 +795,40 @@ elsewhere. Check-quorum leaves only a short window for that. `split` keeps clien
 a partition; in `all` the first find is seed 3820.
 
 The planted bugs show that the checkers notice these mistakes, not that the simulator finds every
-mistake in the core. Four further mutations of the core, each built by hand into a copy of the
+mistake in the core. Three further mutations of the core, each built by hand into a copy of the
 tree, pass it. A leader that keeps `match` from an earlier term and a leader that lets any answer
-in its term confirm all waiting reads each passed 20 000 seeds of `rot` and 20 000 of `leaders`.
-A node in repair that takes an answer with a foreign nonce and one that keeps its acknowledged
-index across a term change each passed 4 000 seeds of `rot` and 10 000 of `beyond`. Only the
-tests of the core catch them: `TestReelectedLeaderResetsProgress`, `TestReadConfirmedByQuorum`,
-`TestRepairIgnoresOtherNonce` and `TestRepairCountsOnlyAcksOfTheTerm`.
+in its term confirm all waiting reads each passed 20 000 seeds of `rot` and 20 000 of `leaders`;
+the rule tests `TestReelectedLeaderResetsProgress` and `TestReadConfirmedByQuorum` catch them. A
+node in repair that takes an answer with a foreign nonce passed 4 000 seeds of `rot` and 10 000
+of `beyond`. The tests of the core catch it: the rule test `TestRepairIgnoresOtherNonce`,
+`TestRandomSchedules` in seed 98 with one damaged node of five, and the corpus of
+`FuzzSchedules`. That corpus holds three seeds (16719, 16011, 6504) which between them catch
+this mutation and two neighbours, a nonce that is the same on every start and a probe answered
+by a node that does not lead, in every `go test`, with `-short` as well.
+
+Two rules of repair have no known schedule that breaks without them: that the acknowledged index
+is forgotten on every term change (R24) and that a goal counts only in its term (R23). Without
+either rule the simulator passes the same 4 000 seeds of `rot` and 10 000 of `beyond`. In copies
+of the tree, each mutation also passed 3.2 million random schedules of the core, and both
+together another 3.2 million, with three and five nodes, with one and with any number of damaged
+nodes, half of the runs with the leader cut off whenever a node is in repair. The reason is
+probably this: a committed entry that the node once acknowledged is in the log of every later
+leader, so it lies below every goal named after the restart, and what the node acknowledged to
+an earlier leader can only be cut back above that entry. The rules stay because they keep the
+argument short: a node is healed when its log agrees with the log of this leader up to this
+leader's goal. `TestRepairGoalIsBoundToTheTerm` and `TestRepairCountsOnlyAcksOfTheTerm` pin
+them.
+
+The simulator is also weak on the order of steps in a start. Seven mutations of `Open`, of an
+install and of the clean-up after damage, each built the same way, passed 3 000 seeds of `rot`
+and 2 000 each of `crash`, `all` and `beyond`: later segments that stay on disk when a damaged
+log is cut back, broken snapshots that are not reported, broken snapshot files that are not
+deleted, a log emptied before the snapshot index is sealed, a log emptied on start without
+lowering the seal first, a cover check that ignores where the log begins, and a gap after the
+snapshot that is tolerated only while the seal is above the snapshot. The simulator seldom
+crashes a node in the middle of an install or of that clean-up, and `rot` never puts two faults
+on one node. The crash tests do both at every disk access. `TestCrashAtEveryDiskAccess`, the
+tests in `internal/replica/open_test.go` and the crash tests in `internal/wal` catch all seven.
 
 `go run ./cmd/sim -seeds 10000 -profile all` runs seeds on all cores and stops at the first failure
 with the command that replays it, for example

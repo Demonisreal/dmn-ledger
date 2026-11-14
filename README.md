@@ -14,10 +14,10 @@ real node code against those faults and checks every run. There is no network se
 cluster runs only inside the simulator and the tests.
 
 A node that finds a flipped bit or a garbled sector in data it had acknowledged stops voting
-until the leader has filled it up again. It still counts for commits and reads, so a leader in
-office keeps working with it. With three nodes, one damaged node and an unreachable leader stop
-the cluster until the leader is back. Two damaged nodes of three can stop it for good. In both
-cases it accepts no request, but it never answers one wrongly.
+until the leader has brought it up to date again. It still counts for commits and reads, so the
+current leader keeps working with it. With three nodes, one damaged node and an unreachable
+leader stop the cluster until the leader is back. Two damaged nodes of three can stop it for
+good. In both cases it accepts no requests, but it never gives a wrong answer.
 
 ## Status
 
@@ -29,7 +29,7 @@ Works today:
   vote and a seal, and snapshots.
 - Raft core without I/O: pre-vote, check-quorum, ReadIndex, snapshots for lagging followers.
 - Repair after disk corruption. A seal on disk tells a torn write from a broken frame the node
-  had acknowledged. A damaged node runs as a non-voter, is filled up by the leader and votes
+  had acknowledged. A damaged node runs as a non-voter, is caught up by the leader and votes
   again, without anyone stepping in. Tested with a power loss at every disk access of a
   three-node run, with randomised schedules of the core and in the simulator. Read errors still
   stop a node, and the limits are in [ADR-009](docs/adr/009-disk-corruption-seal-and-repair.md).
@@ -51,7 +51,7 @@ Run 1000 seeds of the simulator, each a full cluster with faults and a workload:
 
 ```
 $ go run ./cmd/sim -seeds 1000
-seeds 0 to 999 profile all: ok, widest window 32, 8.072s on 16 cores
+seeds 0 to 999 profile all: ok, widest window 32, 8.504s on 16 cores
 ```
 
 Plant a bug, here B15 (a node whose disk has lost acknowledged entries still takes part in
@@ -102,7 +102,7 @@ Go 1.27.4 or newer, as set in `go.mod`. The only dependency is
   driver, the core's rules, the node, the simulator, the checkers and the planted bugs.
 - [docs/adr/](docs/adr/): the decisions and what they cost.
   [ADR-009](docs/adr/009-disk-corruption-seal-and-repair.md) covers disk corruption: what is
-  detected, how a node is repaired and where that ends.
+  detected, how a node is repaired and what the limits are.
 - [docs/ledger-rules.md](docs/ledger-rules.md): fields, check order, time, chains, invariants and
   the snapshot format of the state machine.
 
