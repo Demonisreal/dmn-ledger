@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	tickNs = 10_000_000
-	start  = 1_000_000_000_000
+	tickNs   = 10_000_000
+	start    = 1_000_000_000_000
+	metaFile = "/n/" + wal.MetaName
 )
 
 type envelope struct {
@@ -57,6 +58,7 @@ type testNet struct {
 	cfgs    []Config
 	clocks  []uint64
 	held    []receipt
+	rotted  []bool
 	queue   []envelope
 	cut     map[uint64]bool
 	drop    func(raft.Message) bool
@@ -105,6 +107,7 @@ func stoppedTestNet(t testing.TB, size int, tune func(*Config)) *testNet {
 		tn.clocks = append(tn.clocks, start)
 		tn.nodes = append(tn.nodes, nil)
 		tn.held = append(tn.held, receipt{})
+		tn.rotted = append(tn.rotted, false)
 	}
 	return tn
 }
@@ -290,6 +293,7 @@ func (tn *testNet) flip(i int, name string, off int64) {
 	if err := tn.disks[i].Corrupt(name, off); err != nil {
 		tn.t.Fatal(err)
 	}
+	tn.rotted[i] = true
 }
 
 func (tn *testNet) spoilTail(i int) {

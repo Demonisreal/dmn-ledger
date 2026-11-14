@@ -19,7 +19,10 @@ const (
 	snapsKept     = 2
 )
 
-var ErrNoSnapshot = errors.New("wal: no snapshot")
+var (
+	ErrNoSnapshot = errors.New("wal: no snapshot")
+	ErrMisnamed   = errors.New("wal: snapshot under another name")
+)
 
 type SnapshotMeta struct {
 	Index uint64
@@ -199,7 +202,7 @@ func ReadSnapshot(fsys disk.FS, dir string, meta SnapshotMeta, read func(io.Read
 		return &CorruptError{File: path, Offset: bodyLen}
 	}
 	if held != meta {
-		return fmt.Errorf("wal: snapshot %s holds %d/%d", path, held.Index, held.Term)
+		return fmt.Errorf("%w: %s holds %d/%d", ErrMisnamed, path, held.Index, held.Term)
 	}
 	return read(io.NewSectionReader(f, 0, bodyLen))
 }

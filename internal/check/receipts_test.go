@@ -200,7 +200,7 @@ func TestSaidChecksVoteRequestsAgainstTheDisk(t *testing.T) {
 	wantViolation(t, w.said(follower.ID, []raft.Message{{Type: raft.MsgVote, Term: follower.Term}}), "S5", "asked for votes")
 }
 
-type unsyncedHardState struct {
+type unsyncedMeta struct {
 	disk.FS
 }
 
@@ -212,7 +212,7 @@ func (unsyncedFile) Sync() error {
 	return nil
 }
 
-func (u unsyncedHardState) Create(name string) (disk.File, error) {
+func (u unsyncedMeta) Create(name string) (disk.File, error) {
 	f, err := u.FS.Create(name)
 	if err != nil || !strings.HasPrefix(filepath.Base(name), "meta") {
 		return f, err
@@ -220,7 +220,7 @@ func (u unsyncedHardState) Create(name string) (disk.File, error) {
 	return unsyncedFile{f}, nil
 }
 
-func (u unsyncedHardState) Open(name string) (disk.File, error) {
+func (u unsyncedMeta) Open(name string) (disk.File, error) {
 	f, err := u.FS.Open(name)
 	if err != nil || !strings.HasPrefix(filepath.Base(name), "meta") {
 		return f, err
@@ -232,6 +232,6 @@ func TestPowerLossInTheMiddleOfARound(t *testing.T) {
 	w := newWatch(Config{Seed: 1, Profile: sim.ProfileCalm})
 	w.sample = 1
 	watched := w.disk()
-	_, err := w.run(func(id uint64, fsys disk.FS) disk.FS { return watched(id, unsyncedHardState{fsys}) })
+	_, err := w.run(func(id uint64, fsys disk.FS) disk.FS { return watched(id, unsyncedMeta{fsys}) })
 	wantViolation(t, err, "S5", "in the middle of a round")
 }

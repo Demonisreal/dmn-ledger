@@ -295,6 +295,9 @@ func FuzzSchedules(f *testing.F) {
 	f.Add(uint64(1818), true, uint8(undamaged))
 	f.Add(uint64(7), false, uint8(oneDamaged))
 	f.Add(uint64(7), true, uint8(anyDamaged))
+	f.Add(uint64(16719), false, uint8(anyDamaged))
+	f.Add(uint64(16011), true, uint8(oneDamaged))
+	f.Add(uint64(6504), true, uint8(anyDamaged))
 	f.Fuzz(func(t *testing.T, seed uint64, five bool, kind uint8) {
 		size := 3
 		if five {

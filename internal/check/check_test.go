@@ -117,7 +117,7 @@ type refusingFS struct {
 
 func (r refusingFS) Open(name string) (disk.File, error) {
 	if strings.HasSuffix(name, "meta") {
-		return nil, errors.New("hard state refused")
+		return nil, errors.New("meta refused")
 	}
 	return r.FS.Open(name)
 }
@@ -143,7 +143,7 @@ func TestStartFailureIsAFinding(t *testing.T) {
 	}
 	err = c.Run()
 	v, ok := errors.AsType[*Violation](err)
-	if !ok || v.Check != "F1" || v.Node != 2 || !strings.Contains(v.Reason, "hard state refused") {
+	if !ok || v.Check != "F1" || v.Node != 2 || !strings.Contains(v.Reason, "meta refused") {
 		t.Fatalf("want F1 on n2, got %v", err)
 	}
 	if now := c.World().Now(); now > 20_000_000 {

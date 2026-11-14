@@ -499,13 +499,15 @@ func flipFrame(i uint64) func(*testing.T, *disk.Sim, []string) spot {
 }
 
 func halfLastFrame(t *testing.T, sim *disk.Sim, segs []string) spot {
+	t.Helper()
 	seg, off := frameAt(segs, 40)
 	f, err := sim.Open(filepath.Join(dir, seg))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = f.Truncate(off + 7)
-	_ = f.Sync()
+	if err := errors.Join(f.Truncate(off+7), f.Sync(), f.Close()); err != nil {
+		t.Fatal(err)
+	}
 	return spot{seg, off, 39}
 }
 

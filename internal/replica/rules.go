@@ -32,26 +32,24 @@ func (n *Node) persist(rd raft.Ready) error {
 	return n.meta.Seal(rd.Entries[len(rd.Entries)-1].Index)
 }
 
-func (n *Node) mend(hs *wal.Meta, damage error, broken []wal.SnapshotMeta, opts wal.Options) error {
+func (n *Node) mend(hs wal.Meta, damage error, broken []wal.SnapshotMeta, opts wal.Options) (bool, error) {
 	if err := n.meta.Settle(); err != nil {
-		return err
+		return false, err
 	}
-	if damage != nil && !hs.Repair {
-		if len(n.cfg.Peers) == 1 {
-			return damage
-		}
-		if err := n.meta.Save(hs.Term, hs.Vote, true); err != nil {
-			return err
-		}
-		hs.Repair = true
+	repair, err := n.flag(hs, damage)
+	if err != nil {
+		return false, err
 	}
-	if err := n.discard(broken, opts); err != nil {
-		return err
+	if err := n.discard(broken); err != nil {
+		return false, err
 	}
-	if err := n.reconcile(hs.Repair); err != nil {
-		return err
+	if err := n.salvage(opts); err != nil {
+		return false, err
 	}
-	return n.meta.Seal(logView{n}.LastIndex())
+	if err := n.reconcile(repair); err != nil {
+		return false, err
+	}
+	return repair, n.meta.Seal(logView{n}.LastIndex())
 }
 
 func fresh(s *session, number uint64) bool {

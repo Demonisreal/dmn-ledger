@@ -257,9 +257,9 @@ func TestShadowAgreesWithTheNode(t *testing.T) {
 				t.Errorf("shadow ran %d requests, want %d", len(sh.ran), tc.runs)
 			}
 			for _, ok := range s.oks {
-				x, ran := sh.ran[ok.req]
-				if !ran || x.status != client.OK || x.time != ok.r.Time || !bytes.Equal(x.fails, ok.r.Body) {
-					t.Errorf("request %+v got time %d and failures %x, the shadow has %+v (%v)", ok.req, ok.r.Time, ok.r.Body, x, ran)
+				exec, ran := sh.ran[ok.req]
+				if !ran || exec.status != client.OK || exec.time != ok.r.Time || !bytes.Equal(exec.fails, ok.r.Body) {
+					t.Errorf("request %+v got time %d and failures %x, the shadow has %+v (%v)", ok.req, ok.r.Time, ok.r.Body, exec, ran)
 				}
 			}
 		})
@@ -293,8 +293,8 @@ func TestShadowSkipsBrokenEntries(t *testing.T) {
 		t.Fatalf("broken entries left sessions %+v and %d executions", sh.sessions, len(sh.ran))
 	}
 	sh.apply(whole)
-	if x := sh.ran[request{client: id, session: 1, number: 1}]; x.status != client.OK {
-		t.Fatalf("the whole request after the broken ones: %+v", x)
+	if exec := sh.ran[request{client: id, session: 1, number: 1}]; exec.status != client.OK {
+		t.Fatalf("the whole request after the broken ones: %+v", exec)
 	}
 }
 
@@ -316,16 +316,16 @@ func TestShadowKeepsARejectedBatch(t *testing.T) {
 			sh := newShadow(4)
 			sh.apply(raft.Entry{Index: 1, Term: 1, Kind: entryRegister, Body: id.AppendBytes(nil)})
 			sh.apply(requestEntry(2, first, tc.op, tc.ts, tc.recs))
-			if x, ran := sh.ran[first]; !ran || x.status != client.Malformed || sh.ledger.Digest() != oracle.New().Digest() {
-				t.Fatalf("rejected batch: %+v (%v)", x, ran)
+			if exec, ran := sh.ran[first]; !ran || exec.status != client.Malformed || sh.ledger.Digest() != oracle.New().Digest() {
+				t.Fatalf("rejected batch: %+v (%v)", exec, ran)
 			}
 			sh.apply(requestEntry(3, first, client.CreateAccounts, 100, accountsBody(1)))
-			if x := sh.ran[first]; x.index != 2 || sh.ledger.Last() != 0 {
-				t.Fatalf("the retry of a rejected batch ran at %d", x.index)
+			if exec := sh.ran[first]; exec.index != 2 || sh.ledger.Last() != 0 {
+				t.Fatalf("the retry of a rejected batch ran at %d", exec.index)
 			}
 			sh.apply(requestEntry(4, second, client.CreateAccounts, 100, accountsBody(1)))
-			if x := sh.ran[second]; x.status != client.OK || x.time != 100 || len(x.fails) != 0 {
-				t.Fatalf("the request after a rejected batch: %+v", x)
+			if exec := sh.ran[second]; exec.status != client.OK || exec.time != 100 || len(exec.fails) != 0 {
+				t.Fatalf("the request after a rejected batch: %+v", exec)
 			}
 		})
 	}
@@ -401,9 +401,9 @@ func TestReplayLogFindsWhatDiffers(t *testing.T) {
 			call.Reply.Body = append(slices.Clone(call.Reply.Body), 0, 0, 0, 0, 0, 0, 0, 1)
 		}, "got time"},
 		{"confirmed batch the log rejects", func(call *sim.Call, sh *shadow) {
-			x := sh.ran[asked(call)]
-			x.status = client.Malformed
-			sh.ran[asked(call)] = x
+			exec := sh.ran[asked(call)]
+			exec.status = client.Malformed
+			sh.ran[asked(call)] = exec
 		}, "got time"},
 		{"request with another body", func(call *sim.Call, _ *shadow) {
 			call.Body = slices.Clone(call.Body)
@@ -463,7 +463,7 @@ func TestReplayLogNeedsEveryCommittedEntry(t *testing.T) {
 	w.entries[[2]uint64{applied, w.committed[applied]}] = sent
 	wantViolation(t, w.replayLog(nodes), "", "")
 	delete(w.committed, applied-1)
-	wantViolation(t, w.replayLog(nodes), "S11", "no node showed its term")
+	wantViolation(t, w.replayLog(nodes), "S11", "no node showed the term")
 }
 
 func TestReplayLogChecksReads(t *testing.T) {
@@ -491,10 +491,10 @@ func TestReplayLogChecksReads(t *testing.T) {
 		}, "had ended"},
 		{"time between two batches", func(read *sim.Call) {
 			read.Reply.Time = 1
-		}, "never leaves the ledger"},
+		}, "no prefix of the log"},
 		{"time after the last batch", func(read *sim.Call) {
 			read.Reply.Time = math.MaxUint64
-		}, "never leaves the ledger"},
+		}, "no prefix of the log"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -601,12 +601,12 @@ func TestReplayLogExecutesARetryOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := lastWrite(t, w.c.Calls())
-	x, ran := sh.ran[asked(call)]
+	exec, ran := sh.ran[asked(call)]
 	if !ran {
 		t.Fatalf("the log does not execute %s #%d", call.Op, call.Reply.Number)
 	}
 	term := w.committed[applied]
-	retry := w.entries[[2]uint64{x.index, w.committed[x.index]}]
+	retry := w.entries[[2]uint64{exec.index, w.committed[exec.index]}]
 	retry.Index, retry.Term = applied+1, term
 	w.entries[[2]uint64{applied + 1, term}], w.committed[applied+1] = retry, term
 
@@ -619,5 +619,89 @@ func TestReplayLogExecutesARetryOnce(t *testing.T) {
 	}
 	if err := w.agrees(sh, nodes); err != nil {
 		t.Fatalf("a retry in the log: %v", err)
+	}
+}
+
+func TestRunEndsWithTheLogReplay(t *testing.T) {
+	w, _ := replayed(t)
+	if err := w.end(); err != nil {
+		t.Fatalf("a clean run: %v", err)
+	}
+	first := [2]uint64{1, w.committed[1]}
+	if e := w.entries[first]; e.Kind != 0 {
+		t.Fatalf("entry 1 is %+v, want the empty entry of the first leader", e)
+	}
+	w.entries[first] = raft.Entry{Index: 1, Term: first[1], Kind: entryRegister, Body: u128.From64(77).AppendBytes(nil)}
+	wantViolation(t, w.end(), "S11", "sessions, the log leaves")
+	clear(w.entries)
+	wantViolation(t, w.end(), "S11", "no MsgApp carried it")
+}
+
+func TestBeyondChecksTheAnswers(t *testing.T) {
+	cases := []struct {
+		name   string
+		tamper func(w *watch, write, read *sim.Call)
+		reason string
+	}{
+		{"clean run", func(*watch, *sim.Call, *sim.Call) {}, ""},
+		{"reply with another time", func(_ *watch, write, _ *sim.Call) {
+			write.Reply.Time++
+		}, "got time"},
+		{"reply with another failure", func(_ *watch, write, _ *sim.Call) {
+			write.Reply.Body = append(slices.Clone(write.Reply.Body), 0, 0, 0, 0, 0, 0, 0, 1)
+		}, "got time"},
+		{"request with another body", func(_ *watch, write, _ *sim.Call) {
+			write.Body = slices.Clone(write.Body)
+			write.Body[len(write.Body)-1]++
+		}, "is not the request"},
+		{"write without an answer", func(_ *watch, write, _ *sim.Call) {
+			write.End, write.Reply = 0, client.Reply{}
+		}, ""},
+		{"request in the log that no client sent", func(w *watch, write, _ *sim.Call) {
+			top := w.reach()
+			stray := requestEntry(top+1, request{client: write.ID, session: write.Session, number: 1 << 40}, write.Op, write.Reply.Time, write.Body)
+			stray.Term = w.committed[top]
+			w.entries[[2]uint64{top + 1, stray.Term}], w.committed[top+1] = stray, stray.Term
+		}, "the clients sent"},
+		{"read with another byte", func(_ *watch, _, read *sim.Call) {
+			read.Reply.Body = slices.Clone(read.Reply.Body)
+			read.Reply.Body[len(read.Reply.Body)-1]++
+		}, "does not show"},
+		{"read at a time between two batches", func(_ *watch, _, read *sim.Call) {
+			read.Reply.Time = 1
+		}, "no prefix of the log"},
+		{"read of the empty ledger after a write had ended", func(_ *watch, _, read *sim.Call) {
+			read.Reply.Time, read.Reply.Body = 0, nil
+		}, "had ended"},
+		{"committed entry no message carried", func(w *watch, _, _ *sim.Call) {
+			top := w.reach()
+			delete(w.entries, [2]uint64{top, w.committed[top]})
+		}, "no MsgApp carried it"},
+		{"gap below the highest commit", func(w *watch, _, _ *sim.Call) {
+			delete(w.committed, w.reach()-1)
+		}, "no node showed the term"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := outside(t)
+			calls := w.c.Calls()
+			write, read, open := -1, -1, 0
+			for i, call := range calls {
+				switch {
+				case call.End == 0:
+					open++
+				case call.Reply.Status != client.OK:
+				case !call.Op.Lookup() && write < 0:
+					write = i
+				case call.Op.Lookup() && len(call.Reply.Body) > 0:
+					read = i
+				}
+			}
+			if write < 0 || read < 0 || calls[read].Start <= calls[write].End || open == 0 {
+				t.Fatalf("write %d, read %d, %d calls without an answer: want a read after a write and an open call", write, read, open)
+			}
+			tc.tamper(w, &calls[write], &calls[read])
+			wantViolation(t, w.end(), "S11", tc.reason)
+		})
 	}
 }

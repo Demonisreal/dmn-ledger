@@ -113,7 +113,7 @@ func (w *watch) run(fsys func(uint64, disk.FS) disk.FS) (Report, error) {
 	w.c = c
 	w.terms = make([]uint64, c.Nodes())
 	err = c.Run()
-	if err == nil && !w.beyond() {
+	if err == nil {
 		w.over = true
 		err = w.end()
 	}

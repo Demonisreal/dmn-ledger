@@ -8,6 +8,10 @@ import (
 )
 
 func (w *watch) end() error {
+	if w.beyond() {
+		_, err := w.answers(w.reach())
+		return err
+	}
 	nodes := make([]*replica.Node, w.c.Nodes())
 	for i := range nodes {
 		id := uint64(i) + 1

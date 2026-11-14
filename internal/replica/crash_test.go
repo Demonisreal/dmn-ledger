@@ -9,6 +9,7 @@ import (
 
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
+	"github.com/Demonisreal/dmn-ledger/internal/raft"
 	"github.com/Demonisreal/dmn-ledger/internal/wal"
 )
 
@@ -92,6 +93,34 @@ func tour(tn *testNet) {
 	tn.crash(lag)
 	tn.open(lag)
 	write(3)
+
+	lag = others(c.node)[1]
+	tn.cut[uint64(lag)+1] = true
+	tn.crash(c.node)
+	tn.open(c.node)
+	c.node = tn.choose(others(lag)...)
+	write(2)
+	batch := false
+	tn.drop = func(m raft.Message) bool {
+		batch = batch || m.To == uint64(lag)+1 && len(m.Entries) > 1 && m.Term > tn.nodes[lag].Status().Term
+		return false
+	}
+	rejoin(lag)
+	if !batch {
+		t.Fatalf("n%d did not get the new term and several entries in one message: %+v", lag+1, tn.nodes[lag].Status())
+	}
+	tn.spoilTail(lag)
+	tn.drop = func(m raft.Message) bool { return m.To == uint64(lag)+1 && len(m.Entries) > 0 }
+	write(2)
+	tn.crash(lag)
+	tn.open(lag)
+	if st := tn.nodes[lag].Status(); !st.Repair {
+		t.Fatalf("n%d left repair without the entries it lost: %+v", lag+1, st)
+	}
+	tn.drop = nil
+	tn.converge(lag)
+	tn.rotted[lag] = false
+	write(3)
 	for range 10 {
 		tn.tick(tn.all()...)
 	}
@@ -102,7 +131,8 @@ func tour(tn *testNet) {
 	}
 }
 
-func rot(d *disk.Sim, rng *rand.Rand) string {
+func rot(t *testing.T, d *disk.Sim, rng *rand.Rand) string {
+	t.Helper()
 	logs, snaps := stored(d, ".log"), stored(d, ".snap")
 	if len(logs) == 0 {
 		return "nothing"
@@ -117,12 +147,14 @@ func rot(d *disk.Sim, rng *rand.Rand) string {
 		f = snaps[rng.IntN(len(snaps))]
 		off = rng.Int64N(f.Size)
 	}
+	spoil, unit := d.Corrupt, "bit"
 	if rng.IntN(4) == 0 {
-		_ = d.Garble(f.Name, off)
-		return fmt.Sprintf("sector at %d of %s", off, f.Name)
+		spoil, unit = d.Garble, "sector"
 	}
-	_ = d.Corrupt(f.Name, off)
-	return fmt.Sprintf("bit at %d of %s", off, f.Name)
+	if err := spoil(f.Name, off); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%s at %d of %s", unit, off, f.Name)
 }
 
 func TestCrashAtEveryDiskAccess(t *testing.T) {
@@ -160,7 +192,7 @@ func TestCrashAtEveryDiskAccess(t *testing.T) {
 				switch {
 				case err != nil:
 					t.Fatalf("n%d, %s: open: %v", i+1, what, err)
-				case st.Repair && !damaged:
+				case st.Repair && !damaged && !tn.rotted[i]:
 					t.Fatalf("n%d, %s: in repair without a damaged disk: %+v", i+1, what, st)
 				case st.Repair:
 					repairs++
@@ -178,7 +210,7 @@ func TestCrashAtEveryDiskAccess(t *testing.T) {
 					what := fmt.Sprintf("access %d, power loss after %s %s", points, op, name)
 					lost := lose(tn.disks[i])
 					if tc.rot {
-						what += ", " + rot(lost, rng)
+						what += ", " + rot(t, lost, rng)
 					}
 					check(i, lost, what, true)
 					if damaged {
@@ -191,6 +223,9 @@ func TestCrashAtEveryDiskAccess(t *testing.T) {
 				}}
 			}
 			tour(tn)
+			if repairs == 0 {
+				t.Fatalf("none of %d starts was in repair, the run passes through one", opens)
+			}
 			t.Logf("%d disk accesses, %d starts checked, %d of them in repair", points, opens, repairs)
 		})
 	}
@@ -203,7 +238,7 @@ type crashPoint struct {
 }
 
 func FuzzOpenDamaged(f *testing.F) {
-	const slotStride, slotLen, spotLen = 4096, 40, 6
+	const spotLen = 6
 	tn := stoppedTestNet(f, 3, small)
 	var points []crashPoint
 	accesses := uint64(0)
@@ -235,12 +270,12 @@ func FuzzOpenDamaged(f *testing.F) {
 		for ; len(spots) >= spotLen && len(files) > 0; spots = spots[spotLen:] {
 			file := files[int(spots[0])%len(files)]
 			off := int64(binary.LittleEndian.Uint32(spots[2:])) % file.Size
-			spoil, reach := d.Corrupt, int64(slotLen)
+			spoil, reach := d.Corrupt, int64(wal.MetaSlotLen)
 			if spots[1]&1 == 1 {
 				spoil, reach = d.Garble, d.Sector
 			}
-			if file.Name == "/n/meta" && off%slotStride < reach {
-				slots[off/slotStride] = true
+			if file.Name == metaFile && off%wal.MetaStride < reach {
+				slots[off/wal.MetaStride] = true
 			}
 			if err := spoil(file.Name, off); err != nil {
 				t.Fatal(err)

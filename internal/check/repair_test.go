@@ -464,17 +464,15 @@ func TestRunEndsWithoutRepair(t *testing.T) {
 	}
 }
 
-func TestBeyondSkipsTheEnd(t *testing.T) {
-	const seed = 8
+func outside(t *testing.T) *watch {
+	t.Helper()
+	const seed = 36
 	w := newWatch(Config{Seed: seed, Profile: sim.ProfileBeyond})
 	if _, err := w.run(w.disk()); err != nil {
 		t.Fatal(err)
 	}
-	if w.over {
-		t.Fatal("the end was checked")
-	}
-	w.over = true
-	if err := w.end(); err == nil {
-		t.Fatalf("seed %d ends like a run inside the fault model, the test needs another seed", seed)
-	}
+	inside := *w
+	inside.cfg.Profile = sim.ProfileRot
+	wantViolation(t, inside.end(), "L4", "still in repair at the end")
+	return w
 }

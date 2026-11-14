@@ -42,6 +42,7 @@ type MetaFile struct {
 	cur    Meta
 	intact bool
 	err    error
+	slot   [MetaSlotLen]byte
 }
 
 func OpenMeta(fsys disk.FS, dir string) (_ *MetaFile, _ Meta, err error) {
@@ -80,8 +81,7 @@ func createMeta(fsys disk.FS, path string) (disk.File, error) {
 	}
 	var raw [metaLen]byte
 	for seq := range uint64(2) {
-		slot := encodeMeta(seq, Meta{})
-		copy(raw[seq*MetaStride:], slot[:])
+		encodeMeta(raw[seq*MetaStride:], seq, Meta{})
 	}
 	_, err = f.WriteAt(raw[:], 0)
 	if err == nil {
@@ -124,9 +124,9 @@ func (m *MetaFile) load(path string) error {
 	return nil
 }
 
-func encodeMeta(seq uint64, st Meta) [MetaSlotLen]byte {
-	var slot [MetaSlotLen]byte
-	binary.LittleEndian.PutUint64(slot[:], seq)
+func encodeMeta(slot []byte, seq uint64, st Meta) {
+	clear(slot[:MetaSlotLen])
+	binary.LittleEndian.PutUint64(slot, seq)
 	binary.LittleEndian.PutUint64(slot[metaOffTerm:], st.Term)
 	binary.LittleEndian.PutUint64(slot[metaOffVote:], st.Vote)
 	binary.LittleEndian.PutUint64(slot[metaOffSealed:], st.Sealed)
@@ -134,7 +134,6 @@ func encodeMeta(seq uint64, st Meta) [MetaSlotLen]byte {
 		binary.LittleEndian.PutUint32(slot[metaOffFlags:], metaRepair)
 	}
 	binary.LittleEndian.PutUint32(slot[metaOffCRC:], crc32.Checksum(slot[:metaOffCRC], castagnoli))
-	return slot
 }
 
 func decodeMeta(slot []byte) (uint64, Meta, bool) {
@@ -178,10 +177,12 @@ func (m *MetaFile) Save(term, vote uint64, repair bool) error {
 		return m.err
 	}
 	st := Meta{Term: term, Vote: vote, Sealed: m.cur.Sealed, Repair: repair}
-	if err := m.put(m.seq+1, st); err != nil {
-		return err
+	for range 2 {
+		if err := m.put(m.seq+1, st); err != nil {
+			return err
+		}
 	}
-	return m.put(m.seq+1, st)
+	return nil
 }
 
 func (m *MetaFile) Seal(index uint64) error {
@@ -194,8 +195,8 @@ func (m *MetaFile) Seal(index uint64) error {
 }
 
 func (m *MetaFile) put(seq uint64, st Meta) error {
-	slot := encodeMeta(seq, st)
-	if _, err := m.f.WriteAt(slot[:], int64(seq%2)*MetaStride); err != nil {
+	encodeMeta(m.slot[:], seq, st)
+	if _, err := m.f.WriteAt(m.slot[:], int64(seq%2)*MetaStride); err != nil {
 		return m.fail(err)
 	}
 	if err := m.f.Sync(); err != nil {

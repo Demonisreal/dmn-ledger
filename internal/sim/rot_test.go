@@ -87,7 +87,7 @@ func (v *vault) repairing() bool {
 
 func vaultWorld(t *testing.T, pl plan, seed uint64) (*World, *bytes.Buffer) {
 	t.Helper()
-	return world(t, Config{Nodes: 3, Node: startVault}, pl, seed)
+	return world(t, Config{Nodes: 3, Node: startVault, Rot: rotTarget}, pl, seed)
 }
 
 func traced(trace *bytes.Buffer, what string) []string {
@@ -356,7 +356,7 @@ func TestRotHoldsTheNodeDownLikeACrash(t *testing.T) {
 func TestQuietScrubsLatentNodes(t *testing.T) {
 	pl := testPlan(3, 2*second, 3*second)
 	pl.windows = []window{{kind: rot, node: 1, start: second, end: 1100 * millisecond}}
-	w, trace := world(t, Config{Nodes: 3, Node: startScribe}, pl, 5)
+	w, trace := world(t, Config{Nodes: 3, Node: startScribe, Rot: rotTarget}, pl, 5)
 	if err := w.Run(); err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestCuredOnlyAfterStartAndRepair(t *testing.T) {
 		{kind: rot, node: 3, start: 3 * second, end: 3100 * millisecond},
 		{kind: rot, node: 3, start: 4 * second, end: 4100 * millisecond},
 	}
-	cfg := Config{Nodes: 3, Node: node, Repairing: func(id uint64) bool { return repair && id == 2 }}
+	cfg := Config{Nodes: 3, Node: node, Repairing: func(id uint64) bool { return repair && id == 2 }, Rot: rotTarget}
 	w, trace := world(t, cfg, pl, 13)
 	h := w.hosts[1]
 	state := func(when string) string {
@@ -478,7 +478,7 @@ func TestRotSparesWhatIsNoData(t *testing.T) {
 				win.kind, win.node, win.start, win.end = rot, 1, second, 1500*millisecond
 				pl := testPlan(1, 4*second, 4*second)
 				pl.windows = []window{win}
-				w, trace := world(t, Config{Nodes: 1, Node: clutter(tc.files...)}, pl, seed)
+				w, trace := world(t, Config{Nodes: 1, Node: clutter(tc.files...), Rot: rotTarget}, pl, seed)
 				runUntil(w, second)
 				rots := traced(trace, "rot ")
 				if len(rots) != 1 || strings.Fields(rots[0])[3] != tc.want {
@@ -520,7 +520,7 @@ func TestRotAimsAtTheLogTail(t *testing.T) {
 	const draws = 4000
 	var inSeg, inTail int
 	for range draws {
-		name, off, ok := rotTarget(h, false)
+		name, off, ok := rotTarget(h.disk.Durable(), false, h.rng)
 		size, known := sizes[name]
 		if !ok || !known || off < 0 || off >= size || filepath.Base(name) == wal.MetaName {
 			t.Fatalf("target %s at %d, found %v, file has %d bytes", name, off, ok, size)
@@ -541,7 +541,7 @@ func TestRotAimsAtTheLogTail(t *testing.T) {
 
 	var slots [2]int
 	for range draws / 10 {
-		name, off, ok := rotTarget(h, true)
+		name, off, ok := rotTarget(h.disk.Durable(), true, h.rng)
 		if !ok || filepath.Base(name) != wal.MetaName || off%wal.MetaStride >= wal.MetaSlotLen || off >= sizes[name] {
 			t.Fatalf("meta target %s at %d, found %v", name, off, ok)
 		}
@@ -570,6 +570,7 @@ func rotRun(t *testing.T, seed uint64, p Profile) (*World, string) {
 		Nodes:     nodes,
 		Node:      startVault,
 		Repairing: repairing,
+		Rot:       rotTarget,
 		Trace:     &trace,
 		Check: func() error {
 			if w.sick == 0 {
@@ -791,10 +792,19 @@ func TestRotPlans(t *testing.T) {
 func TestRotNeedsThreeNodes(t *testing.T) {
 	for _, p := range []Profile{ProfileRot, ProfileBeyond} {
 		for nodes := uint64(1); nodes <= 3; nodes++ {
-			_, err := New(Config{Profile: p, Nodes: nodes, Node: startVault})
+			_, err := New(Config{Profile: p, Nodes: nodes, Node: startVault, Rot: rotTarget})
 			if (err == nil) != (nodes == 3) {
 				t.Errorf("profile %s with %d nodes: %v", p, nodes, err)
 			}
+		}
+	}
+}
+
+func TestRotNeedsATarget(t *testing.T) {
+	for _, p := range Profiles() {
+		_, err := New(Config{Profile: p, Nodes: 3, Node: startVault})
+		if (err == nil) != (p != ProfileRot && p != ProfileBeyond) {
+			t.Errorf("profile %s without Config.Rot: %v", p, err)
 		}
 	}
 }
@@ -804,7 +814,7 @@ func TestBeyondShredsEveryDisk(t *testing.T) {
 		p    Profile
 		rate float64
 	}{{ProfileBeyond, shredRate}, {ProfileRot, 0}, {ProfileAll, 0}} {
-		w, err := New(Config{Seed: 3, Profile: tc.p, Nodes: 3, Node: startVault})
+		w, err := New(Config{Seed: 3, Profile: tc.p, Nodes: 3, Node: startVault, Rot: rotTarget})
 		if err != nil {
 			t.Fatal(err)
 		}

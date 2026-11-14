@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -106,10 +107,10 @@ func TestBrokenInstalledSnapshotIsDamage(t *testing.T) {
 func TestBrokenSlotAndBrokenInstalledSnapshotIsDamage(t *testing.T) {
 	tn, _, got := installed(t)
 	tn.crash(2)
-	slots := []int64{0, 4096}
+	slots := []int64{0, wal.MetaStride}
 	for _, off := range slots {
 		d := tn.disks[2].Clone(rand.New(rand.NewPCG(1, 1)))
-		if err := errors.Join(d.Corrupt("/n/meta", off+30), d.Corrupt(snapFile(got), 40)); err != nil {
+		if err := errors.Join(d.Corrupt(metaFile, off+30), d.Corrupt(snapFile(got), 40)); err != nil {
 			t.Fatal(err)
 		}
 		st, err := tn.probe(2, d)
@@ -156,6 +157,45 @@ func TestAllSnapshotsBroken(t *testing.T) {
 			}
 			if left := stored(tn.disks[2], ".snap"); len(left) != 0 {
 				t.Fatalf("broken snapshots still on disk: %v", names(left))
+			}
+			tn.converge(2)
+		})
+	}
+}
+
+func TestLogEndingBeforeTheSealIsDamage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		lost uint64
+	}{
+		{"one entry", 1},
+		{"two entries", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tn := newTestNet(t, 3, func(cfg *Config) { cfg.SegmentSize = 512 })
+			tn.elect(0)
+			c := tn.register(0, 1)
+			var tail string
+			var first, last uint64
+			for i := uint64(1); tail == "" || last-first+1 != tc.lost; i++ {
+				if i > 40 {
+					t.Fatalf("the last segment never held %d entries, it starts at %d and the log ends at %d", tc.lost, first, last)
+				}
+				ok(t, c.do(client.CreateAccounts, accounts(i)))
+				tn.tick(tn.all()...)
+				logs := stored(tn.disks[2], ".log")
+				tail, last = logs[len(logs)-1].Name, tn.nodes[2].Status().Last
+				if _, err := fmt.Sscanf(filepath.Base(tail), wal.SegmentPrefix+"%d.log", &first); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tn.crash(2)
+			if err := errors.Join(tn.disks[2].Remove(tail), tn.disks[2].SyncDir(filepath.Dir(tail))); err != nil {
+				t.Fatal(err)
+			}
+			tn.open(2)
+			if st := tn.nodes[2].Status(); !st.Repair || st.Last != last-tc.lost {
+				t.Fatalf("n3 lost the segment from %d, sealed up to %d: %+v, want repair with a log up to %d", first, last, st, last-tc.lost)
 			}
 			tn.converge(2)
 		})
@@ -213,7 +253,7 @@ func TestCrashWhileEmptyingALongerLogOnStart(t *testing.T) {
 			if !back || frozen != nil {
 				return
 			}
-			if before != nil && op == "write" && strings.HasPrefix(name, "/n/meta") {
+			if before != nil && op == "write" && strings.HasPrefix(name, metaFile) {
 				frozen = before
 			}
 			if before != nil || op == "rename" && strings.HasSuffix(name, ".snap") {
@@ -301,9 +341,9 @@ func TestCrashWhileFlaggingWithABrokenSlot(t *testing.T) {
 	logs := stored(tn.disks[2], ".log")
 	tail := logs[len(logs)-1]
 	rng := rand.New(rand.NewPCG(5, 5))
-	for _, slot := range []int64{0, 4096} {
+	for _, slot := range []int64{0, wal.MetaStride} {
 		d := tn.disks[2].Clone(rng)
-		if err := errors.Join(d.Corrupt("/n/meta", slot+30), d.Corrupt(tail.Name, tail.Size-10)); err != nil {
+		if err := errors.Join(d.Corrupt(metaFile, slot+30), d.Corrupt(tail.Name, tail.Size-10)); err != nil {
 			t.Fatal(err)
 		}
 		points := 0
@@ -352,14 +392,14 @@ func TestStartWritesMetaAfterTheLog(t *testing.T) {
 		d := stopped.Clone(rng)
 		settled := false
 		_, err := tn.probe(2, tapFS{d, func(op, name string) {
-			if settled || op != "write" || !strings.HasPrefix(name, "/n/meta") {
+			if settled || op != "write" || !strings.HasPrefix(name, metaFile) {
 				return
 			}
 			settled = true
-			for _, slot := range []int64{0, 4096} {
+			for _, slot := range []int64{0, wal.MetaStride} {
 				lost := d.Clone(rng)
 				lost.Crash()
-				if err := lost.Garble("/n/meta", slot); err != nil {
+				if err := lost.Garble(metaFile, slot); err != nil {
 					t.Fatal(err)
 				}
 				if st, err := tn.probe(2, lost); err != nil || st.Repair {

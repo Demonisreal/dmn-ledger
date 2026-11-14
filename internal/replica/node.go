@@ -155,14 +155,15 @@ func Open(cfg Config) (_ *Node, err error) {
 
 	opts := wal.Options{SegmentSize: cfg.SegmentSize, Nonces: cfg.Nonces, Sealed: hs.Sealed, Strict: !n.meta.Intact()}
 	n.log, err = wal.Open(cfg.FS, n.walDir(), opts)
-	if err != nil && !errors.Is(err, wal.ErrCorrupt) {
+	damage := err
+	switch {
+	case err == nil:
+		damage = n.uncovered(hs.Sealed, broken)
+	case !errors.Is(err, wal.ErrCorrupt):
 		return nil, err
 	}
-	damage := err
-	if damage == nil {
-		damage = n.uncovered(hs.Sealed, broken)
-	}
-	if err := n.mend(&hs, damage, broken, opts); err != nil {
+	hs.Repair, err = n.mend(hs, damage, broken, opts)
+	if err != nil {
 		return nil, err
 	}
 	n.raft, err = raft.New(raft.Config{
@@ -203,12 +204,26 @@ func (n *Node) uncovered(sealed uint64, broken []wal.SnapshotMeta) error {
 	return fmt.Errorf("replica: %w: sealed up to %d, snapshot at %d, log from %d to %d", wal.ErrCorrupt, sealed, n.snap.Index, first, last)
 }
 
-func (n *Node) discard(broken []wal.SnapshotMeta, opts wal.Options) error {
+func (n *Node) flag(hs wal.Meta, damage error) (bool, error) {
+	switch {
+	case damage == nil || hs.Repair:
+		return hs.Repair, nil
+	case len(n.cfg.Peers) == 1:
+		return false, damage
+	}
+	return true, n.meta.Save(hs.Term, hs.Vote, true)
+}
+
+func (n *Node) discard(broken []wal.SnapshotMeta) error {
 	for _, s := range broken {
 		if err := wal.RemoveSnapshot(n.cfg.FS, n.snapDir(), s); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+func (n *Node) salvage(opts wal.Options) error {
 	if n.log != nil {
 		return nil
 	}

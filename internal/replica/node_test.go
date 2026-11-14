@@ -598,10 +598,18 @@ func TestWaitingRequestIsProposedOnce(t *testing.T) {
 	for range 10 {
 		tn.send(0, req)
 	}
+	last = n.Status().Last
+	stray := req
+	stray.Session++
+	tn.send(0, stray)
+	tn.send(0, stray)
+	if got := n.Status().Last; got != last+1 {
+		t.Fatalf("the same number in another session: log grew from %d to %d, want one entry of its own", last, got)
+	}
 	n.Receive(raft.Message{Type: raft.MsgApp, From: 2, To: 1, Term: n.Status().Term + 1}, nil)
 	tn.run(0)
-	if got := answers(req); len(got) != 1 || got[0].Status != client.NotLeader {
-		t.Fatalf("replies %+v after losing the term, want one NotLeader", got)
+	if got := answers(req); len(got) != 2 || got[0].Status != client.NotLeader || got[1].Status != client.NotLeader {
+		t.Fatalf("replies %+v after losing the term, want NotLeader once for each session", got)
 	}
 	if len(n.proposed) != 0 {
 		t.Fatalf("%d requests still marked as waiting", len(n.proposed))
@@ -618,7 +626,7 @@ func TestSealCostsOneSyncPerRound(t *testing.T) {
 					return
 				}
 				syncs++
-				if strings.HasPrefix(name, "/n/meta") {
+				if strings.HasPrefix(name, metaFile) {
 					sealed[i]++
 				}
 			}}

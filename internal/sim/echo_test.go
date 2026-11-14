@@ -181,6 +181,7 @@ func echoConfig(seed uint64, p Profile, trace io.Writer) (Config, *echoRun) {
 			r.clients = append(r.clients, c)
 			return c
 		},
+		Rot:   rotTarget,
 		Trace: trace,
 	}, r
 }

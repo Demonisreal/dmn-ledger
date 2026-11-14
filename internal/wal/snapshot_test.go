@@ -285,7 +285,7 @@ func TestSnapshotNameMustMatchFooter(t *testing.T) {
 	_ = saveSnap(sim, meta)
 	_ = sim.Rename(filepath.Join(dir, snapshotName(meta)), filepath.Join(dir, snapshotName(SnapshotMeta{Index: 11, Term: 1})))
 	loaded, _, err := loadSnap(sim)
-	if err == nil || errors.Is(err, ErrCorrupt) || errors.Is(err, ErrNoSnapshot) {
+	if !errors.Is(err, ErrMisnamed) || errors.Is(err, ErrCorrupt) {
 		t.Fatalf("renamed snapshot: loaded %+v, %v; a wrong name is not a disk fault and must stop the start", loaded, err)
 	}
 }

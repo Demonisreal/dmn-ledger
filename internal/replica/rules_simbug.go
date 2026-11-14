@@ -53,38 +53,34 @@ func (n *Node) persist(rd raft.Ready) error {
 	return nil
 }
 
-func (n *Node) mend(hs *wal.Meta, damage error, broken []wal.SnapshotMeta, opts wal.Options) error {
-	tidy := func() error {
-		if err := n.discard(broken, opts); err != nil {
-			return err
+func (n *Node) mend(hs wal.Meta, damage error, broken []wal.SnapshotMeta, opts wal.Options) (bool, error) {
+	late := simbug.On("B18") && damage != nil
+	repair := hs.Repair || late
+	if !late {
+		if err := n.meta.Settle(); err != nil {
+			return false, err
 		}
-		if err := n.reconcile(hs.Repair || damage != nil); err != nil {
-			return err
+		var err error
+		if repair, err = n.flag(hs, damage); err != nil {
+			return false, err
 		}
-		return n.meta.Seal(logView{n}.LastIndex())
 	}
-	early := simbug.On("B18") && damage != nil
-	if early {
-		if err := tidy(); err != nil {
-			return err
-		}
+	if err := n.discard(broken); err != nil {
+		return false, err
+	}
+	if err := n.salvage(opts); err != nil {
+		return false, err
+	}
+	if err := n.reconcile(repair); err != nil {
+		return false, err
+	}
+	if err := n.meta.Seal(logView{n}.LastIndex()); err != nil || !late {
+		return repair, err
 	}
 	if err := n.meta.Settle(); err != nil {
-		return err
+		return false, err
 	}
-	if damage != nil && !hs.Repair {
-		if len(n.cfg.Peers) == 1 {
-			return damage
-		}
-		if err := n.meta.Save(hs.Term, hs.Vote, true); err != nil {
-			return err
-		}
-		hs.Repair = true
-	}
-	if early {
-		return nil
-	}
-	return tidy()
+	return n.flag(hs, damage)
 }
 
 func fresh(s *session, number uint64) bool {

@@ -11,23 +11,27 @@ import (
 )
 
 func TestUsage(t *testing.T) {
-	for _, args := range [][]string{
-		{"-profile", "storm"},
-		{"-nodes", "4"},
-		{"-nodes", "2", "-profile", "rot"},
-		{"-nodes", "1", "-profile", "rot"},
-		{"-nodes", "1", "-profile", "beyond", "-seeds", "5"},
-		{"-seeds", "0"},
-		{"-seeds", "5", "-trace"},
-		{"-seeds", "5", "-seed", "3"},
-		{"-from", "7"},
-		{"extra"},
-		{"-bug", "B99"},
-		{"-seeds", "3", "-from", "18446744073709551614"},
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-profile", "storm"}, `unknown profile "storm"`},
+		{[]string{"-nodes", "4"}, "-nodes 4, want 1, 3 or 5"},
+		{[]string{"-nodes", "2", "-profile", "rot"}, "-nodes 2, want 1, 3 or 5"},
+		{[]string{"-nodes", "1", "-profile", "rot"}, "profile rot damages disks, and a damaged node needs a healthy majority, use -nodes 3 or 5"},
+		{[]string{"-nodes", "1", "-profile", "beyond", "-seeds", "5"}, "profile beyond damages disks, and a damaged node needs a healthy majority, use -nodes 3 or 5"},
+		{[]string{"-nodes", "1", "-profile", "evict", "-seeds", "5"}, "profile evict checks the answers against the log that nodes send each other, use -nodes 3 or 5"},
+		{[]string{"-seeds", "0"}, "-seeds must be at least 1"},
+		{[]string{"-seeds", "5", "-trace"}, "-seed and -trace run one seed"},
+		{[]string{"-seeds", "5", "-seed", "3"}, "-seed and -trace run one seed"},
+		{[]string{"-from", "7"}, "-from needs -seeds"},
+		{[]string{"extra"}, "unexpected arguments [extra]"},
+		{[]string{"-bug", "B99"}, "bug"},
+		{[]string{"-seeds", "3", "-from", "18446744073709551614"}, "runs past the last seed"},
 	} {
 		var out, errs bytes.Buffer
-		if code := run(args, &out, &errs); code != 2 || errs.Len() == 0 {
-			t.Errorf("%v: exit %d, stderr %q", args, code, errs.String())
+		if code := run(tc.args, &out, &errs); code != 2 || !strings.Contains(errs.String(), tc.want) {
+			t.Errorf("%v: exit %d, stderr %q, want exit 2 and %q", tc.args, code, errs.String(), tc.want)
 		}
 	}
 }
@@ -72,6 +76,9 @@ func TestHelpExitsZero(t *testing.T) {
 	}
 	if !strings.Contains(errs.String(), "B1 to B18") {
 		t.Errorf("help does not name the planted bugs: %q", errs.String())
+	}
+	if !strings.Contains(errs.String(), "rot, beyond and evict need 3 or 5") {
+		t.Errorf("help does not say which profiles refuse a single node: %q", errs.String())
 	}
 }
 

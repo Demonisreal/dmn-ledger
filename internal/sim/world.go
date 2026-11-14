@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
-	"github.com/Demonisreal/dmn-ledger/internal/wal"
 )
 
 type Process interface {
@@ -50,6 +49,7 @@ type Config struct {
 	Check     func() error
 	Leading   func(id uint64) (commit uint64, ok bool)
 	Repairing func(id uint64) bool
+	Rot       func(files []disk.DurableFile, meta bool, rng *rand.Rand) (name string, off int64, ok bool)
 	Trace     io.Writer
 }
 
@@ -122,6 +122,9 @@ func New(cfg Config) (*World, error) {
 	pl, err := newPlan(fork(root), faults, cfg.Nodes, cfg.Nodes+cfg.Clients)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Rot == nil && (faults == ProfileRot || faults == ProfileBeyond) {
+		return nil, fmt.Errorf("sim: profile %s needs Config.Rot", faults)
 	}
 	return newWorld(cfg, root, pl), nil
 }
@@ -324,12 +327,12 @@ func (w *World) start(h *host) {
 	}
 	h.proc = p
 	h.latent = false
-	w.cured(h)
+	w.discharge(h)
 	w.push(event{at: w.now + h.rng.Uint64N(h.period), kind: evTick, id: h.id, epoch: h.epoch})
 	w.settle(h, nil)
 }
 
-func (w *World) cured(h *host) {
+func (w *World) discharge(h *host) {
 	if w.sick != h.id || h.latent || w.cfg.Repairing != nil && w.cfg.Repairing(h.id) {
 		return
 	}
@@ -377,7 +380,7 @@ func (w *World) run(h *host) {
 			return
 		}
 	}
-	w.cured(h)
+	w.discharge(h)
 	if h.node && w.hunted(h) {
 		return
 	}
@@ -684,7 +687,7 @@ func (w *World) rot(i int, heal bool) {
 		w.stop(h, power)
 		w.trace("kill %s %s", h.name, outage(power))
 	}
-	name, off, ok := rotTarget(h, meta)
+	name, off, ok := w.cfg.Rot(h.disk.Durable(), meta, h.rng)
 	if !ok {
 		w.trace("rot %s nothing", h.name)
 		return
@@ -702,36 +705,6 @@ func (w *World) rot(i int, heal bool) {
 		w.sick = h.id
 	}
 	w.trace("rot %s %s %d %s", h.name, filepath.ToSlash(name), off, unit)
-}
-
-func rotTarget(h *host, meta bool) (string, int64, bool) {
-	var files []disk.DurableFile
-	tail := -1
-	for _, f := range h.disk.Durable() {
-		base := filepath.Base(f.Name)
-		if f.Size == 0 || strings.HasSuffix(base, ".tmp") || (base == wal.MetaName) != meta {
-			continue
-		}
-		if strings.HasPrefix(base, wal.SegmentPrefix) {
-			tail = len(files)
-		}
-		files = append(files, f)
-	}
-	if len(files) == 0 {
-		return "", 0, false
-	}
-	k := h.rng.IntN(len(files))
-	if tail >= 0 && h.rng.IntN(2) == 0 {
-		k = tail
-	}
-	f := files[k]
-	switch {
-	case meta:
-		return f.Name, h.rng.Int64N(2)*wal.MetaStride + h.rng.Int64N(wal.MetaSlotLen), true
-	case k == tail && h.rng.IntN(2) == 0:
-		return f.Name, f.Size - 1 - h.rng.Int64N(min(f.Size, rotTail)), true
-	}
-	return f.Name, h.rng.Int64N(f.Size), true
 }
 
 func (w *World) quiet() {

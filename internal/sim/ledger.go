@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
@@ -29,6 +31,7 @@ const (
 	drainTime     = second
 	joinTicks     = 200
 	rejoinOdds    = 8
+	rotTail       = 200
 )
 
 type ClusterConfig struct {
@@ -108,6 +111,7 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 		Check:     c.check,
 		Leading:   c.leading,
 		Repairing: c.repairing,
+		Rot:       rotTarget,
 		Trace:     cfg.Trace,
 	})
 	if err != nil {
@@ -180,6 +184,36 @@ func (c *Cluster) leading(id uint64) (uint64, bool) {
 func (c *Cluster) repairing(id uint64) bool {
 	n := c.Node(id)
 	return n != nil && n.Status().Repair
+}
+
+func rotTarget(durable []disk.DurableFile, meta bool, rng *rand.Rand) (string, int64, bool) {
+	var files []disk.DurableFile
+	tail := -1
+	for _, f := range durable {
+		base := filepath.Base(f.Name)
+		if f.Size == 0 || strings.HasSuffix(base, ".tmp") || (base == wal.MetaName) != meta {
+			continue
+		}
+		if strings.HasPrefix(base, wal.SegmentPrefix) {
+			tail = len(files)
+		}
+		files = append(files, f)
+	}
+	if len(files) == 0 {
+		return "", 0, false
+	}
+	k := rng.IntN(len(files))
+	if tail >= 0 && rng.IntN(2) == 0 {
+		k = tail
+	}
+	f := files[k]
+	switch {
+	case meta:
+		return f.Name, rng.Int64N(2)*wal.MetaStride + rng.Int64N(wal.MetaSlotLen), true
+	case k == tail && rng.IntN(2) == 0:
+		return f.Name, f.Size - 1 - rng.Int64N(min(f.Size, rotTail)), true
+	}
+	return f.Name, rng.Int64N(f.Size), true
 }
 
 func (c *Cluster) failed(id uint64, err error) {

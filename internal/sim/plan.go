@@ -68,7 +68,6 @@ const (
 	crawlMin  = 20 * millisecond
 	crawlSpan = 180 * millisecond
 
-	rotTail   = 200
 	shredRate = 0.3
 )
 

@@ -232,7 +232,7 @@ func (r *Raft) Step(m Message) error {
 			r.send(Message{Type: MsgRepairInfo, To: m.From, Term: r.term, Index: r.repairGoal(), Seq: m.Seq})
 		}
 	case MsgRepairInfo:
-		if r.goalTerm != r.term && m.Seq == r.nonce {
+		if r.repair && r.goalTerm != r.term && m.Seq == r.nonce {
 			r.goalTerm, r.goal = r.term, m.Index
 		}
 	}
@@ -396,7 +396,7 @@ func (r *Raft) preVote() error {
 func (r *Raft) campaign() error {
 	r.role, r.lead = Candidate, 0
 	r.term++
-	r.vote = r.id
+	r.vote, r.acked = r.id, 0
 	r.dropOlder()
 	r.resetTimer()
 	clear(r.votes)

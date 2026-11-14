@@ -76,20 +76,33 @@ func (w *watch) logged(id uint64, ents []raft.Entry) error {
 }
 
 func (w *watch) replayLog(nodes []*replica.Node) error {
-	sh, err := w.shadow(nodes[0].Status().Applied)
+	sh, err := w.answers(nodes[0].Status().Applied)
 	if err != nil {
-		return err
-	}
-	if err := w.executed(sh); err != nil {
-		return err
-	}
-	if err := w.stale(); err != nil {
 		return err
 	}
 	return w.agrees(sh, nodes)
 }
 
-func (w *watch) shadow(applied uint64) (*shadow, error) {
+func (w *watch) answers(upTo uint64) (*shadow, error) {
+	sh, err := w.shadow(upTo)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.executed(sh); err != nil {
+		return nil, err
+	}
+	return sh, w.stale()
+}
+
+func (w *watch) reach() uint64 {
+	var top uint64
+	for i := range w.committed {
+		top = max(top, i)
+	}
+	return top
+}
+
+func (w *watch) shadow(upTo uint64) (*shadow, error) {
 	calls := w.c.Calls()
 	var reads []int
 	for i, call := range calls {
@@ -100,10 +113,10 @@ func (w *watch) shadow(applied uint64) (*shadow, error) {
 	slices.SortStableFunc(reads, func(a, b int) int { return cmp.Compare(calls[a].Reply.Time, calls[b].Reply.Time) })
 
 	sh := newShadow(w.c.MaxSessions())
-	for i := uint64(1); i <= applied; i++ {
+	for i := uint64(1); i <= upTo; i++ {
 		term, ok := w.committed[i]
 		if !ok {
-			return nil, w.fail("S11", 0, "entry %d is applied, no node showed its term when it committed", i)
+			return nil, w.fail("S11", 0, "no node showed the term of entry %d when it committed", i)
 		}
 		e, ok := w.entries[[2]uint64{i, term}]
 		if !ok {
@@ -129,7 +142,7 @@ func (w *watch) served(sh *shadow, reads []int, until uint64) ([]int, error) {
 		call := &calls[i]
 		switch {
 		case call.Reply.Time != sh.ledger.Last():
-			return nil, w.fail("S11", 0, "c%d call %d (%s) was read at time %d, the log never leaves the ledger at that time", call.Client, i, call.Op, call.Reply.Time)
+			return nil, w.fail("S11", 0, "c%d call %d (%s) was read at time %d, no prefix of the log ends with the ledger at that time", call.Client, i, call.Op, call.Reply.Time)
 		case !bytes.Equal(lookup(sh.ledger, call), call.Reply.Body):
 			return nil, w.fail("S11", 0, "c%d call %d (%s at %d) does not show what the log holds at that time", call.Client, i, call.Op, call.Reply.Time)
 		}
@@ -139,21 +152,24 @@ func (w *watch) served(sh *shadow, reads []int, until uint64) ([]int, error) {
 }
 
 func (w *watch) executed(sh *shadow) error {
+	numbers := make(map[u128.Uint128]uint64)
 	sent := 0
 	for i, call := range w.c.Calls() {
-		x, ran := sh.ran[request{client: call.ID, session: call.Session, number: call.Reply.Number}]
+		numbers[call.ID]++
+		number := numbers[call.ID]
+		exec, ran := sh.ran[request{client: call.ID, session: call.Session, number: number}]
 		confirmed := call.Reply.Status == client.OK && !call.Op.Lookup()
 		switch {
 		case sh.opened[call.Session] != call.ID:
-			return w.fail("S11", 0, "c%d call %d (%s #%d) names session %d, the log never opens it for this client", call.Client, i, call.Op, call.Reply.Number, call.Session)
+			return w.fail("S11", 0, "c%d call %d (%s #%d) names session %d, the log never opens it for this client", call.Client, i, call.Op, number, call.Session)
 		case !ran && confirmed:
-			return w.fail("S11", 0, "c%d call %d (%s #%d of session %d) ended OK, the log never executes it", call.Client, i, call.Op, call.Reply.Number, call.Session)
+			return w.fail("S11", 0, "c%d call %d (%s #%d of session %d) ended OK, the log never executes it", call.Client, i, call.Op, number, call.Session)
 		case !ran:
 			continue
-		case x.op != call.Op || !bytes.Equal(x.recs, call.Body):
-			return w.fail("S11", 0, "c%d call %d (%s #%d of session %d) is not the request the log executes under that number at %d", call.Client, i, call.Op, call.Reply.Number, call.Session, x.index)
-		case confirmed && (x.status != client.OK || x.time != call.Reply.Time || !bytes.Equal(x.fails, call.Reply.Body)):
-			return w.fail("S11", 0, "c%d call %d (%s) got time %d and failures %x, the log executes it at %d with %s, time %d and failures %x", call.Client, i, call.Op, call.Reply.Time, call.Reply.Body, x.index, x.status, x.time, x.fails)
+		case exec.op != call.Op || !bytes.Equal(exec.recs, call.Body):
+			return w.fail("S11", 0, "c%d call %d (%s #%d of session %d) is not the request the log executes under that number at %d", call.Client, i, call.Op, number, call.Session, exec.index)
+		case confirmed && (exec.status != client.OK || exec.time != call.Reply.Time || !bytes.Equal(exec.fails, call.Reply.Body)):
+			return w.fail("S11", 0, "c%d call %d (%s) got time %d and failures %x, the log executes it at %d with %s, time %d and failures %x", call.Client, i, call.Op, call.Reply.Time, call.Reply.Body, exec.index, exec.status, exec.time, exec.fails)
 		}
 		sent++
 	}
@@ -260,17 +276,17 @@ func (sh *shadow) request(index uint64, body []byte) {
 }
 
 func (sh *shadow) execute(index uint64, op client.Op, ts uint64, recs []byte) execution {
-	x := execution{index: index, op: op, recs: recs, status: client.Malformed}
+	exec := execution{index: index, op: op, recs: recs, status: client.Malformed}
 	if op != client.CreateAccounts && op != client.CreateTransfers {
-		return x
+		return exec
 	}
 	start := max(ts, sh.ledger.Last()+1)
 	fails, err := sh.ledger.Apply(stateOp(op), ts, recs)
 	if err != nil {
-		return x
+		return exec
 	}
-	x.status, x.time, x.fails = client.OK, start, client.AppendFailures(nil, fails)
-	return x
+	exec.status, exec.time, exec.fails = client.OK, start, client.AppendFailures(nil, fails)
+	return exec
 }
 
 func (sh *shadow) find(id u128.Uint128) int {

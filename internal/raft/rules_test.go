@@ -2,7 +2,9 @@ package raft
 
 import (
 	"errors"
+	"math/rand/v2"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -1508,5 +1510,85 @@ func TestRepairedNodeVotesAgain(t *testing.T) {
 	c.step(n, Message{Type: MsgVote, From: 3, Term: 3, Index: 2, LogTerm: 2})
 	if resp := c.only(1); resp.Reject || n.hs != (HardState{Term: 3, Vote: 3}) {
 		t.Fatalf("vote %+v, disk %+v, want granted", resp, n.hs)
+	}
+}
+
+func TestCampaignForgetsWhatWasAcknowledged(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2}, 1, 2)
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 2, LogTerm: 2, Entries: []Entry{ent(3, 2)}})
+	if n.r.acked != 3 {
+		t.Fatalf("acknowledged %d after storing entry 3", n.r.acked)
+	}
+	c.timeout(n)
+	c.step(n, Message{Type: MsgPreVoteResp, From: 3, Term: 3})
+	if st := n.r.Status(); st.Role != Candidate || st.Term != 3 || n.r.acked != 0 {
+		t.Fatalf("status %+v with %d acknowledged, want a candidate of term 3 that acknowledged nothing in it", st, n.r.acked)
+	}
+}
+
+func TestHealthyNodeNeitherProbesNorTakesAGoal(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2}, 1, 2)
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 2, LogTerm: 2})
+	c.sent(1)
+	for range 3 * defaultTuning.heartbeat {
+		c.tick(n)
+	}
+	if got := c.sent(1); len(got) > 0 {
+		t.Fatalf("sent %+v while it follows a leader, want nothing from a node that is not in repair", got)
+	}
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 2, Seq: n.r.nonce})
+	if n.r.goalTerm != 0 || n.r.goal != 0 {
+		t.Fatalf("goal %d for term %d, the node never asked for one", n.r.goal, n.r.goalTerm)
+	}
+}
+
+func TestHealedNodeKeepsItsElectionTimer(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2)
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 2, Seq: n.r.nonce})
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 2, LogTerm: 2})
+	if n.hs.Repair {
+		t.Fatalf("still in repair after acknowledging the goal: %+v", n.hs)
+	}
+	c.sent(1)
+	const early = 5
+	left := n.r.timeout - early
+	for range early {
+		c.tick(n)
+	}
+	c.step(n, Message{Type: MsgPreVote, From: 3, Term: 3, Index: 2, LogTerm: 2})
+	if resp := c.only(1); !resp.Reject {
+		t.Fatalf("pre-vote %+v, want refused while a leader is known", resp)
+	}
+	if k := ticksUntil(c, n, MsgPreVote, 100); k != left {
+		t.Fatalf("pre-vote %d ticks after refusing one, want %d: the refusal is no reason for a new timeout", k, left)
+	}
+}
+
+func TestRepeatedNonceLetsAnOldAnswerEndTheRepair(t *testing.T) {
+	c := newCluster(t, 3, defaultTuning, 1)
+	n := c.load(1, HardState{Term: 2, Repair: true}, 1, 2, 2)
+	restart := func(seed uint64) uint64 {
+		n.rng = rand.New(rand.NewPCG(seed, 1))
+		c.crash(n)
+		return n.r.nonce
+	}
+	first := restart(5)
+	if other := restart(6); other == first {
+		t.Fatalf("nonce %d from two different seeds", first)
+	}
+	if again := restart(5); again != first {
+		t.Fatalf("nonce %d and %d from the same seed", first, again)
+	}
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 3, LogTerm: 2, Commit: 4, Entries: []Entry{ent(4, 2)}})
+	n.log.ents = n.log.ents[:1]
+	restart(5)
+	c.step(n, Message{Type: MsgApp, From: 2, Term: 2, Index: 1, LogTerm: 1, Entries: []Entry{ent(2, 2), ent(3, 2)}})
+	c.step(n, Message{Type: MsgRepairInfo, From: 2, Term: 2, Index: 3, Seq: first})
+	c.deliver(envelope{m: Message{Type: MsgApp, From: 2, To: 1, Term: 2, Index: 3, LogTerm: 2}})
+	if !strings.Contains(c.chk.violation, "left repair in term 2 without entry 4") {
+		t.Fatalf("violation %q, want the repair ended by the answer to an earlier start, which had acknowledged entry 4", c.chk.violation)
 	}
 }
