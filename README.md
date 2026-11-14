@@ -2,9 +2,7 @@
 
 A replicated double-entry ledger in Go: accounts and transfers, pending transfers that are posted,
 voided or expire, and linked chains that succeed or fail as a whole. The ledger is kept on three or
-five nodes with its own Raft implementation and its own write-ahead log. The account and transfer
-model follows TigerBeetle's; the code is written independently in Go, and storage and replication
-work differently.
+five nodes with its own Raft implementation and its own write-ahead log.
 
 The aim: no acknowledged transfer is lost or applied twice, and the books always balance, as long
 as a majority of nodes is up. That has to hold when nodes crash in the middle of a write, when
