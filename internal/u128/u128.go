@@ -3,10 +3,17 @@ package u128
 import (
 	"cmp"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"math/bits"
 	"strconv"
+	"strings"
+)
+
+var (
+	ErrSyntax = errors.New("u128: invalid syntax")
+	ErrRange  = errors.New("u128: value out of range")
 )
 
 type Uint128 struct {
@@ -19,6 +26,40 @@ func Max() Uint128 {
 
 func From64(v uint64) Uint128 {
 	return Uint128{Lo: v}
+}
+
+func Parse(s string) (Uint128, error) {
+	base, digits := uint64(10), s
+	if strings.HasPrefix(s, "0x") {
+		base, digits = 16, s[2:]
+	}
+	if digits == "" {
+		return Uint128{}, fmt.Errorf("%w: %q", ErrSyntax, s)
+	}
+	var u Uint128
+	for _, c := range []byte(digits) {
+		d := base
+		switch {
+		case '0' <= c && c <= '9':
+			d = uint64(c - '0')
+		case 'a' <= c && c <= 'f':
+			d = uint64(c-'a') + 10
+		case 'A' <= c && c <= 'F':
+			d = uint64(c-'A') + 10
+		}
+		if d >= base {
+			return Uint128{}, fmt.Errorf("%w: %q", ErrSyntax, s)
+		}
+		top, hi := bits.Mul64(u.Hi, base)
+		mid, lo := bits.Mul64(u.Lo, base)
+		lo, carry := bits.Add64(lo, d, 0)
+		hi, carry = bits.Add64(hi, mid, carry)
+		if top != 0 || carry != 0 {
+			return Uint128{}, fmt.Errorf("%w: %q", ErrRange, s)
+		}
+		u = Uint128{Hi: hi, Lo: lo}
+	}
+	return u, nil
 }
 
 func FromBytes(b []byte) Uint128 {

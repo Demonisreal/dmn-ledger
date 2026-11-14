@@ -45,10 +45,16 @@ func wellFormed(req client.Request) bool {
 		return len(req.Body)%state.AccountSize == 0
 	case client.CreateTransfers:
 		return len(req.Body)%state.TransferSize == 0
-	case client.LookupAccounts, client.LookupTransfers:
-		return len(req.Body)%client.IDSize == 0
+	case client.LookupAccounts:
+		return replyFits(req.Body, state.AccountSize)
+	case client.LookupTransfers:
+		return replyFits(req.Body, state.TransferSize)
 	}
 	return false
+}
+
+func replyFits(ids []byte, size int) bool {
+	return len(ids)%client.IDSize == 0 && len(ids)/client.IDSize*size <= client.MaxBody
 }
 
 func (n *Node) apply(e wal.Entry) {

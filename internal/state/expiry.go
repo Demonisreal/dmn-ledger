@@ -5,6 +5,13 @@ type expiry struct {
 	tr int
 }
 
+func (m *Machine) NextExpiry() (uint64, bool) {
+	if len(m.expiries) == 0 {
+		return 0, false
+	}
+	return m.expiries[0].at, true
+}
+
 func (m *Machine) expiresBefore(i, j int) bool {
 	a, b := m.expiries[i], m.expiries[j]
 	if a.at != b.at {

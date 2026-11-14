@@ -49,17 +49,19 @@ type Output struct {
 }
 
 type Status struct {
-	ID        uint64
-	Role      raft.Role
-	Term      uint64
-	Vote      uint64
-	Lead      uint64
-	Commit    uint64
-	Applied   uint64
-	Last      uint64
-	ApplyHash [sha256.Size]byte
-	Sessions  int
-	Repair    bool
+	ID         uint64
+	Role       raft.Role
+	Term       uint64
+	Vote       uint64
+	Lead       uint64
+	Commit     uint64
+	Applied    uint64
+	Last       uint64
+	ApplyHash  [sha256.Size]byte
+	Sessions   int
+	Repair     bool
+	Time       uint64
+	NextExpiry uint64
 }
 
 type proposal struct {
@@ -504,18 +506,21 @@ func (n *Node) refuse(req client.Request, st client.Status) {
 
 func (n *Node) Status() Status {
 	st := n.raft.Status()
+	next, _ := n.sm.NextExpiry()
 	return Status{
-		ID:        st.ID,
-		Role:      st.Role,
-		Term:      st.Term,
-		Vote:      st.Vote,
-		Lead:      st.Lead,
-		Commit:    st.Commit,
-		Applied:   n.applied,
-		Last:      st.Last,
-		ApplyHash: n.hash,
-		Sessions:  len(n.sessions),
-		Repair:    st.Repair,
+		ID:         st.ID,
+		Role:       st.Role,
+		Term:       st.Term,
+		Vote:       st.Vote,
+		Lead:       st.Lead,
+		Commit:     st.Commit,
+		Applied:    n.applied,
+		Last:       st.Last,
+		ApplyHash:  n.hash,
+		Sessions:   len(n.sessions),
+		Repair:     st.Repair,
+		Time:       n.sm.Last(),
+		NextExpiry: next,
 	}
 }
 

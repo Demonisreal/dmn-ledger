@@ -132,6 +132,18 @@ func (s *Session) Step(r Reply) {
 	s.done, s.ready = r, true
 }
 
+func (s *Session) Unreachable(node uint64) {
+	if !s.inflight || s.nodes[s.target] != node {
+		return
+	}
+	s.target, s.busy = (s.target+1)%len(s.nodes), 0
+	if !s.sent {
+		s.send()
+	} else {
+		s.ticks, s.due, s.hop = 0, 1, false
+	}
+}
+
 func (s *Session) Since() uint64 {
 	return s.session
 }

@@ -174,6 +174,10 @@ func run(t *testing.T, r *rand.Rand, g *workload.Gen, events int, stop func() bo
 		if err := o.CheckInvariants(); err != nil {
 			t.Fatalf("batch %d: oracle: %v", batchNo, err)
 		}
+		at, waiting := m.NextExpiry()
+		if scanned, ok := m.ScanExpiries(); at != scanned || waiting != ok {
+			t.Fatalf("batch %d: next expiry %d %v, a scan of all transfers finds %d %v\n%s", batchNo, at, waiting, scanned, ok, dump(b))
+		}
 		if replica != nil {
 			var rerr error
 			again, rerr = replica.Apply(b.Op, b.TS, b.Body, again[:0])
