@@ -225,7 +225,7 @@ func TestModelRejectsStaleRead(t *testing.T) {
 				{Input: write, Call: int64(write.Start), Return: int64(write.End)},
 				{Input: tc.read, Call: int64(tc.read.Start), Return: int64(tc.read.End)},
 			}
-			if got := porcupine.CheckOperations(model(oracle.New()), ops); got != tc.ok {
+			if got := porcupine.CheckOperations(model(oracle.New(), true), ops); got != tc.ok {
 				t.Fatalf("linearizable %v, want %v", got, tc.ok)
 			}
 		})
@@ -249,7 +249,7 @@ func TestModelNeedsTheReplyOfTheOracle(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			call := &sim.Call{Op: client.CreateTransfers, Body: body, Start: 1, End: 2, Reply: client.Reply{Status: client.OK, Time: 50, Body: tc.reply}}
 			ops := []porcupine.Operation{{Input: call, Call: 1, Return: 2}}
-			if got := porcupine.CheckOperations(model(oracle.New()), ops); got != tc.ok {
+			if got := porcupine.CheckOperations(model(oracle.New(), true), ops); got != tc.ok {
 				t.Fatalf("linearizable %v, want %v", got, tc.ok)
 			}
 		})
