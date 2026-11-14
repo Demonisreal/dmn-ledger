@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math/rand/v2"
 	"path/filepath"
@@ -17,11 +18,13 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 	"github.com/Demonisreal/dmn-ledger/internal/wal"
+	"github.com/Demonisreal/dmn-ledger/internal/wire"
 	"github.com/Demonisreal/dmn-ledger/internal/workload"
 )
 
 const (
 	ledgerDir     = "/ledger"
+	clusterID     = 1
 	windowSize    = 32
 	thinkTicks    = 20
 	lookupOdds    = 5
@@ -473,16 +476,50 @@ type raftBody struct {
 }
 
 func (b *raftBody) Clone() Body {
-	c := *b
-	if b.Entries != nil {
-		c.Entries = make([]raft.Entry, len(b.Entries))
-		for i, e := range b.Entries {
-			e.Body = slices.Clone(e.Body)
-			c.Entries[i] = e
-		}
+	frames, err := wire.AppendMessage(nil, clusterID, b.Message)
+	if err != nil {
+		panic(err)
 	}
-	c.Snap = slices.Clone(b.Snap)
-	return &c
+	if b.Type == raft.MsgSnap {
+		for chunk := range slices.Chunk(b.Snap, wire.ChunkSize) {
+			frames = wire.AppendChunk(frames, clusterID, chunk)
+		}
+		crc := crc32.Checksum(b.Snap, crc32.MakeTable(crc32.Castagnoli))
+		frames = wire.AppendSnapshotEnd(frames, clusterID, uint64(len(b.Snap)), crc)
+	}
+	f, frames, err := wire.Decode(frames, clusterID, wire.MaxPeerBody)
+	if err != nil {
+		panic(err)
+	}
+	c := &raftBody{}
+	if c.Message, err = f.Message(); err != nil {
+		panic(err)
+	}
+	if c.Type != raft.MsgSnap {
+		return c
+	}
+	c.Snap = []byte{}
+	for {
+		if f, frames, err = wire.Decode(frames, clusterID, wire.MaxPeerBody); err != nil {
+			panic(err)
+		}
+		if f.Type != wire.TypeSnapshotChunk {
+			break
+		}
+		chunk, err := f.Chunk()
+		if err != nil {
+			panic(err)
+		}
+		c.Snap = append(c.Snap, chunk...)
+	}
+	size, crc, err := f.SnapshotEnd()
+	if err != nil {
+		panic(err)
+	}
+	if size != uint64(len(c.Snap)) || crc != crc32.Checksum(c.Snap, crc32.MakeTable(crc32.Castagnoli)) {
+		panic(fmt.Sprintf("sim: snapshot of %d bytes arrived as %d", size, len(c.Snap)))
+	}
+	return c
 }
 
 func (b *raftBody) String() string {
@@ -505,9 +542,15 @@ type requestBody struct {
 }
 
 func (b *requestBody) Clone() Body {
-	c := *b
-	c.Body = slices.Clone(b.Body)
-	return &c
+	f, _, err := wire.Decode(wire.AppendRequest(nil, clusterID, b.Request), clusterID, wire.MaxClientBody)
+	if err != nil {
+		panic(err)
+	}
+	req, err := f.Request()
+	if err != nil {
+		panic(err)
+	}
+	return &requestBody{req}
 }
 
 func (b *requestBody) String() string {
@@ -519,9 +562,15 @@ type replyBody struct {
 }
 
 func (b *replyBody) Clone() Body {
-	c := *b
-	c.Body = slices.Clone(b.Body)
-	return &c
+	f, _, err := wire.Decode(wire.AppendReply(nil, clusterID, b.Reply), clusterID, wire.MaxClientBody)
+	if err != nil {
+		panic(err)
+	}
+	r, err := f.Reply()
+	if err != nil {
+		panic(err)
+	}
+	return &replyBody{r}
 }
 
 func (b *replyBody) String() string {
