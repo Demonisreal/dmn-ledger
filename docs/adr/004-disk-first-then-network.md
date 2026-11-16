@@ -1,6 +1,7 @@
 # ADR-004: Disk first, then network
 
 Status: accepted, 2026-11-11. Amended 2026-11-13: the seal is part of the order (ADR-009).
+Amended 2026-11-16: one place that sends in the server; seed counts measured again.
 
 ## Context
 
@@ -35,7 +36,7 @@ in a `Ready` is covered by the state the same `Ready` stores.
   checks that what the node promised is still there, or that the node knows it is not (checker
   S5).
 - The planted bugs B4 (messages before the fsync) and B5 (entries before the hard state) are
-  found, B4 in the first seed and B5 within 7 to 29 seeds from five starting points. B5 leaves a
+  found, B4 in the first seed and B5 within 3 to 21 seeds from five starting points. B5 leaves a
   disk on which no node starts, which S5 reports. B4 leaves frames missing below the seal, so the
   node on the clone starts in repair on a disk that nobody damaged, which F2 reports.
 - Commit latency is two fsyncs on the leader, for the log and for the seal, then a round trip,
@@ -44,6 +45,14 @@ in a `Ready` is covered by the state the same `Ready` stores.
   per round and a first measurement of one node on a real disk.
 - Batching needs no timer. Everything that arrives while a node waits for its disk shares the next
   fsync.
+- In the server the rule holds by construction. All three disk steps run inside `Node.Process`,
+  which returns after the fsyncs and the seal, and the loop has one place that sends: after
+  `Process` returned without an error. Readers and writers around it only carry frames; no other
+  goroutine calls the node. A failed `Process` sends nothing more and stops the server.
+  `TestNothingLeavesBeforeItIsSynced` holds every frame that reaches a connection against what
+  was synced, and `TestFailedProcessSendsNothing` makes the second fsync fail. The status frame
+  and the hello are the only frames not taken from the output of `Process`; neither promises
+  anything.
 
 ## Rejected alternatives
 

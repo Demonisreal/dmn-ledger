@@ -1,6 +1,6 @@
 # ADR-006: Client sessions for exactly-once, transfer IDs as a second layer
 
-Status: accepted, 2026-11-11.
+Status: accepted, 2026-11-11. Amended 2026-11-16: how B11 is found now.
 
 ## Context
 
@@ -28,7 +28,8 @@ Transfer IDs stay as a second layer for clients that restart and resubmit.
 ## Consequences
 
 - The planted bug B11 (sessions do not recognise repeats) is found by the oracle replay S8 in
-  the first seed of `all`, and by the log replay S11 in seed 2 of `evict`, where S8 cannot run.
+  the first seed of `all`. In `evict`, where S8 cannot run, the log replay finds it in the first
+  seed as well: a receipt a client asked for (S13) shows no ledger that the log gives.
 - The session number closes a gap a plain client ID would leave: a register request that arrives
   late, after its session was evicted, creates a new session with a new number, and delayed
   requests of the old one get `SessionUnknown` instead of applying a second time.

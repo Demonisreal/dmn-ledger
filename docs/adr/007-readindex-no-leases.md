@@ -1,6 +1,7 @@
 # ADR-007: Reads through ReadIndex, no leases, only the leader reads
 
-Status: accepted, 2026-11-11.
+Status: accepted, 2026-11-11. Amended 2026-11-16: receipts take the same path; numbers measured
+again.
 
 ## Context
 
@@ -20,12 +21,14 @@ log and need no session.
 
 - Linearizable reads without trusting any clock and without a log entry per read. The price is a
   round trip per batch of reads.
-- Followers do not serve reads.
+- Followers do not serve reads. Receipts, heads and links of the audit trail are reads of the same
+  kind (ADR-011): a receipt asked for after a confirmed transfer finds it, and a deposed leader
+  issues none.
 - The planted bug B10 (answer without the majority round) is hard for the simulator to find.
   Check-quorum makes a cut-off leader step down within two election timeouts, and a client needs
   about as long to reach the new leader. A stale read only fits into the small overlap. In `all`
-  the first find is seed 3820; the profile `split`, which runs only partitions with clients on
-  both sides, finds it within 50 to 2217 seeds from five starting points. A paused leader widens
+  the first find is seed 2311; the profile `split`, which runs only partitions with clients on
+  both sides, finds it within 144 to 1027 seeds from five starting points. A paused leader widens
   the overlap, because check-quorum counts its own ticks. The rule tests catch B10 directly
   (`TestReadConfirmedByQuorum`, `TestDeposedLeaderGetsNoRead`).
 

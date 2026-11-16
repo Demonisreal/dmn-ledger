@@ -1,6 +1,6 @@
 # ADR-005: Time comes from the log
 
-Status: accepted, 2026-11-11.
+Status: accepted, 2026-11-11. Amended 2026-11-16: ticks in the server, how B12 is found now.
 
 ## Context
 
@@ -27,8 +27,9 @@ its own term, so it starts from the newest time of the cluster. The details are 
 
 - A wrong clock can move deadlines, never balances or the order of transfers. Replicas cannot
   diverge because of time.
-- The planted bug B12 (apply with the replica's own clock) is found by the end check S7 in the
-  first seed: the replicas disagree on the digest.
+- The planted bug B12 (apply with the replica's own clock) is found in the first seed: the
+  replicas disagree on the head of the audit trail after four applied entries (S12), and at the
+  end they would disagree on the digest (S7).
 - Ledger time never moves by more than one `ClockStep` plus `ClockStep` per tick since the anchor,
   plus one nanosecond per write, whatever the clock does; each new leader gets that one step once.
   With `ClockStep` at 1.25 ticks, as in the simulator, it runs at most 25 % faster than the leader's
@@ -53,6 +54,21 @@ its own term, so it starts from the newest time of the cluster. The details are 
   (profile `clock`), and `internal/replica/clock_test.go` checks the bounds. No checker in the
   simulator observes time, so a stamp that is wrong but within the replicas' agreement only shows
   in those tests.
+- In the server ticks come from the monotonic clock, and the stamped reading from the wall clock.
+  A round gets every tick that is due since the last one, not a single tick, so the mean tick
+  period is exactly the tick as long as no cap applies, and the bound with `ClockStep` at 1.25
+  ticks always catches up with an honest clock. `TestSlowRoundsLoseNoTicks` makes every fsync take
+  17 ms against a tick of 10 ms for 10 seconds and finds no stamp before the moment the transfer
+  was sent. A `time.Ticker` would not do: its channel holds one tick, rounds longer than a tick
+  lose the rest, and the bound grows slower than the clock. A round gives at most 40 ticks, so
+  after a stall the dropped ticks are missing from the bound, and a node that stayed leader through
+  it stamps like a clock that jumped forward until ledger time has caught up. A jump of the wall
+  clock itself is bounded, because the ticks do not see it.
+- After a leader change ledger time trails the clock, as described above, in the server as well:
+  the new leader moved its anchor when it applied the last entries of the old one, to their time
+  and to a tick after the election. The chaos test checks the one rule about time that a shared
+  clock allows: no reply carries a time later than the wall clock at the end of its call plus the
+  number of records confirmed so far.
 
 ## Rejected alternatives
 
@@ -67,4 +83,8 @@ its own term, so it starts from the newest time of the cluster. The details are 
   per write would not be slowed down at all. The anchor therefore never rises faster than the
   line it already describes.
 - **A window around the median clock of the majority.** Would bound a leader whose clock is far
-  off and remove the 25 % factor. Needs clocks in heartbeats; not built.
+  off and remove the 25 % factor. Needs clocks in heartbeats; not built. It would take two fields
+  in `MsgApp` and `MsgAppResp`, a new wire version, a new rule for `stamp`, new trace hashes for
+  every profile and a checker of time in the simulator. It can be added later without throwing
+  anything away. `ledgerctl status` shows each node's ledger time and how far its wall clock is
+  from the caller's, so a clock that is off can be seen before its node leads.

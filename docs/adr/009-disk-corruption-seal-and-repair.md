@@ -1,6 +1,6 @@
 # ADR-009: Disk corruption: a seal on disk, repair as a non-voter
 
-Status: accepted, 2026-11-13.
+Status: accepted, 2026-11-13. Amended 2026-11-16: seed counts measured again.
 
 ## Context
 
@@ -128,7 +128,7 @@ cores.
   sends (S10), and after a power loss the log a node vouched for is there or the repair flag is
   (S5).
 - Six planted bugs break the seal, the order of a start on a damaged disk and the repair rules
-  (B13 to B18). The simulator finds five of them within 131 seeds from seed 0. The sixth, the
+  (B13 to B18). The simulator finds five of them within 144 seeds from seed 0. The sixth, the
   commit index as the goal of a repair, it finds only after thousands of seeds, and a nonce that
   is not checked not at all; the tests of the core catch both at once. The table is under
   "Planted bugs" in [ARCHITECTURE.md](../ARCHITECTURE.md).

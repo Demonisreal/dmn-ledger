@@ -1,6 +1,6 @@
 # ADR-008: Deterministic simulation with the real node code
 
-Status: accepted, 2026-11-11.
+Status: accepted, 2026-11-11. Amended 2026-11-16: numbers measured again on the current code.
 
 ## Context
 
@@ -35,17 +35,17 @@ do not exist.
 ## Consequences
 
 - Every failure is a seed. `go run ./cmd/sim -seed N -trace` shows it again, event by event.
-- `go run ./cmd/sim -seeds 10000 -profile all` takes about 85 s on the 16 threads of an otherwise
-  idle i5-12500H laptop, and about 115 s with `GOMAXPROCS=4`. The profile `rot` takes as long.
-  CI runs 2000 fixed and 2000 new seeds of `all` on every pull request, 1000 fixed and 1000 new
-  seeds of `rot`, 500 of `beyond`, plus short sweeps of `crash`, `evict`, `leaders`, `split` and
-  five-node clusters. Longer runs happen at night outside CI (`scripts/nightly-sim.sh`): 200 000
-  new seeds of `all`, 10 000 each of `rot` and `beyond`, and a search for the planted bug B16.
-- Seventeen of the eighteen planted bugs are found within the seeds that `TestBugsAreFound`
-  gives them, eight of them in the very first seed. B6 needs the profile `leaders` (first find at
-  seed 403) and is not found in 10 000 seeds of `all` or `crash`: Figure 8 needs a leader to die
+- `go run ./cmd/sim -seeds 1000` (profile `all`) took 18.6 s with `GOMAXPROCS=4` on an
+  i5-12500H laptop. CI runs 2000 fixed and 2000 new seeds of `all` on every pull request, 1000
+  fixed and 1000 new seeds of `rot`, 500 of `beyond`, plus short sweeps of every other profile and
+  of five-node clusters. Longer runs happen at night outside CI (`scripts/nightly-sim.sh`):
+  200 000 new seeds of `all`, 10 000 each of `rot` and `beyond`, and a search for the planted bug
+  B16.
+- Twenty-one of the twenty-two planted bugs are found within the seeds that `TestBugsAreFound`
+  gives them, twelve of them in the very first seed. B6 needs the profile `leaders` (first find at
+  seed 365) and is not found in 10 000 seeds of `all` or `crash`: Figure 8 needs a leader to die
   between counting an old entry and getting its own acknowledged. B10 shows sooner in `split`
-  (seed 563) than in `all` (seed 3820). B16, a wrong goal for a repair, shows in `rot` at seed
+  (seed 275) than in `all` (seed 2311). B16, a wrong goal for a repair, shows in `rot` at seed
   2987 and is left to the nightly run and to the tests of the core, which catch it at once. The
   table is under "Planted bugs" in [ARCHITECTURE.md](../ARCHITECTURE.md).
 - Finding the planted bugs does not mean finding every bug in the core. Three other mutations of

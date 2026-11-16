@@ -1,32 +1,44 @@
 # Architecture
 
 This file describes what is built today: the consensus core and the contract with its driver, the
-node, the client sessions, the simulator and its checkers. There is no network server yet; a node
-runs only inside the simulator and the tests.
+node, the audit trail, the client sessions, the wire format, the server, the SDK, the simulator and
+its checkers, and the chaos test with real processes.
 
 ## Layers
 
 ```
+cmd/ledgerd          one node as a process, configured from LEDGER_ variables
+cmd/ledgerctl        status, accounts, transfers, receipts and their checks
+ledger               the public Go SDK around the session core
+internal/server      second driver of replica.Node: sockets, the real clock, the snapshot stream
+internal/wire        frames for requests, replies, status, the peer hello, raft messages, snapshots
 internal/replica     one loop per node: raft + WAL + state
   internal/raft      consensus core, no I/O
   internal/wal       log, metadata (term, vote, seal) and snapshots on disk.FS
-  internal/state     ledger state machine, deterministic
+  internal/state     ledger state machine and its hash chain, deterministic
+internal/audit       hash formats of the audit trail: Merkle tree, links, heads, receipts
+internal/notary      Ed25519 stamps over heads, key files
 internal/disk        file system interface: disk.OS and the simulated disk.Sim
 internal/client      request types and the session core of the SDK
-internal/oracle      second, deliberately plain implementation of the ledger rules
+internal/oracle      second, deliberately plain implementation of the ledger rules and the chain
 internal/u128        unsigned 128-bit integers for IDs and amounts
-internal/sim         deterministic simulator driving the same replica code
+internal/sim         deterministic simulator driving the same replica code through the wire codec
 internal/check       checkers that watch a simulated run, porcupine per window
 internal/simbug      switch for the planted bugs, only in builds with -tags simbug
-internal/workload    batch generator for the model test, the simulator and benchmarks
+internal/workload    batch generator for the model test, the simulator and the chaos test
+internal/faultnet    TCP proxy that delays, drops, swallows, stalls or corrupts whole frames
+internal/chaos       three ledgerd processes under faults, only with -tags chaos on Linux
 cmd/sim              runs seeds on all cores and prints the command that replays a failure
 ```
 
-`raft`, `state`, `sim`, `replica`, `client` and `workload` use no clock, network, file system,
-goroutines or global randomness. `depguard` in `.golangci.yml` enforces this for the imports
-`time`, `net`, `os`, `sync` and `crypto/rand`. Randomness is a `*rand.Rand` passed in, time is
-ticks. `check` may run seeds in parallel but does not import `time` either: a seed's verdict never
-depends on the machine.
+`raft`, `state`, `sim`, `replica`, `client`, `workload`, `wire` and `audit` use no clock, network,
+file system, goroutines or global randomness. The `depguard` rule `deterministic` in
+`.golangci.yml` enforces this for the imports `time`, `net`, `os`, `sync` and `crypto/rand`.
+Randomness is a `*rand.Rand` passed in, time is ticks. `check` may run seeds in parallel but does
+not import `time` either: a seed's verdict never depends on the machine. A second rule, `keyless`,
+keeps `crypto/ed25519` and `internal/notary` out of `state`, `replica`, `raft`, `sim`, `client`,
+`workload`, `audit` and `oracle`, tests included. No signing key reaches the replicated core; only
+the server and the tools sign or verify.
 
 `wal` and `disk` are outside that rule. `disk.OS` is the real file system, and `wal` takes the
 nonces for its segment headers from `crypto/rand` unless `Options.Nonces` is set. The simulator
@@ -45,7 +57,8 @@ The core is a state machine. The driver feeds it events and carries out what it 
 Pre-vote, check-quorum and ReadIndex are built in. A node whose disk has lost data runs as a
 non-voter until the leader has brought it up to date again (R19 to R24). There are no leases, no
 leadership transfer, no membership changes and no reads from followers. Messages are Go values;
-there is no wire format yet.
+`internal/wire` encodes them for the network, and the simulator sends every message through the
+same codec (see Wire format).
 
 ### Driver contract
 
@@ -82,7 +95,9 @@ then. The core clears it (R24). Between two starts the driver never changes it.
 `Rand` must be seeded anew on every start. A core that starts in repair draws its nonce from it
 (R19), and a nonce that repeats lets the answer to a probe of an earlier process end the repair
 (`TestRepeatedNonceLetsAnOldAnswerEndTheRepair`). The simulator forks a new generator for every
-start.
+start. The server draws 16 bytes from `crypto/rand` on every `Open` and seeds a PCG with them;
+`TestEveryStartDrawsItsOwnNonce` starts it twice on a directory in repair and gets two different
+nonces in its repair probes.
 
 Sending in parallel with the leader's own sync (Raft dissertation, section 10.2.1) would save
 latency and is deliberately not done.
@@ -383,7 +398,9 @@ One client request is one entry. Reads never reach the log.
 
 - A node that is not leader answers `NotLeader` with the leader it knows, 0 if none. A request over
   1 MiB, with an unknown op or with a body that is not a whole number of records is `Malformed` and
-  writes nothing. A full core (`ErrBusy`) answers `Busy`.
+  writes nothing. So is a lookup whose answer could not fit into 1 MiB: more than 10 922 account
+  IDs or 10 485 transfer IDs (`TestLookupOverTheReplyLimitIsMalformed`). One limit then holds for
+  both directions on the client port. A full core (`ErrBusy`) answers `Busy`.
 - A leader stamps writes only after it has applied an entry of its own term; before that a write
   gets `Busy`. A stamp outside the valid range (see Timestamps) gets `BadClock` and writes nothing.
 - A write is proposed and remembered by its index. When the entry at that index is applied, the
@@ -400,7 +417,13 @@ One client request is one entry. Reads never reach the log.
   appears in `Ready.Reads` with `Commit` at or above its index, and that commit is applied before
   the reads of the same round, so a confirmed read is answered at once. A tag the node already
   failed with `NotLeader` is skipped. `ErrNotReady` answers `Busy`. Reads need no session and are
-  not stored.
+  not stored. Receipts, heads and links (see Audit trail) are reads of the same kind.
+- Reads have a budget of 8 MiB. A new read is `Busy` if the largest answers of all reads still
+  waiting would pass it: the records a lookup asks for, the size of a receipt, the links asked for.
+  A confirmed round answers reads until 8 MiB of work is spent, a receipt counting 100 bytes for
+  every leaf of its batch, and the rest get `Busy` (`TestBusyWhenTheWaitingReadsFillTheBudget`,
+  `TestProofsOfOneRoundStayWithinTheBudget`). Without the budget a client that never reads its
+  answers could make one round build hundreds of megabytes of them.
 
 ### Timestamps
 
@@ -445,6 +468,11 @@ never read a clock: time comes from the log, so it cannot make them diverge. The
 bounds are in `internal/replica/clock_test.go`; `TestStampsNeverRiseFasterThanOneStepPerTick`
 drives a clock at random, forwards, backwards and in jumps, and checks the first point above.
 
+In the server the two come from different clocks. Ticks follow the monotonic clock (see Server),
+the reading a leader stamps is the wall clock, `time.Now().UnixNano()`, and `ClockStep` is
+`Tick + Tick/4`, as in the simulator. A jump of the wall clock is therefore bounded by ticks that
+do not see it.
+
 ### Applying
 
 Every node applies the same entries in the same way, and a broken body never panics:
@@ -459,6 +487,9 @@ Every node applies the same entries in the same way, and a broken body never pan
   `state.StartTime(ts, last) = max(ts, last + 1)`, the body lists the failures. A batch the state
   machine rejects is `Malformed`, stored the same way. A leader never proposes such a batch; the
   rule keeps every node deterministic on an entry it did not check itself.
+- Every batch the state machine accepts appends one link to the audit trail: empty batches and
+  batches in which every event fails as well. A rejected batch, a register entry, a repeated
+  request, `Stale` and `SessionUnknown` never reach the state machine and get no link.
 
 ### Exactly once
 
@@ -469,11 +500,21 @@ creates a new session with a new number, and requests still carrying the old num
 `SessionUnknown` instead of applying again. Transfer IDs stay as a second layer for clients that
 restart and resubmit.
 
+`MaxSessions` decides which session is evicted, and so whether a request runs. It is part of the
+replicated state, although every node takes it from its own configuration. Two nodes with
+different values would drift apart. The node snapshot therefore carries the value. A node refuses
+to start from a snapshot written with another one (`replica.ErrMaxSessions`) and stops instead of
+installing one; the refused install writes nothing, so the next start finds the directory as it
+was (`TestRefusedInstallKeepsTheDirectory`). The peer hello carries the value as well, so a node
+with another one never exchanges a message with the others
+(`TestPeerWithAnotherMaxSessionsIsRefused`, with three processes
+`TestNodeWithAnotherMaxSessionsStaysOut`).
+
 ### Snapshots
 
-- Content: magic, version, applied index and term, apply hash, sessions sorted by client ID, then
-  the bytes of `state.WriteSnapshot`. The same state gives the same bytes; `Digest()` is SHA-256
-  over them.
+- Content: magic, version 2, applied index and term, apply hash, `MaxSessions`, sessions sorted by
+  client ID, then the bytes of `state.WriteSnapshot`, which hold the links of the audit trail. The
+  same state gives the same bytes; `Digest()` is SHA-256 over them.
 - A node takes one after `SnapshotEvery` applied entries, at the end of `Process`, and blocks
   while it writes. `wal.SaveSnapshot` writes a temporary file, syncs it, renames it and keeps the
   two newest snapshots. The node then compacts the WAL before the previous snapshot, by whole
@@ -495,12 +536,135 @@ restart and resubmit.
   the core did not ask for are dropped after `Process`.
 - Sending: the driver reads the bytes for a `MsgSnap` through `ReadSnapshot`, which checks the
   checksum of the whole file first. If that snapshot is gone, the message is dropped and the
-  leader tries again later. If the checksum fails, the node stops.
+  leader tries again later. If the checksum fails, the node stops. The simulator hands the bytes
+  over in memory; the server streams them on a connection of their own (see Server).
 
 `Status()` reports ID, role, term, vote, leader, commit, applied, last index, apply hash, the
-number of sessions and whether the node is in repair. `CheckInvariants()` runs the full state
-check. `Digest()` hashes the snapshot bytes, `LedgerDigest()` only the ledger state, which is what
-an independent model can recompute.
+number of sessions, whether the node is in repair, the ledger time (`Time`, the time of the latest
+batch), the deadline of the next pending transfer to expire (`NextExpiry`, 0 for none) and the head
+of the audit trail (`Head`). `CheckInvariants()` runs the full state check, the chain included.
+`Digest()` hashes the snapshot bytes, `LedgerDigest()` only the ledger state, which is what an
+independent model can recompute.
+
+## Audit trail (`internal/state`, `internal/audit`, `internal/notary`)
+
+The state machine keeps a hash chain over the batches it accepts. What goes into a link, a leaf and
+a head is under "Audit trail" in [ledger-rules.md](ledger-rules.md); why it is built this way, and
+what a receipt proves, is in [ADR-011](adr/011-audit-trail.md). In short:
+
+- Every accepted batch appends a link of 113 bytes: batch time, op, number of events, number of
+  leaves, the hash of the request body, the hash of the reply and a Merkle root. The root covers
+  the pending transfers that expired in this batch's sweep, then the records it stored.
+- A head is a pair of link number and hash, `SHA-256(0x02 | previous head | number | link)`. The
+  number counts links, not log entries: the state machine does not know the log index, and a dense
+  number lets a verifier count missing links.
+- Links are replicated state. They are in the snapshot of the state machine, in its digest and in
+  the trace hashes of the simulator. In memory they sit in blocks of 256, 152 bytes for a link and
+  its head; the snapshot holds the 113 bytes and folds the heads again on load.
+- `CheckInvariants` recomputes every root from the records and every head from the links, on every
+  load and in the simulator every 64 applied entries. The head fixes the state: every root follows
+  from the records, every head from the links, every balance from the transfers. A snapshot whose
+  records were changed and whose checksum was fixed therefore does not load, as long as its links
+  are left alone. Whoever changes the links to match can load it. The check finds bugs and half
+  done edits; against someone who knows the format only a head kept outside the node helps.
+
+### Receipts
+
+A receipt is built from the state, never from the log. The log is compacted, but no transfer is
+ever deleted and an account record changes only in its balances, so a receipt for a transfer of a
+year ago is built the same way as one for a transfer of a minute ago.
+
+| Field | Bytes | Kinds |
+|---|---|---|
+| version | 1 | always `1` |
+| kind | 1 | 0 batch, 1 account, 2 transfer, 3 expiry, 4 head |
+| record | 96 or 100 | 1 to 3; an account as it was created, with all balances 0 |
+| leaf index | 4 | 0 to 3; 0 for a batch |
+| path length `p` | 1 | 0 to 3; at most 32; 0 for a batch |
+| path | 32 · `p` | 0 to 3, from the leaf to the root |
+| link number | 8 | 0 to 3, never 0 |
+| previous head | 32 | 0 to 3, 32 zero bytes before link 1 |
+| link | 113 | 0 to 3 |
+| stamp | 0 or 104 | all |
+
+A head on its own is `1 | 4 | number | hash`, 42 bytes before the stamp. A receipt for a transfer
+has `260 + 32·p` bytes, 104 more with a stamp. `audit.Decode` accepts exactly what the encoder
+writes: known version and kind, the record length of the kind, a leaf index below the number of
+leaves, a path of exactly the length that index and that number need (RFC 9162, section 2.1.3.2),
+and nothing after it but no stamp or one stamp. Every flipped bit of a receipt fails to decode or
+leads to another head (`TestEveryFlippedBitIsRefused` in `internal/audit`).
+
+Building a receipt finds the link by binary search and hashes all leaves of that batch again:
+0.27 µs for a batch of one record, 30 µs for 128 and 1.95 ms for 8000 (`BenchmarkProve` in
+`internal/state`, i5-12500H). Nothing bounds how many transfers one sweep expires, so a batch that
+swept many of them makes every receipt of it expensive. The read budget (see Requests on the
+leader) counts these leaves.
+
+### Reads of the audit trail
+
+Three ops go the way of lookups: only the leader answers, after ReadIndex, without a session, and
+nothing of them reaches the log or the chain. `Reply.Time` is the ledger time, as for a lookup.
+
+| Op | Request body | Reply body |
+|---|---|---|
+| `Prove` (6) | kind 1 to 3 and an ID (17 bytes), or kind 0 and a batch time (9 bytes) | a receipt, or empty |
+| `Head` (7) | empty | the head as a receipt of kind 4 |
+| `Links` (8) | `from u64`, `to u64`, `from <= to` | links `from+1` to `to`, at most 1024 (`client.MaxLinks`) |
+
+Any other body is `Malformed`. A `Prove` after a confirmed transfer finds it, a `Head` after it has
+at least the number of its link, and a deposed leader answers neither
+(`TestProveGoesThroughReadIndex`).
+A follower would hold true receipts as well, but it does not serve them: there is one read path,
+and "transfer confirmed, receipt not found" cannot happen. Every node gives the same bytes for the
+same request (`TestSameReceiptOnEveryNode`), apart from the stamp.
+
+### Stamps
+
+With a key, the server signs. For every `OK` reply to `Prove` or `Head` with a body, the loop
+decodes the receipt after `Process` returned, takes the head it leads to and appends
+`notary.Sign(key, cluster, head)` before it encodes the reply. The stamp is 104 bytes: cluster ID,
+public key and an Ed25519 signature (RFC 8032, no prehash, no context) over the 67 bytes
+`"dmn-ledger head v1\n" | cluster u64 | number u64 | hash`. It covers the head of the receipt's
+own link, not the head of the ledger at the time of the request; the head of the ledger is a
+receipt of its own (`TestStampIsOverTheHeadOfTheReceipt`). A receipt the server cannot decode stops
+the node: it signs nothing it cannot check itself. `Links` are not stamped. They prove themselves
+by connecting two heads the verifier already trusts. Nothing signed is stored.
+
+The key never reaches `replica`, `state` or the simulator (the `keyless` rule). `ledgerd` reads it
+from `LEDGER_KEY_FILE`: 64 hex digits of the Ed25519 seed and a newline, in a regular file that
+group and others cannot access. `ledgerctl key new` creates such a file with mode 0600 and never
+overwrites one. Without a key a node serves receipts without a stamp; `notary.Verify` returns
+`ErrUnsigned` for them, and `ledgerctl verify proof` takes them only with `-unsigned`. Otherwise
+`Verify` decodes, checks the signature, then the cluster ID, then that the key is on the
+verifier's list (`ErrSignature`, `ErrCluster`, `ErrUntrusted`). The status frame carries each
+node's public key, and `ledgerctl status -keys` prints the list. That list is trust on first
+contact: the client port is not authenticated (ADR-015).
+
+### Recounting a data directory
+
+A data directory holds snapshots and a log, but not the commit index. `replica.Recount` opens a
+copy of it as a cluster of one node (ID 1, peers `[1]`), which elects itself and commits its whole
+log, the start a node takes in operation, seal and cover check included. It applies everything,
+compares the head at the number of a head saved earlier, and does it twice: from the newest
+snapshot and, with the newest one removed from the copy, from the older one, if the log reaches
+back to it. An entry changed between the two snapshots is read only by the second run.
+
+| Result | Meaning |
+|---|---|
+| no error | both runs reach the saved head at its number |
+| `replica.ErrBehind` | the directory ends before that number; no verdict |
+| `replica.ErrOtherHead` | another head at that number, within what the snapshots cover |
+| `replica.ErrOtherLog` | another head at a number only the log reaches: an entry was changed, or it was never committed, as in the log of a deposed leader |
+| `wal.ErrCorrupt` | the directory is damaged; a cluster of one refuses to start on it |
+| any other error | it does not open, for example a snapshot whose records and links disagree |
+
+Only links up to the number of the saved head are compared; whatever follows is not checked.
+`MaxSessions` must be the cluster's value. `ledgerctl verify dir` reads the directory into a
+`disk.Sim` in memory, holds the directory's lock while it copies, so it refuses a directory a
+running node holds, and never writes to the original. The tests are in
+`internal/replica/recount_test.go`, among them `TestRecountMatchesTheLiveHead`,
+`TestRecountFindsChangedLogEntry`, `TestRecountFindsChangedSnapshot` and
+`TestRecountOfADeposedLeaderIsNotAnotherHead`.
 
 ## Client sessions (`internal/client`)
 
@@ -518,11 +682,392 @@ returns the requests to send and `Result` the final reply of the request that ju
 - Moving on after refusals helps when a cut-off leader answers `Busy` until check-quorum deposes
   it. It does not help against a leader that always answers `BadClock`: the other nodes send the
   client back to it with `NotLeader`.
+- `Unreachable(node)` tells the session that the connection to a node ended. If a request is in
+  flight to that node, the session moves to the next one and sends at once, or at the next tick if
+  it already sent in this one, so a client whose nodes are all down tries once per tick
+  (`TestUnreachableMovesOn`, `TestUnreachableOncePerTick`). Any other call changes nothing. The
+  session knows no dial pause; the SDK keeps one.
 - `Submit` copies the body, so the caller may reuse its buffer.
 - `SessionUnknown` ends the session with `ErrEvicted`. The outcome of the request in flight is then
   unknown; the session never registers again on its own, because that would break exactly once.
 - Client IDs are random and new for every session. Reusing one would let delayed requests of the old
   session apply in the new one.
+
+## Wire format (`internal/wire`)
+
+Everything that crosses a socket is a frame: a header of 24 bytes and a body. All integers are big
+endian, like the records of the state machine and the bodies of log entries; the WAL keeps little
+endian for its own frame headers. `wire` has no clock, no network and no goroutines. It works on
+byte slices and an `io.Reader`, and the simulator sends every message through it (see Simulator).
+
+| Offset | Bytes | Field | Rule |
+|---|---|---|---|
+| 0 | 4 | magic | `DMNL` |
+| 4 | 1 | version | `2` |
+| 5 | 1 | type | table below |
+| 6 | 2 | reserved | `0` |
+| 8 | 8 | cluster ID | the reader's own, never 0 |
+| 16 | 4 | body length | at most the limit the reader names |
+| 20 | 4 | CRC32C | over bytes 0 to 19 and the body |
+
+The reader checks magic, version, reserved bytes, cluster ID and length against its limit, in this
+order, and stops at the first failure. Only then does it read the body, then the checksum. Nothing
+is allocated before the length is checked (`TestLengthIsCheckedBeforeAllocation`). A decoder
+accepts exactly what an encoder writes, so a decoded frame encodes back to the same bytes.
+
+| Type | Name | Direction | Body |
+|---|---|---|---|
+| `0x01` | Request | client to node | 33 bytes, then up to 1 MiB |
+| `0x02` | Reply | node to client | 42 bytes, then up to 1 MiB |
+| `0x03` | StatusRequest | client to node | empty |
+| `0x04` | Status | node to client | exactly 182 |
+| `0x10` | Hello | peer to peer, first frame in both directions | exactly 25 |
+| `0x21` to `0x29` | raft message, `0x20 + raft.MsgType` | peer to peer | table below |
+| `0x2a` | SnapshotChunk | peer to peer, only on a snapshot connection | 1 byte to 256 KiB |
+| `0x2b` | SnapshotEnd | peer to peer, only on a snapshot connection | exactly 12 |
+
+Request: client ID (16), session number (8), request number (8), op (1), then the records or IDs
+as in [ledger-rules.md](ledger-rules.md), or the body of an audit read. This is the body of a log
+entry of kind 2 without the timestamp; the leader sets the time. Reply: client ID (16), request
+number (8), op (1), status (1), leader (8, a node ID or 0), time (8), then the session number for
+`Register`, 8 bytes per failure for a write, the records of a lookup, a receipt, a head or links.
+`wire` checks neither the op nor the status: whether a body fits its op is decided by the node,
+which answers `Malformed`.
+
+Status, 182 bytes: node ID (8), role (1, 0 to 3), flags (1, bit 0 is repair), term, known leader,
+commit index, applied index, last index (8 each), apply hash (32), number of sessions (4), ledger
+time, the node's wall clock when it answers, next expiry or 0 (8 each), head number (8), head hash
+(32), public key (32, zeros for none). An unknown role or flag bit is a format error. The node
+answers a status request after the `Process` of its round, and the frame is O(1) to build: it
+holds the apply hash and the head, never a digest of the whole state.
+
+Hello, 25 bytes: `from u64 | to u64 | MaxSessions u64 | kind u8`, kind 1 for the connection that
+carries raft messages and kind 2 for a snapshot connection. Raft messages begin with
+`from u64 | to u64 | term u64` (24 bytes), then:
+
+| Type | Message | Further fields | Body |
+|---|---|---|---|
+| `0x21` | `MsgPreVote` | last index u64, last term u64 | 40 |
+| `0x22` | `MsgPreVoteResp` | rejected u8 | 25 |
+| `0x23` | `MsgVote` | last index u64, last term u64 | 40 |
+| `0x24` | `MsgVoteResp` | rejected u8 | 25 |
+| `0x25` | `MsgApp` | previous index u64, previous term u64, commit u64, read sequence u64, count u32, entries | 60 + entries |
+| `0x26` | `MsgAppResp` | index u64, read sequence u64, rejected u8 | 41 |
+| `0x27` | `MsgSnap` | snapshot index u64, snapshot term u64, commit u64, read sequence u64 | 56 |
+| `0x28` | `MsgRepairProbe` | nonce u64 | 32 |
+| `0x29` | `MsgRepairInfo` | leader's last index u64, nonce u64 | 40 |
+
+An entry in `MsgApp` is `term u64 | kind u8 | length u32 | body`, 13 bytes and the body of the
+log entry byte for byte. Its index is the previous index plus one plus its position, so a gap
+cannot be encoded. In the Go type `Message.Seq` holds the read sequence for `MsgApp`, `MsgAppResp`
+and `MsgSnap` and the nonce for the two repair messages; on the wire every type names its own
+fields. Fields a type does not use are not sent and are 0 after decoding.
+
+| Limit | Value | Constant |
+|---|---|---|
+| body on the client port | 42 bytes + 1 MiB | `MaxClientBody` |
+| body on the peer port | 4 MiB | `MaxPeerBody` |
+| body of an entry in `MsgApp` | 41 bytes + 1 MiB | `MaxEntryBody` |
+| hello | 25 bytes | `HelloSize` |
+| snapshot chunk | 256 KiB | `ChunkSize` |
+| whole snapshot stream | 8 GiB | in `internal/server` |
+
+4 MiB on the peer port is enough because the server's fixed values bound the largest `MsgApp`: at
+most 1 MiB of bodies (`MaxAppendBytes`) or one entry over it, and at most `MaxUncommitted + 1`
+unstored entries. `TestLargestAppendFitsTheFrame` computes this from the constants and encodes the
+largest message. An encoder asked for more fails, which is a bug, and the node stops.
+
+| Found | Error |
+|---|---|
+| stream ends before the header, without a byte | `io.EOF` |
+| stream ends in the header or in the body | `io.ErrUnexpectedEOF` |
+| wrong magic, version or cluster ID | `ErrMagic`, `ErrVersion`, `ErrCluster` |
+| reserved bytes set | `ErrFormat` |
+| length over the caller's limit | `ErrTooLarge`, nothing allocated |
+| checksum does not match | `ErrChecksum` |
+| body of a fixed type with another length, request or reply body over 1 MiB, a reject flag other than 0 or 1 | `ErrFormat` |
+| `MsgApp`: count × 13 above the rest, an entry over `MaxEntryBody` or past the end, bytes after the last entry, an index that wraps | `ErrFormat`, before the entries are allocated |
+| a type the called method does not decode | `ErrFormat` |
+
+`wire` is syntax. Whether sender and recipient match, whether terms make sense, whether a request
+fits its op stays with `raft.wellFormed`, the server and `replica`. Every error ends the
+connection; there are no error frames. The version is in every frame and goes up with any change
+to a layout. A node of another version never joins, a client of another version gets no answer.
+`TestLayoutIsPinned` keeps one frame of every type as a hex line in `testdata/frames.golden`, and
+`TestEveryFlippedBitIsRefused` flips every bit of them. Four fuzz targets cover the rest:
+`FuzzReadFrame`, `FuzzBody`, `FuzzMessage` and `FuzzSnapshotStream`.
+
+## Server (`internal/server`)
+
+The server is a second driver of `replica.Node`, next to the simulator. It adds what the simulator
+does not have: goroutines, the real clock, real sockets and bytes from strangers. It adds no
+decision about safety. `cmd/ledgerd` hands it two TCP listeners, a dialer and `disk.OS`; the tests
+hand it `net.Pipe` pairs inside a `testing/synctest` bubble.
+
+### Goroutines and ownership
+
+| Goroutine | Count | Owns |
+|---|---|---|
+| loop | 1 | the node, the table from client ID to connection, the sweeper, the spool files of the round |
+| acceptors | 2 | one listener each |
+| client reader | 1 per client connection | reading from it |
+| client writer | 1 per client connection | writing to it |
+| peer reader | at most 1 per peer | reading the incoming message connection |
+| peer writer | 1 per peer | dialing, hello, writing the outgoing connection |
+| snapshot sender | at most 1 per peer, short-lived | a snapshot connection, reads the snapshot file |
+| snapshot receiver | at most 1 per peer, short-lived | a snapshot connection, one spool file |
+| log writer | 1 | stderr |
+
+Only the loop calls the node, `Status()` included. There is no lock around the node and none in
+the loop; the rest talk to it through channels. Shared counters are the bytes queued per peer and
+the marks "sending" and "receiving a snapshot" per peer, all atomic, and the incoming connection of
+each peer behind a mutex the loop never takes.
+
+### The round
+
+```
+wait      until an event arrives or the next tick is due
+feed      every event queued at this moment: Receive, Request, status requests
+tick      every tick that is due, at most 40
+sweep     the sweeper may hand one request to its own node
+Process   hard state, snapshot, append, fsync, seal, fsync, apply
+send      raft messages to the peer writers, replies to the client writers, status frames
+```
+
+`Process` returns only after fsync and seal, and the round has one place that sends: after
+`Process` returned without an error. Every raft message and every reply the server sends is
+encoded from the `Output` of that call; it only appends a stamp to a receipt, and a snapshot
+stream sends the synced file that a `MsgSnap` of the `Output` names. A hello promises nothing, and
+a status frame is built after `Process` as well and only reads. If `Process` fails, nothing more
+is sent and `Run` returns the error. `TestNothingLeavesBeforeItIsSynced` wraps the file system and
+holds every frame that reaches a connection against what was synced; `TestFailedProcessSendsNothing`
+makes the second fsync fail.
+
+Grouping is what arrived during the last round: while the loop waits for its disk, the readers go
+on queueing, and the next round takes the whole queue into one `Process`, one append, one fsync of
+the log and one of the seal. There is no timer and no batch size.
+`TestRequestsDuringASyncShareTheNext` holds an fsync, sends 50 requests meanwhile and counts two log
+syncs for all 51.
+
+### Ticks
+
+Ticks come from the monotonic clock. A round owes `elapsed / Tick - given` ticks and gets all of
+them, not one, so a round that takes longer than a tick loses none and the clock bound in `stamp`
+keeps up with the clock (`TestSlowRoundsLoseNoTicks`). Without debt the loop waits on a
+`time.Timer` until the next tick is due or an event arrives; a `time.Ticker` would hold one tick
+and drop the rest. Queued events are fed before the ticks, and a round gives at most 40 ticks, the
+election timeout of 50 ticks minus two heartbeats; the rest are dropped. After a long round, a slow
+fsync for example, the heartbeats that arrived meanwhile are queued and reset the timeout before
+the ticks run. After the whole process was frozen, by `SIGSTOP` or a paused VM, they may still be
+in the socket when the loop wakes up; then the cap alone keeps a follower below the shortest
+timeout, with room for the next heartbeat (`TestStallOwesLessThanAnElection`,
+`TestFrozenFollowerDoesNotCampaign`). The dropped ticks are missing from the clock bound. A node
+that stayed leader through such a stall looks afterwards like a clock that jumped forward, and
+ledger time catches up at a quarter of real time.
+
+Fixed values: `HeartbeatTicks` 5, `ElectionTicks` 50, `SnapshotTicks` 500, `MaxAppendBytes` 1 MiB,
+`MaxUncommitted` twice `MaxClients`, `ClockStep` `Tick + Tick/4`. With the default tick of 10 ms a
+heartbeat goes every 50 ms and the election timeout is 500 to 1000 ms. Only the tick is a setting.
+
+### Queues
+
+| Queue | From, to | Size | When full |
+|---|---|---|---|
+| events | readers to the loop | 256 | the reader blocks; TCP slows the sender down |
+| out, per peer | loop to peer writer | 64 frames and 8 MiB | the frame is dropped; raft sends again |
+| out, per client connection | loop to client writer | 4 frames | the connection is closed |
+| snapshot, per peer | loop to snapshot sender | 1 running | a further `MsgSnap` to that peer is dropped |
+| fatal errors | any goroutine to the loop | 1 | the first one counts |
+
+The loop never blocks on a queue. Dropping toward a peer is loss in the network to raft. Toward a
+client the server closes instead: a dropped reply would leave the client waiting for its timeout,
+while after a closed connection it asks again at once and its session returns the stored reply.
+
+### Connections
+
+- Clients: at most `MaxClients` connections, a further one is closed at once. The first frame has to
+  arrive within 5 s; after that the reader waits for a header without a deadline and wants the
+  body within 10 s of it. Only `Request` and `StatusRequest` are allowed. The first request binds
+  the connection to its client ID, a request with another ID closes it. If the same ID shows up on
+  a new connection, replies go to the new one, and a closed connection is struck from the table.
+  Every write has a deadline of 5 s.
+- Peers: two TCP connections between two nodes, one per direction; whoever wants to send dials.
+  The writer dials when a frame waits, with a timeout of 1 s, sends its hello and waits up to 2 s
+  for the answer; on any error it closes, drops the frame and waits 50 ms, doubling up to 1 s,
+  before the next try. An acceptor reads the 25-byte hello within 2 s and checks the cluster ID,
+  that `to` is its own ID, that `from` is another node of the cluster, the kind and `MaxSessions`.
+  At most four connections per peer, counted for all peers together, may wait for their hello at
+  once; more are closed. A new message connection from a peer replaces the old one. The reader
+  takes frames up to 4 MiB without an idle deadline, wants the body within 10 s of the header, and
+  closes on a message whose sender is not the peer of the hello, whose recipient is not this node,
+  or that is a `MsgSnap`.
+- `cmd/ledgerd` adds what needs addresses or socket options: the peer listener closes every
+  connection from an IP that is not in `LEDGER_PEERS`, and peer connections get TCP keepalive (5 s
+  idle, 1 s interval, 3 probes) and, on Linux, a `TCP_USER_TIMEOUT` of 5 s.
+
+### Snapshots as a stream
+
+A leader that has to send a snapshot starts a sender for that peer, unless one is running. The
+sender reads the file through `wal.ReadSnapshot`, which checks the checksum of the whole file
+first, then dials a connection of its own (hello of kind 2) and sends the `MsgSnap` frame, the file
+without its footer in chunks of up to 256 KiB, each with a write deadline of 5 s, and a
+`SnapshotEnd` with the length and the CRC32C of all chunk bytes. It checks the file against its
+footer while it streams; a file that no longer matches stops the node, a snapshot that is gone
+ends the sender quietly, and a broken connection ends only this transfer.
+
+The receiver allows one snapshot connection per peer at a time. It writes the chunks to
+`<dir>/recv/<peer>.tmp` without fsync, with a read deadline of 10 s per frame, and gives up above
+8 GiB. Only after a `SnapshotEnd` that matches what arrived does it hand message and file to the
+loop, which passes the file to `Node.Receive` and deletes it after the `Process` of that round,
+whether the core wanted the snapshot or not. A broken stream deletes the file at once, and the
+server clears `<dir>/recv/` when it opens.
+
+The stream has its own connection so that heartbeats keep flowing while it runs: behind chunks in
+the send buffer of the message connection they could arrive seconds late on a slow link, and the
+follower would stop counting for check-quorum (R11). The spool file keeps the loop off the network:
+`install` reads from the local disk, not from a socket. The price is that the snapshot is written
+twice on the receiver. Each transfer holds 256 KiB of buffer on the receiving side and two on the
+sending side (`TestLaggingNodeGetsTheSnapshotAsAStream`, `TestHeartbeatsContinueDuringASnapshot`).
+
+### Sweeper
+
+Pending transfers expire only at the start of a batch (ledger-rules, step 2). In a quiet cluster a
+reserved amount would stay reserved until somebody writes. The sweeper of the leader sends an
+empty batch instead, as an ordinary request through a session of its own, handed to its own node
+in the loop, without a socket. It sweeps when there is a next deadline that is not later than its
+wall clock, no sweep is in flight and at least `ElectionTicks` ticks have passed since the last
+one; the pause keeps it from writing an entry per round while ledger time trails the clock after
+a leader change. A node that does not lead does not sweep. An evicted sweeper starts a new
+session; that is safe because an empty batch has no effect that could apply twice. Every sweep is
+a batch and gets a link. `LEDGER_SWEEP=off` turns the sweeper off.
+
+### Stopping and errors
+
+`SIGTERM` and `SIGINT` end the context. The loop finishes its round, `Run` closes listeners and
+connections, waits for its goroutines, closes the node, which releases the lock on the data
+directory, and returns `nil`. There is no final fsync, because everything promised is synced
+already, and no handing over of leadership. Every error from `Process` is final (fail-stop):
+`ledgerd` logs it and exits with 1, and the next start goes through `replica.Open`. An error of a
+connection ends only that connection. A second `ledgerd` on the same directory fails on the lock
+(`TestSecondServerOnTheSameDirFails`).
+
+### Memory in the worst case
+
+With the defaults (128 client connections, three nodes, `MaxUncommitted` 256), if every
+connection sends frames of the largest kind and nobody reads:
+
+| Item | Computation | Total |
+|---|---|---|
+| events | 256 × up to 2 MiB: a stalled follower gets the same append again every heartbeat | 512 MiB |
+| frames held by readers | 128 × 2 MiB (the read buffer and the copy handed on) + 2 × 4 MiB | 264 MiB |
+| requests in the node | one round's requests, 256 × 1 MiB, next to the unstored entries made from them, 256 × 1 MiB | 512 MiB |
+| answers of one round | the read budget of 8 MiB and one more answer | 9 MiB |
+| out, clients | 128 × (4 queued + 1 being written) × 1 MiB | 640 MiB |
+| out, peers | 2 × (8 MiB + one frame being written) | 20 MiB |
+| snapshot streams | 256 KiB per side and transfer, two buffers on a sender | under 2 MiB |
+
+The lines add up to about 2 GiB above the state. The number is computed from the code, not
+measured, it grows with `LEDGER_MAX_CLIENTS`, and no single node is in every line at its maximum at
+once. A peer that does not follow raft gets further: a 4 MiB frame of empty entries decodes into
+about 15 MiB. Malicious nodes are outside the fault model. A byte limit across all queues would be
+tighter and is not built.
+
+### `ledgerd` and `ledgerctl`
+
+`ledgerd` takes its configuration only from the environment and refuses any `LEDGER_` variable it
+does not know, so a typo does not let a default apply in silence.
+
+| Variable | Range | Default |
+|---|---|---|
+| `LEDGER_ID` | 1 to the number of peers | required |
+| `LEDGER_CLUSTER` | 1 to 2^64-1, decimal or `0x` | required |
+| `LEDGER_PEERS` | 1, 3 or 5 `IP:port` peer addresses, comma-separated; the position is the node ID | required |
+| `LEDGER_CLIENT_ADDR` | `IP:port` | required |
+| `LEDGER_DIR` | absolute path | required |
+| `LEDGER_TICK` | 1ms to 1s | `10ms` |
+| `LEDGER_SNAPSHOT_EVERY` | 1 to 2^32 entries | `100000` |
+| `LEDGER_SEGMENT_SIZE` | 2 MiB to 64 MiB, in bytes | 64 MiB |
+| `LEDGER_MAX_SESSIONS` | 1 to 1 000 000, the same on every node | `1024` |
+| `LEDGER_MAX_CLIENTS` | 1 to 4096 | `128` |
+| `LEDGER_SWEEP` | `on` or `off` | `on` |
+| `LEDGER_KEY_FILE` | absolute path of a key file | none: receipts without a stamp |
+
+Addresses are IP and port, never host names. A node listens for peers on its own entry in
+`LEDGER_PEERS`. It exits with 0 after `SIGTERM` or `SIGINT`, 1 when the node halted (the reason is
+in the log), 2 for a configuration error, a `LEDGER_MAX_SESSIONS` that does not fit the data
+directory included, and 3 when it cannot start: directory locked, port taken, `replica.Open`
+failed. It logs to stderr one line at start and at the end, on changes of role, leader and repair
+flag, around every snapshot transfer, and for refused connections at most once a second per
+reason; nothing per request.
+
+`ledgerctl` is a program over the SDK. `LEDGER_CLUSTER` names the cluster and `LEDGER_NODES` the
+client addresses of its nodes in the order of their IDs. `ledgerd` does not know `LEDGER_NODES`
+and refuses to start while it is set. `ledgerctl -h` lists the commands: `status [-keys]`,
+`account create|get`, `transfer create|post|void|get`, `key new|show`,
+`proof account|transfer|expiry|batch`, `head` and `verify proof|chain|dir`. Exit codes: 0 for a
+good answer, 1 when the cluster answered but the answer is bad (a failed event, a missing ID, a
+node unreachable or in repair, nodes that differ, a receipt that does not hold), 2 for a usage
+error, 3 when there is no verdict (no answer within 10 s, an unknown outcome, an evicted session,
+a receipt without a stamp, a directory behind the head or held by a running node).
+
+## SDK (`ledger`)
+
+`ledger` is the one public package. It puts a goroutine, sockets and time around `client.Session`,
+as the server does around `replica.Node`; the rules for exactly once stay in the session core.
+`Dial` draws a random client ID from `crypto/rand`, registers a session and returns once it
+stands. `Config.Nodes` are the client addresses in the order of the node IDs, `Config.Timeout` is
+how long one attempt waits on one node before the next one gets the request (1 s if 0). How long a
+call waits in total is up to its context. A `Client` may be used from many goroutines.
+
+| Situation | Returned | Meaning |
+|---|---|---|
+| reply `OK` | `Result`, `nil` | applied, exactly once |
+| more records or IDs than fit into a request | `ErrTooLarge` | nothing sent; at most 10 922 accounts or 10 485 transfers, the same for lookups |
+| context ends before the request left the client | `ctx.Err()` | not applied |
+| context ends after a write was sent | an error that is both `ErrUncertain` and `ctx.Err()` | outcome unknown |
+| session evicted while a write was out | `ErrEvicted` and `ErrUncertain` | outcome unknown, the client is finished |
+| session evicted while the call still waited | `ErrEvicted` | not applied |
+| any call after an eviction | `ErrEvicted` | |
+| `Close` while a write was out | `ErrClosed` and `ErrUncertain` | outcome unknown |
+| reply `Malformed`, the state machine refused the batch | `ErrRejected` | applied on no node |
+
+- A leader change is invisible: the session sends the same request with the same number to the
+  next node, and the session in the cluster lets it apply once.
+- A request that was sent cannot be called back. When its context ends, the caller gets
+  `ErrUncertain`, and the client keeps retrying in the background until an answer comes, because
+  the number would stay open otherwise. Later calls wait behind it, each with its own context.
+- After `ErrUncertain` the transfer ID is the second layer of ADR-006: send the same transfers with
+  the same IDs again, and those that already applied come back as `Exists`.
+- After `ErrEvicted` the client never registers again on its own. The caller dials a new one and
+  decides what to send again.
+- Lookups and audit reads change nothing and cannot end with an unknown outcome; when their
+  context ends, they return `ctx.Err()`.
+
+One request is in flight per client. Calls that arrive meanwhile queue, and when the way is free
+the client takes as many consecutive writes of the same op from the head of the queue as fit into
+one request and sends them as one batch. A call whose last transfer is `Linked` ends its batch, so
+its open chain never runs into another caller's transfers. Lookups are not bundled. Every caller
+gets its own failures, indexed from 0, `Result.Timestamp`, the time of its first record, and
+`Result.Batch`, the time of the batch it ran in. The two differ for a call bundled behind others,
+and `ProveBatch` takes `Result.Batch`. A bundled batch is one batch for the state machine: one
+sweep at its start, consecutive timestamps. A pending transfer whose deadline falls between the
+timestamps of two bundled calls still counts for the later one (ledger-rules, expired but still
+reserved until the next batch).
+
+There is at most one connection per node. The client dials only when the session wants to send to
+that node, with a timeout of 1 s, and a node it failed to dial is not dialed again for 250 ms.
+When a connection's reader ends, the client drops it and calls `Session.Unreachable` at once;
+without that, every dead connection cost a full timeout. A reply with a foreign client ID, a
+decoder error or any frame other than a reply closes the connection. The session ticks every
+20 ms, and its retry interval is `Timeout` in ticks.
+
+`Prove`, `ProveBatch` and `Head` return receipts as bytes. `VerifyProof` checks one against a
+cluster ID and a list of public keys without a client; it returns `ErrUnsigned` for a receipt
+without a stamp, with the path to the head checked, and `ErrBadProof` for every other failure.
+`ConnectProofs` folds the links between two receipts or heads and returns `ErrConflict` when they
+do not meet. `Links` asks for at most 1024 links per request and, when one fails, returns the
+links it already has with the error. `Status` asks one node for its status frame, without a
+session.
 
 ## Simulator (`internal/sim`)
 
@@ -568,6 +1113,12 @@ of them; the same seed gives the same hash.
   side, so clients keep talking to a leader that has lost its majority.
 - **Reads.** While a partition or a pause is open, every second request is a lookup instead of
   every fifth, so reads meet leaders that have lost their majority.
+- **Audit reads.** A quarter of the reads ask for a receipt (of a batch the client wrote, an
+  account, a transfer or an expiry), one in eight for the head and one in sixteen for links. The
+  simulator signs nothing: a stamp is not replicated state, and its tests need no cluster.
+- **Wire.** Every message goes through `internal/wire` when it leaves: the `Clone` of each body in
+  `sim/ledger.go` encodes it and decodes it again, a snapshot as chunks and an end frame. A codec
+  error panics, and a panic is a finding. The cluster ID is a constant.
 - **Disk corruption.** `rot` runs the `all` faults and gives a quarter of the windows to damage in
   data at rest: one flipped bit or, in a quarter of the cases, a whole sector of garbage, in one
   durable file of one node. Empty and temporary files are left out. At least half of the faults
@@ -592,10 +1143,11 @@ of them; the same seed gives the same hash.
   runs or not, and on every power loss each sector written since the last fsync turns into
   garbage with probability 0.3, together with bytes in it that were already synced. Nothing is
   claimed about progress: a node may end in repair or never start again. The checkers that watch
-  a run are on: F1, S1 to S6, S10 and L3. Of the checks at the end only S11 runs, and without
-  its last requirement, because nodes may be down or behind and nothing can be compared with
-  them. `beyond` therefore shows that nodes do not diverge, do not forget without knowing it and
-  do not vote when they must not, and that no answer a client got is wrong.
+  a run are on: F1, S1 to S6, S10, S12 and L3. Of the checks at the end only S11 runs, with S13
+  for the audit reads, and without its last requirement, because nodes may be down or behind and
+  nothing can be compared with them. `beyond` therefore shows that nodes do not diverge, do not
+  forget without knowing it and do not vote when they must not, and that no answer a client got
+  is wrong.
 
 ## Checkers (`internal/check`)
 
@@ -611,6 +1163,7 @@ While the run goes on, after every event:
 | S5 | the disk keeps the node's word, or the node knows that it does not, see below | `disk.Sim.Clone`, `Status()` |
 | S6 | state invariants, every 64 applied entries and at the end | `CheckInvariants()` |
 | S10 | a node in repair sends nothing that a voter or a leader sends | messages, `Status()` after the step |
+| S12 | the head of the audit trail at each applied index is the same on every node and never changes | `Status()` |
 | F1 | a node stops only because of a disk error or of damage the plan put on its disk, see below | stop and start errors, `World.Rotted` |
 | F2 | a node is in repair only if the plan damaged its disk | `Status()`, the clones of S5, `World.Rotted` |
 | L3 | a run ends within 500 000 events (about 20 times the most a correct run needs) | event count |
@@ -627,6 +1180,8 @@ At the end:
 | S8 | oracle replay: all confirmed writes, ordered by their time, run through `internal/oracle`; every reply matches, so a transfer applied twice shows as a wrong reply, and the ledger digest equals the nodes' |
 | S9 | linearizability: porcupine checks each window, starting from the oracle state at the window border |
 | S11 | log replay: the committed log, rebuilt from the entries the nodes sent each other, runs through a session table and an oracle of the checker's own; calls, replies, ledger digest and sessions must agree with it, see below |
+| S12 | the head of every node is the head the oracle computes, in the replay of S8 and in the log replay of S11; checked before the digests |
+| S13 | every audit read that ended with `OK` shows the ledger at its time: a receipt decodes, carries the oracle's record and leads to the oracle's head at its number, an empty one stands for something the oracle does not have, heads and links are byte for byte the oracle's |
 | L4 | no node is in repair |
 
 S5 keeps a receipt book. For every node it notes the last vote with its term, and how far the
@@ -703,6 +1258,16 @@ unknown outcome sets no lower bound for later reads, even where the log executed
 order inside a window stays with S9, in the runs where S9 runs. A committed entry that no
 message carried is a finding by itself.
 
+S12 compares what came out of the state machine, where S3 compares what went in: a node that
+applies the same entries differently shows another head at the first batch that differs, long
+before the digests at the end. It compares nodes only at an index two of them have applied, so a
+node that runs ahead alone and computes wrong is seen when a second one catches up, or at the end.
+S13 sits at the two places that check lookups, the step of a read in S9's model and the reads of
+S11. The oracle builds no paths of its own: for a leaf and a link there is exactly one valid path,
+so "decodes, same record, same head" is the same as "same bytes". S13 sees only what clients
+asked for, and neither checker sees a stamp. S6 runs the chain check of `CheckInvariants`, and
+every snapshot that S5 or a restart loads runs it too.
+
 S11 runs in every profile. In `beyond` it replays the log up to the highest index that any node
 showed as committed and leaves out the comparison with the nodes. A call that never got an
 answer is allowed there, but what the log executes must still be a request some client sent
@@ -718,23 +1283,31 @@ with the same set of linearized operations are equal, which keeps porcupine's ca
 The search is bounded by the input, not by a timeout: windows of at most 32 requests, a handful of
 clients, few accounts.
 
+S8, S9 and S13 run window by window through `check.Replayer`, which has two callers: the
+simulator and the chaos test. A window holds calls that all ended with `OK`, and no call was open
+when it began or ended. The SDK returns no time for a lookup, so for the chaos test a read
+without a time is judged by its content alone (`TestReplayerAcceptsReadsWithoutTime`); in the
+simulator every read keeps its time (`TestSimulatorReadsNeedTheirTime`).
+
 ### Planted bugs
 
-Built with `-tags simbug`, `simbug.Set` switches on one of eighteen bugs. B1 to B3 wrap the disk
-inside the checker. The other fifteen touch twelve small functions, and only those live in
+Built with `-tags simbug`, `simbug.Set` switches on one of twenty-two bugs. B1 to B3 wrap the
+disk inside the checker. The other nineteen touch sixteen small functions, and only those live in
 separate files. In `raft/rules.go` these are five safety decisions of the core (`upToDate` for
 votes, `merge` for a conflicting tail, `followCommit` for the follower's commit bound,
 `maybeCommit` for the commit rule, `confirmedSeq` for read confirmation) and three of repair
 (`voter`, `repairGoal` for the index a leader names, `ack` for the round in which repair ends). In
 `replica/rules.go` they are the write order `persist`, the order of a start `mend`, the session
-check `fresh` and the entry time `entryTime`. Each file has a twin `rules_simbug.go` with the same
-functions plus the switch, so a build without the tag contains no trace of the bugs and the code
-around them stays free of switches. The twins are kept equal by hand and checked by pinned trace
-hashes: `TestTracesStayPinned` in `internal/check/golden_test.go` runs eight seeds of each of the
-ten profiles through `check.Run` and compares the 80 hashes with
-`internal/check/testdata/traces.golden`. The test has no build tag, so it runs in the normal build
-and in the `simbug` build with no bug switched on, against the same file. A twin that drifts from
-its original changes a hash. After a change in behaviour that is meant,
+check `fresh` and the entry time `entryTime`. In `state/rules.go` they are the four steps of the
+chain: `leafOf` for a leaf, `answered` for the reply hash, `chained` for the next head and `lapse`
+for the leaf of an expiry. Each file has a twin `rules_simbug.go` with the same functions plus the
+switch, so a build without the tag contains no trace of the bugs and the code around them stays
+free of switches. `ledgerd` built with the tag takes a bug from `LEDGER_BUG`, for the chaos test.
+The twins are kept equal by hand and checked by pinned trace hashes: `TestTracesStayPinned` in
+`internal/check/golden_test.go` runs eight seeds of each of the ten profiles through `check.Run`
+and compares the 80 hashes with `internal/check/testdata/traces.golden`. The test has no build
+tag, so it runs in the normal build and in the `simbug` build with no bug switched on, against the
+same file. A twin that drifts from its original changes a hash. After a change in behaviour that is meant,
 `go test ./internal/check -run TestTracesStayPinned -update` writes the file again.
 
 The table gives the first failing seed counted from 0, measured with
@@ -746,41 +1319,51 @@ The table gives the first failing seed counted from 0, measured with
 | B2 | fsync of the WAL does nothing | `all` | 0 | F2, a power loss leaves the node in repair |
 | B3 | directory sync after a new segment does nothing | `all` | 0 | F2 |
 | B4 | acknowledgements leave before the WAL sync | `all` | 0 | F2 |
-| B5 | entries are stored before the hard state | `all` | 29 | S5, no start after a power loss in the middle of a round |
-| B6 | commit by counting replicas for entries of older terms | `leaders` | 403 | S3 |
-| B7 | votes without comparing logs | `all` | 0 | S7, in other seeds S3 |
-| B8 | a follower keeps a conflicting tail | `all` | 3 | S3 |
-| B9 | a follower commits up to its own log end | `all` | 265 | S3 |
-| B10 | reads without confirmation by a majority | `split` | 563 | S9 |
-| B11 | sessions do not recognise a repeated request | `all`, `evict` | 0, 2 | S8 in `all`, S11 in `evict` |
-| B11 | the same | `beyond` | 0 | S11 |
-| B12 | entries are applied with the replica's own clock | `all` | 0 | S7 |
-| B12 | the same | `beyond` | 0 | S11 |
+| B5 | entries are stored before the hard state | `all` | 3 | S5, no start after a power loss in the middle of a round |
+| B6 | commit by counting replicas for entries of older terms | `leaders` | 365 | S3 |
+| B7 | votes without comparing logs | `all` | 3 | S7 |
+| B8 | a follower keeps a conflicting tail | `all` | 0 | S3 |
+| B9 | a follower commits up to its own log end | `all` | 53 | S3 |
+| B10 | reads without confirmation by a majority | `split` | 275 | S9 |
+| B11 | sessions do not recognise a repeated request | `all`, `evict` | 0, 0 | S8 in `all`, S13 in `evict` |
+| B11 | the same | `beyond` | 0 | S13 |
+| B12 | entries are applied with the replica's own clock | `all`, `beyond` | 0, 0 | S12, during the run |
 | B13 | no seal | `rot` | 16 | S5, during a start |
 | B14 | the seal is written before the WAL sync | `crash` | 0 | F2 |
 | B15 | a node in repair votes and stands for election | `rot` | 11 | S10 |
 | B16 | the goal of a repair is the leader's commit index | `rot` | 2987 | S5, at the end of the repair |
-| B17 | repair ends in the same `Ready` as the entries | `rot` | 131 | S5, in the middle of a round |
-| B18 | the repair flag is stored after the clean-up and the new seal | `rot` | 28 | S5, during a start |
+| B17 | repair ends in the same `Ready` as the entries | `rot` | 144 | S5, in the middle of a round |
+| B18 | the repair flag is stored after the clean-up and the new seal | `rot` | 49 | S5, at a restart |
+| B19 | a leaf is hashed without its prefix | `all`, `calm` | 0, 0 | S5, a snapshot fails its own chain check when it is loaded |
+| B20 | the reply is left out of the link | `all`, `calm` | 0, 0 | S12 at the end, the head differs from the oracle's |
+| B21 | a link is hashed without the head before it | `all`, `calm` | 0, 0 | S5, as B19 |
+| B22 | the expiry of a pending transfer gets no leaf | `all`, `calm` | 0, 1 | S5, as B19 |
 
 B2 to B4 are reported by F2 and not by S5. After a power loss frames are missing below the seal,
 the next start treats that as damage and goes into repair, and the plan never touched that disk.
 The seal turns a sync of the log that did nothing into detected damage.
 
-`TestBugsAreFound` hunts every bug except B16 in its profile, in twenty hunts for seventeen bugs,
-and checks that an expected checker reports it. B11 and B12 are also hunted in `beyond`, where
-only the log replay can see a wrong answer. Counted from five starting seeds (0, 100 000,
-200 000, 300 000, 400 000), the first finds are 7 to 29 seeds for B5, 26 to 265 for B9, 36 to 841
-for B17, 75 to 1468 for B6 in `leaders` and 50 to 2217 for B10 in `split`. The test gives B5 1000
-seeds, B9 1500, B17 4000, B6 6000 and B10 8000, so that a change that only reshuffles the random
-draws should not turn it red.
+`TestBugsAreFound` hunts every bug except B16 in its profile, in twenty-eight hunts for twenty-one
+bugs, and checks that an expected checker reports it. B11 and B12 are also hunted in `beyond`,
+where only the log replay and S12 can see a wrong answer, and B19 to B22 in `all` and in `calm`,
+the profile without faults. Counted from five starting seeds (0, 100 000, 200 000, 300 000,
+400 000), the first finds are 3 to 21 seeds for B5, 0 to 171 for B9, 72 to 368 for B17, 250 to
+2363 for B6 in `leaders` and 144 to 1027 for B10 in `split`. The test gives B5 1000 seeds, B9 1500,
+B17 4000, B6 6000 and B10 8000, so that a change that only reshuffles the random draws should not
+turn it red. The checker named in the table is the one at the first find from seed 0; from other
+seeds another allowed one can come first, F1 for B5 or B6, for example, or S13 for B10.
+
+B19, B21 and B22 are not found by the oracle but earlier, by the node itself: its state fails the
+chain check when the checker of S5 loads a snapshot of it after a simulated power loss. B20 leaves
+nothing in the state to check against, because the reply is not part of it; S12 finds it at the
+end, against the oracle. B12 shows in S12 after four applied entries, in `all` and in `beyond`.
 
 B16 is the one bug the simulator is slow to find. It needs an acknowledgement that is on its way
 while the node is damaged, restarts and gets its probe answered, and a leader that has not
-committed without that acknowledgement. From seed 0 the first find in `rot` is seed 2987, from
-seed 100 000 it is 36 247 seeds away. `scripts/nightly-sim.sh` searches 40 000 new seeds for it
-in every run. What catches B16 at once are the rule test `TestRepairProbe` and the random
-schedules of the core (`TestRuleTestsCatchTheCoreBugs`).
+committed without that acknowledgement. From seed 0 the first find in `rot` is seed 2987.
+`scripts/nightly-sim.sh` searches 40 000 new seeds for it in every run. What catches B16 at once
+are the rule test `TestRepairProbe` and the random schedules of the core
+(`TestRuleTestsCatchTheCoreBugs`).
 
 B6 is found in `leaders`; in 10 000 seeds of `all` or `crash` it does not show. Losing a commit
 needs Figure 8 of the Raft paper: an old entry reaches a majority by itself, the leader counts it
@@ -792,7 +1375,7 @@ entry to reach a majority on its own before the leader's own entry does.
 
 B10 needs a cut-off leader that still answers reads after a client has finished a write
 elsewhere. Check-quorum leaves only a short window for that. `split` keeps clients on both sides of
-a partition; in `all` the first find is seed 3820.
+a partition; in `all` the first find is seed 2311.
 
 The planted bugs show that the checkers notice these mistakes, not that the simulator finds every
 mistake in the core. Three further mutations of the core, each built by hand into a copy of the
@@ -830,9 +1413,93 @@ crashes a node in the middle of an install or of that clean-up, and `rot` never 
 on one node. The crash tests do both at every disk access. `TestCrashAtEveryDiskAccess`, the
 tests in `internal/replica/open_test.go` and the crash tests in `internal/wal` catch all seven.
 
+The seed counts of these hand-built mutations were measured before the audit trail changed the
+trace of every seed, and they have not been run again since. The table of planted bugs above is
+measured on the current code.
+
 `go run ./cmd/sim -seeds 10000 -profile all` runs seeds on all cores and stops at the first failure
 with the command that replays it, for example
 `go run -tags simbug ./cmd/sim -bug B12 -seed 0 -profile all -trace`. The built program exits
 with 0 when every seed passed, 1 for a finding, 2 for a usage error and 3 when a run failed
 without a finding, for example because the trace could not be written; `go run` turns every
 non-zero code into 1.
+
+## Chaos test (`internal/chaos`)
+
+The simulator runs the node code, not the program. The chaos test runs the program: three
+`ledgerd` processes, built once by the test, each with a data directory of its own under
+`$TMPDIR`. It needs Linux and the build tag `chaos`, and it does not run in CI.
+
+```
+test process
+  ├─ 3 ledgerd processes, a key file each
+  ├─ 6 proxies from node to peer, one per direction   (internal/faultnet)
+  ├─ 3 proxies from the clients to a node              (internal/faultnet)
+  ├─ 4 clients, each a ledger.Client, load from internal/workload
+  └─ check.Replayer, window by window
+```
+
+- Every node gets the addresses of the proxies for its peers in `LEDGER_PEERS` and its own real
+  address, so every direction can be cut on its own. A proxy reads frame headers and the kind of
+  a peer hello and nothing else, so it can delay, drop, swallow, stall or corrupt whole frames
+  without tearing the stream. It never drops frames on a snapshot connection, and it holds at
+  most 4 MiB per connection.
+- The nodes run with `LEDGER_SWEEP=off`, `LEDGER_SNAPSHOT_EVERY=500`,
+  `LEDGER_SEGMENT_SIZE` of 2 MiB and `LEDGER_MAX_SESSIONS=64`, so snapshots, compaction and the
+  snapshot stream come up again and again. The sweeper is off because its empty batches would
+  not be in the history; the load sends empty batches itself.
+- Each client calls one at a time, so the SDK does not bundle and every call is one batch, as in
+  the model. Windows close as in the simulator, after 32 started calls.
+
+A seed (`-chaos.seed`, by default from the clock, and printed) plans the run in rounds of 30
+seconds: a storm of 20 seconds with up to six windows, then 10 quiet seconds.
+
+| Fault | What happens |
+|---|---|
+| crash | `SIGKILL` to a node or to the leader, restart after 0.2 to 3 s |
+| freeze | `SIGSTOP` to a node or to the leader, `SIGCONT` when the window ends |
+| cut | a node cut off in both directions, in one, or from the clients |
+| blackhole | links that accept and read but deliver nothing |
+| stall | a link that stops reading, so buffers fill up |
+| noise | delay of 5 to 300 ms, loss up to 30 %, flipped bits up to 1 % on all links |
+| away | in a quarter of the rounds a node is gone before the storm until the leader has compacted past it, so it needs the snapshot stream to come back |
+
+The plan keeps at most one node down or frozen at a time; cuts may come on top, and then the
+cluster stands still, which is allowed. What the test requires:
+
+- every closed window passes `Replayer.Window` (S8, S9, S13) while the run goes on;
+- every call returns `nil`; an error, `ErrEvicted` included, is a finding;
+- no reply carries a time later than the wall clock at the end of its call plus the number of
+  records confirmed so far: all processes share one clock, and every record moves ledger time by
+  at least a nanosecond;
+- a `ledgerd` that ends without the test ending it is a finding (F1), with its exit and the end of
+  its log;
+- in every quiet phase: every open call answered within 15 seconds (L1), one leader and one commit
+  index (L2), the same applied index and apply hash on every node (S7), and no node in repair, at
+  no point of the run (L4);
+- at the end: lookups of every account and transfer the load knows, as ordinary calls in the last
+  window, so S9 compares the whole visible state with the oracle; per ledger the debits and
+  credits of those accounts balance; every node shows the same head and its own key; the stamped
+  head equals the head in the status; receipts for up to 16 transfers and 4 accounts verify
+  against the node keys and connect to that head over the links.
+
+On a finding the test stops every node with `SIGSTOP` and copies the plan, `history.bin` with
+every call, the node logs and the data directories to a directory `chaos-<seed>-<time>` under
+`$TMPDIR`. `go test -tags chaos ./internal/chaos -run TestReplayHistory -chaos.history <file>`
+judges a saved history again without a cluster. The plan is deterministic, the interleaving of
+real processes is not: a finding is a lead for a test with fake time in `internal/server`, a
+scenario in `replica` or a profile in the simulator, and that step is manual.
+
+`TestChaosFindsPlantedBugs` runs the cluster with `ledgerd` built with `-tags simbug` and
+`LEDGER_BUG` set. B11 must show as S8 within two minutes; B10 and B12 are searched for five
+minutes each, and a find is welcome but not required. `scripts/nightly-chaos.sh` runs three seeds
+of 30 minutes and the hunt.
+
+What the test cannot do:
+
+- Power loss. `kill -9` leaves the page cache in place, so a missing fsync or a seal written too
+  early goes unseen. Only the simulator finds those.
+- Disk faults. They stay with the profiles `rot` and `beyond` of the simulator.
+- Lost packets under TCP. The proxy acknowledges everything it reads on the TCP level, so the path
+  through `TCP_USER_TIMEOUT` is never taken.
+- Clock jumps. All processes share one clock.

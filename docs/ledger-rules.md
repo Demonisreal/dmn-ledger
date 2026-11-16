@@ -88,8 +88,8 @@ Otherwise:
    timestamp before a sweep that already ran.
 2. Pending transfers with `Timestamp + Timeout * 10^9 <= now` expire. Their amounts leave
    `*Pending`; they can no longer be posted or voided. This runs for empty batches too, which is how
-   a quiet cluster lets deadlines pass. Expiring only releases amounts and nothing records it, so the
-   order among transfers expiring in the same sweep is not part of the contract.
+   a quiet cluster lets deadlines pass. Pending transfers expire in the order of their deadline,
+   then of their ID, and the audit trail records them in that order.
 3. Events run in order. The result lists only the events that failed, as `(index, reason)` in index
    order; an empty list means every event succeeded.
 
@@ -234,7 +234,66 @@ The numbers are fixed. New reasons are only appended.
 
 `LookupAccounts(ids, dst)` and `LookupTransfers(ids, dst)` append the records found, in the order of
 `ids`, to `dst`. Unknown IDs are skipped; every record carries its ID, so the caller can match them.
-`Last` returns `last`, the point in time of the latest batch.
+`Last` returns `last`, the point in time of the latest batch. `NextExpiry` returns the earliest
+deadline of a pending transfer that has not expired yet, if there is one.
+
+## Audit trail
+
+Every batch that `Apply` accepts appends one link to a hash chain: an empty batch and a batch in
+which every event fails as well. A batch rejected with `ErrMalformedBatch` changes nothing and gets
+no link. Every replica computes the same links byte for byte; there is no randomness, clock or key
+in them. All integers are big-endian, and every input to SHA-256 starts with a byte that says what
+is hashed:
+
+| Prefix | Input | Bytes |
+|---|---|---|
+| `0x00` | leaf: `0x00 \| kind \| record` | 98 or 102 |
+| `0x01` | inner node: `0x01 \| left \| right` | 65 |
+| `0x02` | head: `0x02 \| previous head \| number \| link` | 154 |
+| `0x03` | request body: `0x03 \| body` | 1 + n · 96 or 1 + n · 100 |
+| `0x04` | reply: `0x04 \| failures` | 1 + n · 8 |
+
+1. **Leaves.** Kind 1 is an account as it was created: its record of 96 bytes with all balances 0
+   and its timestamp. Kind 2 is a transfer as it was stored, 100 bytes, with the resolved values of
+   a post or void. Kind 3 is the record of a pending transfer that expired. Failed events and the
+   events of a rolled back chain have no leaf.
+2. **Order of the leaves.** First the transfers that expired in this batch's sweep (step 2 above),
+   by deadline and then ID, then the records the batch stored, in batch order. That is also the
+   order of their timestamps.
+3. **Tree.** The Merkle Tree Hash of RFC 6962, section 2.1: for `n > 1` leaves, `k` is the largest
+   power of two below `n`, and `root = SHA-256(0x01 | root(D[0:k]) | root(D[k:n]))`. One leaf is
+   its own root. No leaf gives `SHA-256("")`,
+   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. An odd last leaf is never
+   doubled.
+4. **Request and reply.** The body hash covers the records as the client sent them. The reply hash
+   covers this batch's failures, 8 bytes each, `index u32 | reason u32`, which is the reply body
+   the client gets.
+5. **Link**, 113 bytes:
+
+   | Offset | Bytes | Field |
+   |---|---|---|
+   | 0 | 8 | time of the batch, `max(batchTimestamp, last + 1)` |
+   | 8 | 1 | op: 1 `CreateAccounts`, 2 `CreateTransfers` |
+   | 9 | 4 | events: the number of records in the body |
+   | 13 | 4 | leaves of the tree |
+   | 17 | 32 | request body hash |
+   | 49 | 32 | reply hash |
+   | 81 | 32 | root |
+
+6. **Head.** A head is a link number and a hash. Links count from 1, and the start is number 0 with
+   32 zero bytes. `head_n = SHA-256(0x02 | head_{n-1} | n as u64 | link_n)`.
+
+The records of link `n` are the ones of its op with a timestamp in
+`[time_n, time_n + max(events_n, 1))`, because timestamps are unique and rise with every event, a
+failed one included. The expirations of link `n` are the transfers with a deadline in
+`(time_{n-1}, time_n]`. A transfer never expires in its own batch: its deadline lies at least a
+second after its timestamp.
+
+An example from `internal/notary/testdata/vectors.json`, the vector "account, last of three
+leaves": link 1 has time 1000000000, op 1, 3 events and 3 leaves. The account is leaf 2, so its
+path is one hash, the root over the first two leaves, and `SHA-256(0x01 | path | leaf)` is the root
+`e6ae9e81…` in the link. With 32 zero bytes before it, the head of link 1 is
+`SHA-256(0x02 | 0…0 | 0000000000000001 | link) = 671c96d80dee258f…`.
 
 ## Invariants
 
@@ -258,27 +317,48 @@ recomputes it after any batch and fails on the first difference:
 - timestamps of accounts and transfers are not 0, unique and at most `last`
 - per account: all four balances equal the sums of its transfers (posted: normal transfers and
   posts; pending: open pending transfers)
+- the list of expired transfers holds exactly the transfers with that status, ordered by deadline
+  and ID
+- every link starts after the end of the one before, `time + max(events, 1)` stays below 2^63, and
+  its op is known
+- for every link, its expirations and then the records of its op in its time window give its
+  number of leaves and its root; no record and no expiration is left over that belongs to no link
+- every head in memory is the folded head, and `last` is the end of the last link minus one, 0
+  without a link
+
+So every byte of the state follows from the links and the records, and every link from the head.
+The check finds a state that contradicts itself. It does not stop someone who changes a record and
+the root of its link together.
 
 ## Snapshot and digest
 
 `WriteSnapshot` writes the whole state; `ReadSnapshot` restores it. The bytes depend only on the
-state, not on the order in which it was built:
+state: records are written in the order of their timestamps, which are unique, and the chain fixes
+that order. The file holds:
 
-1. version byte `1`
+1. version byte `2`
 2. `last` as uint64
-3. the number of accounts as uint64, then every account record in ID order
-4. the number of transfers as uint64, then every transfer record in ID order, each followed by one
-   status byte: 0 none, 1 pending, 2 posted, 3 voided, 4 expired
+3. the number of accounts as uint64, then every account record in timestamp order
+4. the number of transfers as uint64, then every transfer record in timestamp order, each followed
+   by one status byte: 0 none, 1 pending, 2 posted, 3 voided, 4 expired
+5. the number of links as uint64, then every link (113 bytes)
 
-All integers are big-endian. Indexes and the expiry queue are not stored; they follow from the
-records. `ReadSnapshot` rejects with `ErrBadSnapshot` every input that `WriteSnapshot` cannot have
-produced: another version, records out of ID order, transfers on unknown accounts, missing or
-trailing bytes, and any state that fails `CheckInvariants`. Since the invariants recompute the
-whole state from the transfers, every rule of this document that the final state can show is
-checked. What only the history could show is not: the snapshot does not record batch boundaries,
-so neither the limit flags at each step in between nor the members of a chain can be replayed. An
-error of the reader itself is returned as it is, not as `ErrBadSnapshot`, so the caller can tell a
-broken file from a failing disk.
+All integers are big-endian. Indexes, the expiry queue, the list of expired transfers and the
+heads are not stored; they follow from the records and the links, so the file cannot contradict
+itself. `ReadSnapshot` rejects with `ErrBadSnapshot` every input that `WriteSnapshot` cannot have
+produced: another version, records out of timestamp order, an ID twice, transfers on unknown
+accounts, missing or trailing bytes, and any state that fails `CheckInvariants`, the chain
+included. Since the invariants recompute the whole state from the transfers and every root from
+the records, every rule of this document that the final state can show is checked. The links name
+the batch boundaries. What only the history could show is still not checked: the limit flags
+between two events of one batch and the members of a chain. An error of the reader itself is
+returned as it is, not as `ErrBadSnapshot`, so the caller can tell a broken file from a failing
+disk. There is no reader for format 1.
 
 `Digest` is SHA-256 over the snapshot bytes. Two replicas with the same digest hold the same
-accounts, transfers, pending states and `last`, so they hand out the same timestamps from then on.
+accounts, transfers, pending states, links and `last`, so they hand out the same timestamps from
+then on.
+
+`Head`, `HeadAt` and `Links` read the chain. `ProveAccount`, `ProveTransfer`, `ProveExpiry` and
+`ProveBatch` build receipts from the state, never from a log: the path from a record to the root of
+its link, the link and the head before it.

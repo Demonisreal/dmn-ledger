@@ -1,6 +1,7 @@
 # ADR-002: The Raft log is the WAL, one request is one entry
 
 Status: accepted, 2026-11-11. Amended 2026-11-13: the metadata file and its seal (ADR-009).
+Amended 2026-11-16: grouping in the server.
 
 ## Context
 
@@ -40,8 +41,14 @@ applied again.
 - The WAL knows about replication: terms must not fall, `TruncateAfter` drops a conflicting tail,
   also in the middle of a segment, and `CompactBefore` removes whole segments after a snapshot.
 - Groups grow with load and with disk latency. Under light load every request costs its own
-  round, two fsyncs with the seal. How large the groups get in a running cluster is not measured
-  yet.
+  round, two fsyncs with the seal. In the server a round takes everything that arrived during the
+  previous one: `TestRequestsDuringASyncShareTheNext` holds an fsync, sends 50 requests meanwhile
+  and counts two log syncs for all 51. Measured with a load program that is not part of the
+  repository, sessions booking single transfers without a pause over loopback TCP, the servers in
+  one process on the NVMe disk (ext4) of an i5-12500H laptop: on one node 8 sessions shared a log
+  fsync four ways and 64 sessions 32 ways; on three nodes the log fsyncs per transfer fell from 3
+  with one session to 0.12 with 64. Only these counts are worth quoting. The mean fsync went from
+  0.45 to 4.6 ms between runs of the same code, so throughput and latency are not measured yet.
 - Applying reads each entry back from the WAL, with a second read through the page cache and a
   second CRC check. That is the price of applying only what is on disk; it is not measured either.
 - A checksum alone cannot tell a bit flip in the last synced batch from a torn write. The seal in
