@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"math/rand/v2"
+	"slices"
 	"testing"
 
 	"github.com/Demonisreal/dmn-ledger/internal/audit"
@@ -117,7 +118,7 @@ func TestSnapshotHoldsMaxSessions(t *testing.T) {
 		t.Fatalf("start with MaxSessions 17 over a snapshot of 16: %v, want ErrMaxSessions", err)
 	}
 	cfg := tn.config(0)
-	if err := Recount(cfg, audit.Head{}); !errors.Is(err, ErrMaxSessions) {
+	if _, err := Recount(cfg, audit.Head{}); !errors.Is(err, ErrMaxSessions) {
 		t.Fatalf("recount with MaxSessions 17: %v, want ErrMaxSessions", err)
 	}
 	tn.cfgs[0].MaxSessions = 16
@@ -133,6 +134,62 @@ func TestInstalledSnapshotHoldsMaxSessions(t *testing.T) {
 	n.Receive(e.m, bytes.NewReader(e.snap))
 	if _, err := n.Process(); !errors.Is(err, ErrMaxSessions) {
 		t.Fatalf("install of a snapshot with MaxSessions 16 on a node with %d: %v, want ErrMaxSessions", n.cfg.MaxSessions, err)
+	}
+}
+
+func TestRefusedInstallKeepsTheDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		at   int
+		want error
+	}{
+		{"another MaxSessions", len(snapMagic) + 1 + 8 + 8 + 32 + 7, ErrMaxSessions},
+		{"another version", len(snapMagic), errBadSnapshot},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tn, _, e := lagging(t)
+			before, err := tn.probe(2, tn.disks[2].Clone(rand.New(rand.NewPCG(6, 1))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			snaps := names(stored(tn.disks[2], ".snap"))
+			foreign := bytes.Clone(e.snap)
+			foreign[tc.at]++
+			tn.nodes[2].Receive(e.m, bytes.NewReader(foreign))
+			if _, err := tn.nodes[2].Process(); !errors.Is(err, tc.want) {
+				t.Fatalf("install: %v, want %v", err, tc.want)
+			}
+			tn.crash(2)
+			if got := names(stored(tn.disks[2], ".snap")); !slices.Equal(got, snaps) {
+				t.Fatalf("snapshots after the refused install %v, before %v", got, snaps)
+			}
+			after, err := tn.probe(2, tn.disks[2])
+			if err != nil {
+				t.Fatalf("restart after a refused install: %v", err)
+			}
+			if after.Last != before.Last || after.Applied != before.Applied || after.Head != before.Head {
+				t.Fatalf("restart after a refused install: %+v, before %+v", after, before)
+			}
+		})
+	}
+}
+
+func TestLoadRefusesOtherSnapshotVersions(t *testing.T) {
+	tn := newTestNet(t, 1, nil)
+	tn.elect(0)
+	c := tn.register(0, 1)
+	ok(t, c.do(client.CreateAccounts, accounts(1, 2)))
+	var snap bytes.Buffer
+	if err := tn.nodes[0].writeSnapshot(&snap); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []byte{0, 1, snapVersion + 1} {
+		b := bytes.Clone(snap.Bytes())
+		b[len(snapMagic)] = version
+		n := &Node{cfg: tn.cfgs[0]}
+		if err := n.load(bytes.NewReader(b)); !errors.Is(err, errBadSnapshot) {
+			t.Errorf("snapshot of version %d: %v, want a bad snapshot", version, err)
+		}
 	}
 }
 

@@ -65,14 +65,15 @@ func (ct *counted) config(fsys disk.FS) Config {
 }
 
 func (ct *counted) recount(fsys disk.FS, want audit.Head) error {
-	return Recount(ct.config(fsys), want)
+	_, err := Recount(ct.config(fsys), want)
+	return err
 }
 
 func (ct *counted) firstRun(t *testing.T, fsys disk.FS) *Node {
 	t.Helper()
 	cfg := ct.config(fsys)
 	cfg.ID, cfg.Peers, cfg.SnapshotEvery = 1, []uint64{1}, math.MaxUint64
-	n, err := recount(cfg, ct.head)
+	n, _, err := recount(cfg, ct.head, audit.Head{})
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -114,8 +115,17 @@ func TestRecountMatchesTheLiveHead(t *testing.T) {
 		if snaps := stored(d, ".snap"); len(snaps) != 2 {
 			t.Fatalf("n%d holds %d snapshots, want two", i+1, len(snaps))
 		}
-		if err := ct.recount(d.Clone(rand.New(rand.NewPCG(1, 1))), ct.head); err != nil {
+		runs, err := Recount(ct.config(d.Clone(rand.New(rand.NewPCG(1, 1)))), ct.head)
+		if err != nil {
 			t.Fatalf("recount of n%d: %v", i+1, err)
+		}
+		if len(runs) != 2 || runs[0].Snapshot <= runs[1].Snapshot {
+			t.Fatalf("recount of n%d: runs %+v, want one from each snapshot, the newest first", i+1, runs)
+		}
+		for _, run := range runs {
+			if run.Links != ct.head.Seq || run.Committed != runs[0].Committed || run.Committed >= run.Links {
+				t.Fatalf("recount of n%d: run %+v, the head is link %d", i+1, run, ct.head.Seq)
+			}
 		}
 		ahead := audit.Head{Seq: ct.head.Seq + 1, Hash: ct.head.Hash}
 		if err := ct.recount(d.Clone(rand.New(rand.NewPCG(1, 2))), ahead); !errors.Is(err, ErrBehind) {
@@ -123,8 +133,13 @@ func TestRecountMatchesTheLiveHead(t *testing.T) {
 		}
 		other := ct.head
 		other.Hash[0]++
-		if err := ct.recount(d, other); !errors.Is(err, ErrOtherHead) {
-			t.Fatalf("recount of n%d against another head: %v, want ErrOtherHead", i+1, err)
+		if err := ct.recount(d.Clone(rand.New(rand.NewPCG(1, 3))), other); !errors.Is(err, ErrOtherLog) {
+			t.Fatalf("recount of n%d against another head after the snapshots: %v, want ErrOtherLog", i+1, err)
+		}
+		first, _ := ct.tn.nodes[0].sm.HeadAt(1)
+		first.Hash[0]++
+		if err := ct.recount(d, first); !errors.Is(err, ErrOtherHead) {
+			t.Fatalf("recount of n%d against another head in a snapshot: %v, want ErrOtherHead", i+1, err)
 		}
 	}
 }
@@ -135,9 +150,10 @@ func TestRecountFindsChangedLogEntry(t *testing.T) {
 		name   string
 		index  uint64
 		before bool
+		want   error
 	}{
-		{"after the newest snapshot", ct.newest.Index + 1, false},
-		{"between the snapshots", ct.newest.Index, true},
+		{"after the newest snapshot", ct.newest.Index + 1, false, ErrOtherLog},
+		{"between the snapshots", ct.newest.Index, true, ErrOtherHead},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := ct.copy(0)
@@ -153,8 +169,8 @@ func TestRecountFindsChangedLogEntry(t *testing.T) {
 				}
 			}
 			err := ct.recount(d, ct.head)
-			if !errors.Is(err, ErrOtherHead) {
-				t.Fatalf("recount: %v, want ErrOtherHead", err)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("recount: %v, want %v", err, tc.want)
 			}
 			from := ct.newest.Index
 			if tc.before {
@@ -214,6 +230,81 @@ func TestRecountIgnoresTheUncommittedTail(t *testing.T) {
 	}
 	if n := ct.firstRun(t, d); n.sm.Head().Seq <= ct.head.Seq {
 		t.Fatalf("the copy holds %d links, the live head %d: no tail was counted", n.sm.Head().Seq, ct.head.Seq)
+	}
+}
+
+func TestRecountOfADeposedLeaderIsNotAnotherHead(t *testing.T) {
+	ct := countedNet(t)
+	tn := ct.tn
+	tn.cut[1] = true
+	tn.send(0, ct.c.request(client.CreateAccounts, accounts(50)))
+	if r := tn.take(); len(r) != 0 {
+		t.Fatalf("answered without a majority: %+v", r)
+	}
+	d := ct.copy(0)
+
+	lead := tn.choose(1, 2)
+	c := tn.register(lead, 2)
+	ok(t, c.do(client.CreateAccounts, accounts(60)))
+	head := tn.nodes[lead].Status().Head
+	if head.Seq != ct.head.Seq+1 {
+		t.Fatalf("the cluster is at link %d, want %d", head.Seq, ct.head.Seq+1)
+	}
+
+	runs, err := Recount(ct.config(d.Clone(rand.New(rand.NewPCG(4, 1)))), ct.head)
+	if err != nil {
+		t.Fatalf("recount against the head before the split: %v", err)
+	}
+	if runs[0].Links != head.Seq {
+		t.Fatalf("the copy of n1 holds %d links, want %d with the one never committed", runs[0].Links, head.Seq)
+	}
+	if err := ct.recount(d, head); !errors.Is(err, ErrOtherLog) {
+		t.Fatalf("recount of a deposed leader against the head of the cluster: %v, want ErrOtherLog", err)
+	}
+}
+
+func TestRecountOfAnIdleFollowerAfterInstall(t *testing.T) {
+	tn, _, e := lagging(t)
+	n := tn.nodes[2]
+	n.Receive(e.m, bytes.NewReader(e.snap))
+	if _, err := n.Process(); err != nil {
+		t.Fatal(err)
+	}
+	head := n.Status().Head
+	d := tn.disks[2].Clone(rand.New(rand.NewPCG(5, 5)))
+	d.Crash()
+	if snaps := stored(d, ".snap"); len(snaps) != 2 {
+		t.Fatalf("n3 holds %d snapshots, want its own and the installed one", len(snaps))
+	}
+	cfg := tn.config(2)
+	cfg.FS = d
+	runs, err := Recount(cfg, head)
+	if err != nil {
+		t.Fatalf("recount right after an installed snapshot: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Snapshot != e.m.Index || runs[0].Links != head.Seq {
+		t.Fatalf("runs %+v, want one from the installed snapshot %d up to link %d", runs, e.m.Index, head.Seq)
+	}
+}
+
+func TestRecountReportsABrokenSnapshot(t *testing.T) {
+	ct := countedNet(t)
+	for _, tc := range []struct {
+		name string
+		snap raft.Snapshot
+	}{
+		{"newest", ct.newest},
+		{"older", ct.older},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := ct.copy(0)
+			if err := d.Corrupt(snapFile(tc.snap), 100); err != nil {
+				t.Fatal(err)
+			}
+			if err := ct.recount(d, ct.head); !errors.Is(err, wal.ErrCorrupt) {
+				t.Fatalf("recount with a broken %s snapshot: %v, want ErrCorrupt", tc.name, err)
+			}
+		})
 	}
 }
 

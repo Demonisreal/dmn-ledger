@@ -38,11 +38,30 @@ func TestSignIsDeterministic(t *testing.T) {
 			t.Errorf("another %s gives the same signature", name)
 		}
 	}
-	if _, _, ok := notary.Signer(stamp, audit.Head{Seq: 8, Hash: h.Hash}); ok {
-		t.Error("stamp of head 7 passes for head 8")
+	if c, signer, ok := notary.Signer(stamp, audit.Head{Seq: 8, Hash: h.Hash}); ok || c != 0 || signer != nil {
+		t.Errorf("stamp of head 7 for head 8: cluster %#x, key %x, %v", c, signer, ok)
 	}
 	if _, _, ok := notary.Signer(stamp[:notary.StampSize-1], h); ok {
 		t.Error("short stamp passes")
+	}
+}
+
+func TestVerifyBlamesTheSignatureFirst(t *testing.T) {
+	b := ledger(t)
+	for _, tc := range []struct {
+		name    string
+		c       uint64
+		trusted ed25519.PublicKey
+	}{
+		{"this cluster, trusted key", cluster, public(key)},
+		{"another cluster", otherCluster, public(key)},
+		{"untrusted key", cluster, public(otherKey)},
+	} {
+		proof := stamped(b.batches[1].receipt(0), tc.c, key)
+		proof[len(proof)-1] ^= 1
+		if _, _, _, err := notary.Verify(proof, cluster, []ed25519.PublicKey{tc.trusted}); !errors.Is(err, notary.ErrSignature) {
+			t.Errorf("%s with a broken signature: %v, want ErrSignature", tc.name, err)
+		}
 	}
 }
 

@@ -41,7 +41,10 @@ func Signer(stamp []byte, h audit.Head) (cluster uint64, key ed25519.PublicKey, 
 	}
 	cluster = binary.BigEndian.Uint64(stamp)
 	key = ed25519.PublicKey(stamp[8 : 8+ed25519.PublicKeySize : 8+ed25519.PublicKeySize])
-	return cluster, key, ed25519.Verify(key, message(cluster, h), stamp[8+ed25519.PublicKeySize:])
+	if !ed25519.Verify(key, message(cluster, h), stamp[8+ed25519.PublicKeySize:]) {
+		return 0, nil, false
+	}
+	return cluster, key, true
 }
 
 func Verify(proof []byte, cluster uint64, trusted []ed25519.PublicKey) (audit.Receipt, audit.Head, ed25519.PublicKey, error) {
@@ -54,12 +57,12 @@ func Verify(proof []byte, cluster uint64, trusted []ed25519.PublicKey) (audit.Re
 	}
 	signedFor, key, ok := Signer(stamp, h)
 	switch {
+	case !ok:
+		return audit.Receipt{}, audit.Head{}, nil, ErrSignature
 	case signedFor != cluster:
 		return audit.Receipt{}, audit.Head{}, nil, ErrCluster
 	case !slices.ContainsFunc(trusted, func(k ed25519.PublicKey) bool { return k.Equal(key) }):
 		return audit.Receipt{}, audit.Head{}, nil, ErrUntrusted
-	case !ok:
-		return audit.Receipt{}, audit.Head{}, nil, ErrSignature
 	}
 	return r, h, key, nil
 }

@@ -33,6 +33,7 @@ const (
 	lookupOdds    = 5
 	cutLookups    = 2
 	readKinds     = 16
+	linkSpan      = 64
 	maxSessions   = 64
 	evictSessions = 2
 	drainTime     = second
@@ -431,8 +432,11 @@ func (p *ledgerClient) submit() {
 func (p *ledgerClient) read() (client.Op, []byte) {
 	pick := p.rng.IntN(readKinds)
 	switch {
-	case pick == 0:
+	case pick == 0 && p.rng.IntN(2) == 0:
 		return client.Links, binary.BigEndian.AppendUint64(make([]byte, 8), math.MaxUint64)
+	case pick == 0:
+		from := p.rng.Uint64N(4 * linkSpan)
+		return client.Links, binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint64(nil, from), from+p.rng.Uint64N(linkSpan+1))
 	case pick <= 2:
 		return client.Head, nil
 	case pick == 3 && p.wrote > 0:
@@ -481,17 +485,16 @@ func (p *ledgerClient) Receive(m Msg) {
 	call.End, call.Reply = p.now(), r
 	p.call = -1
 	p.c.open--
-	if r.Status == client.OK && !call.Op.Lookup() {
-		p.c.gen.Settle(p.batch, client.DecodeFailures(r.Body))
+	switch {
+	case r.Status == client.OK && !call.Op.Lookup():
+		fails := client.DecodeFailures(r.Body)
+		p.c.gen.Settle(p.batch, fails)
 		p.wrote = r.Time
 		if call.Op == client.CreateTransfers && p.held.IsZero() {
-			for rec := range slices.Chunk(p.batch.Body, state.TransferSize) {
-				if tr := state.DecodeTransfer(rec); tr.Flags&state.Pending != 0 && tr.Timeout > 0 {
-					p.held = tr.ID
-					break
-				}
-			}
+			p.held = pending(p.batch.Body, fails)
 		}
+	case call.Op == client.Prove && call.Body[0] == audit.KindExpiry:
+		p.held = u128.Uint128{}
 	}
 	switch {
 	case p.c.churn && (r.Status == client.SessionUnknown || p.rng.IntN(rejoinOdds) == 0):
@@ -500,6 +503,16 @@ func (p *ledgerClient) Receive(m Msg) {
 		p.left = 0
 	}
 	p.pause = p.rng.IntN(thinkTicks)
+}
+
+func pending(body []byte, fails []state.Failure) u128.Uint128 {
+	for i := 0; len(body) >= state.TransferSize; i, body = i+1, body[state.TransferSize:] {
+		tr := state.DecodeTransfer(body)
+		if tr.Flags&state.Pending != 0 && tr.Timeout > 0 && !slices.ContainsFunc(fails, func(f state.Failure) bool { return f.Index == i }) {
+			return tr.ID
+		}
+	}
+	return u128.Uint128{}
 }
 
 func (p *ledgerClient) Run() ([]Msg, error) {

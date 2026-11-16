@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/Demonisreal/dmn-ledger/internal/audit"
@@ -92,24 +93,114 @@ func TestProveGoesThroughReadIndex(t *testing.T) {
 	}
 }
 
-func TestBusyWhenTooManyProofsWait(t *testing.T) {
-	tn := newTestNet(t, 3, func(cfg *Config) { cfg.MaxUncommitted = 2 })
+func TestBusyWhenTheWaitingReadsFillTheBudget(t *testing.T) {
+	tn := newTestNet(t, 3, nil)
 	tn.elect(0)
 	c := tn.register(0, 1)
 	tn.cut[2], tn.cut[3] = true, true
-	tn.send(0, c.request(client.Prove, proofOf(audit.KindAccount, 1)))
-	tn.send(0, c.request(client.Head, nil))
-	busy := c.request(client.Links, span(0, math.MaxUint64))
-	tn.send(0, busy)
-	if r := tn.take(); len(r) != 1 || r[0].Status != client.Busy || r[0].Number != busy.Number {
-		t.Fatalf("replies %+v, want Busy for the third read", r)
+	widest := make([]byte, client.MaxBody/state.TransferSize*client.IDSize)
+	var waiting []client.Request
+	for range readBudget / (client.MaxBody / state.TransferSize * state.TransferSize) {
+		waiting = append(waiting, c.request(client.LookupTransfers, widest))
+		tn.send(0, waiting[len(waiting)-1])
+	}
+	if len(waiting) != 8 {
+		t.Fatalf("%d of the widest lookups fit the budget, want 8", len(waiting))
+	}
+	for _, tc := range []struct {
+		op   client.Op
+		body []byte
+		busy bool
+	}{
+		{client.Prove, proofOf(audit.KindAccount, 1), true},
+		{client.Links, span(0, math.MaxUint64), true},
+		{client.Links, span(0, 6), true},
+		{client.Links, span(0, 5), false},
+		{client.Head, nil, false},
+		{client.Head, nil, true},
+	} {
+		req := c.request(tc.op, tc.body)
+		tn.send(0, req)
+		r := tn.take()
+		switch {
+		case tc.busy && (len(r) != 1 || r[0].Status != client.Busy || r[0].Number != req.Number):
+			t.Fatalf("%s %x: replies %+v, want Busy", tc.op, tc.body, r)
+		case !tc.busy && len(r) != 0:
+			t.Fatalf("%s %x: replies %+v, want it to wait", tc.op, tc.body, r)
+		case !tc.busy:
+			waiting = append(waiting, req)
+		}
 	}
 	tn.cut[2], tn.cut[3] = false, false
 	for range 10 {
 		tn.tick(0)
 	}
-	if got := tn.take(); len(got) != 2 || got[0].Status != client.OK || got[1].Status != client.OK {
-		t.Fatalf("replies %+v, want both waiting reads answered", got)
+	got := tn.take()
+	if len(got) != len(waiting) {
+		t.Fatalf("%d replies, want all %d waiting reads answered", len(got), len(waiting))
+	}
+	for i, r := range got {
+		if r.Number != waiting[i].Number || r.Status != client.OK {
+			t.Fatalf("reply %d: %s %s, want %s OK", i, r.Op, r.Status, waiting[i].Op)
+		}
+	}
+	ok(t, tn.call(0, c.request(client.LookupAccounts, ids(4))))
+}
+
+func TestProofsOfOneRoundStayWithinTheBudget(t *testing.T) {
+	const each, batches, asked = 10_000, 3, 32
+	tn := newTestNet(t, 1, func(cfg *Config) { cfg.SnapshotEvery = 1 << 40 })
+	tn.elect(0)
+	c := tn.register(0, 1)
+	ok(t, c.do(client.CreateAccounts, accounts(1, 2)))
+	for b := range uint64(batches) {
+		var body []byte
+		for i := range uint64(each) {
+			body = append(body, hold(1000+b*each+i, 1)...)
+		}
+		ok(t, c.do(client.CreateTransfers, body))
+	}
+	for range 150 {
+		tn.tick(0)
+	}
+	ok(t, c.do(client.CreateAccounts, nil))
+	n := tn.nodes[0]
+	if l := n.sm.Links(n.sm.Head().Seq-1, n.sm.Head().Seq, nil)[0]; l.Leaves != batches*each {
+		t.Fatalf("the sweep has %d leaves, want %d", l.Leaves, batches*each)
+	}
+
+	var reqs []client.Request
+	for i := range uint64(asked) {
+		reqs = append(reqs, c.request(client.Prove, proofOf(audit.KindExpiry, 1000+i)))
+		n.Request(reqs[i])
+	}
+	var rounds []int
+	for left := asked; left > 0; {
+		tn.clocks[0] += tickNs
+		n.Tick()
+		out, err := n.Process()
+		if err != nil {
+			t.Fatal(err)
+		}
+		answered := 0
+		for _, r := range out.Replies {
+			switch {
+			case r.Status == client.OK && len(r.Body) > 0:
+				answered++
+			case r.Status == client.Busy:
+				n.Request(reqs[r.Number-reqs[0].Number])
+			default:
+				t.Fatalf("reply %+v", r)
+			}
+		}
+		rounds = append(rounds, answered)
+		left -= answered
+		if answered == 0 {
+			t.Fatalf("proofs answered per round %v", rounds)
+		}
+	}
+	if len(rounds) != (asked+2)/3 || slices.Max(rounds) != 3 {
+		t.Fatalf("proofs answered per round %v, want three: two proofs of %d leaves stay below the budget, the third crosses it", rounds, batches*each)
 	}
 }
 
@@ -362,9 +453,9 @@ func TestLinksRange(t *testing.T) {
 		{batches + 1, math.MaxUint64, 0},
 		{math.MaxUint64, math.MaxUint64, 0},
 	} {
-		r := n.lookup(client.Request{Op: client.Links, Body: span(tc.from, tc.to)})
+		r, _ := n.lookup(client.Request{Op: client.Links, Body: span(tc.from, tc.to)})
 		links := linksOf(t, r.Body)
-		if len(links) != tc.want || len(r.Body) > client.MaxBody {
+		if len(links) != tc.want || len(r.Body) > 128<<10 {
 			t.Fatalf("links from %d to %d: %d in %d bytes, want %d", tc.from, tc.to, len(links), len(r.Body), tc.want)
 		}
 		if got, want := audit.Connect(at(tc.from), links), at(tc.from+uint64(tc.want)); tc.want > 0 && got != want {

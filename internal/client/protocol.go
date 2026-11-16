@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
@@ -13,7 +12,7 @@ const (
 	MaxBody     = 1 << 20
 	IDSize      = 16
 	FailureSize = 8
-	MaxLinks    = MaxBody / audit.LinkSize
+	MaxLinks    = 1024
 )
 
 type Op uint8

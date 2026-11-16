@@ -195,6 +195,8 @@ func TestDecodeRefuses(t *testing.T) {
 	}
 	unnumbered := chain[0].receipt(0)
 	unnumbered.Seq = 0
+	preceded := chain[0].receipt(0)
+	preceded.Prev = chain[0].head().Hash
 	indexed := chain[1].whole()
 	indexed.Index = 1
 	withPath := chain[1].whole()
@@ -222,6 +224,8 @@ func TestDecodeRefuses(t *testing.T) {
 		{"path length one less", at(transfer, 2+100+4, 1)},
 		{"33 hops", audit.AppendReceipt(nil, tooLong)},
 		{"link number 0", audit.AppendReceipt(nil, unnumbered)},
+		{"link 1 after a head", audit.AppendReceipt(nil, preceded)},
+		{"batch receipt of link 1 after a head", audit.AppendReceipt(nil, audit.Receipt{Kind: audit.KindBatch, Seq: 1, Prev: preceded.Prev, Link: chain[0].link})},
 		{"batch with a leaf index", audit.AppendReceipt(nil, indexed)},
 		{"batch with a path", audit.AppendReceipt(nil, withPath)},
 		{"leaf index beyond the leaves", audit.AppendReceipt(nil, beyond)},

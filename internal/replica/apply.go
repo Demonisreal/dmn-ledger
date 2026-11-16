@@ -16,6 +16,9 @@ const (
 	kindRequest  uint8 = 2
 
 	requestHead = client.IDSize + 8 + 8 + 1 + 8
+
+	headSize  = 2 + 8 + audit.HashSize
+	proofSize = 2 + state.TransferSize + 4 + 1 + audit.MaxHops*audit.HashSize + 8 + audit.HashSize + audit.LinkSize
 )
 
 type session struct {
@@ -63,6 +66,20 @@ func wellFormed(req client.Request) bool {
 
 func replyFits(ids []byte, size int) bool {
 	return len(ids)%client.IDSize == 0 && len(ids)/client.IDSize*size <= client.MaxBody
+}
+
+func replyBound(req client.Request) int {
+	switch req.Op {
+	case client.LookupAccounts:
+		return len(req.Body) / client.IDSize * state.AccountSize
+	case client.LookupTransfers:
+		return len(req.Body) / client.IDSize * state.TransferSize
+	case client.Prove:
+		return proofSize
+	case client.Links:
+		return int(min(binary.BigEndian.Uint64(req.Body[8:])-binary.BigEndian.Uint64(req.Body), client.MaxLinks)) * audit.LinkSize
+	}
+	return headSize
 }
 
 func (n *Node) apply(e wal.Entry) {
@@ -169,8 +186,9 @@ func (n *Node) execute(r client.Reply, ts uint64, recs []byte) client.Reply {
 	return r
 }
 
-func (n *Node) lookup(req client.Request) client.Reply {
+func (n *Node) lookup(req client.Request) (client.Reply, int) {
 	var body []byte
+	var leaves uint32
 	switch req.Op {
 	case client.LookupAccounts:
 		for _, a := range n.sm.LookupAccounts(client.DecodeIDs(req.Body), nil) {
@@ -181,7 +199,7 @@ func (n *Node) lookup(req client.Request) client.Reply {
 			body = state.AppendTransfer(body, tr)
 		}
 	case client.Prove:
-		body = n.prove(req.Body[0], req.Body[1:])
+		body, leaves = n.prove(req.Body[0], req.Body[1:])
 	case client.Head:
 		body = audit.AppendHead(nil, n.sm.Head())
 	case client.Links:
@@ -198,10 +216,10 @@ func (n *Node) lookup(req client.Request) client.Reply {
 		Leader: n.cfg.ID,
 		Time:   n.sm.Last(),
 		Body:   body,
-	}
+	}, len(body) + int(leaves)*state.TransferSize
 }
 
-func (n *Node) prove(kind byte, key []byte) []byte {
+func (n *Node) prove(kind byte, key []byte) ([]byte, uint32) {
 	var proof audit.Receipt
 	var found bool
 	switch kind {
@@ -215,7 +233,7 @@ func (n *Node) prove(kind byte, key []byte) []byte {
 		proof, found = n.sm.ProveExpiry(u128.FromBytes(key))
 	}
 	if !found {
-		return nil
+		return nil, 0
 	}
-	return audit.AppendReceipt(nil, proof)
+	return audit.AppendReceipt(nil, proof), proof.Link.Leaves
 }

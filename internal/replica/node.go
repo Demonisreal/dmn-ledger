@@ -21,6 +21,7 @@ import (
 
 const (
 	applyBytes = 4 << 20
+	readBudget = 8 << 20
 	stampLimit = 1 << 62
 )
 
@@ -400,9 +401,11 @@ func (n *Node) follow() {
 }
 
 func (n *Node) accept() error {
-	var reading uint64
+	var reading int
 	for _, b := range n.reads {
-		reading += uint64(len(b.reqs))
+		for _, req := range b.reqs {
+			reading += replyBound(req)
+		}
 	}
 	for _, req := range n.inbox {
 		switch {
@@ -410,11 +413,11 @@ func (n *Node) accept() error {
 			n.refuse(req, client.NotLeader)
 		case !wellFormed(req):
 			n.refuse(req, client.Malformed)
-		case req.Op.Lookup() && reading >= n.cfg.MaxUncommitted:
+		case req.Op.Lookup() && reading+replyBound(req) > readBudget:
 			n.refuse(req, client.Busy)
 		case req.Op.Lookup():
 			n.lookups = append(n.lookups, req)
-			reading++
+			reading += replyBound(req)
 		case n.proposed[keyOf(req)]:
 		default:
 			if err := n.propose(req); err != nil {
@@ -493,6 +496,7 @@ func (n *Node) readIndex() error {
 }
 
 func (n *Node) confirm(reads []raft.Read) error {
+	var spent int
 	for _, rd := range reads {
 		if rd.Index > n.applied {
 			return fmt.Errorf("%w: read %d confirmed at index %d, applied %d", raft.ErrSafety, rd.Tag, rd.Index, n.applied)
@@ -502,7 +506,13 @@ func (n *Node) confirm(reads []raft.Read) error {
 			continue
 		}
 		for _, req := range n.reads[i].reqs {
-			n.replies = append(n.replies, n.lookup(req))
+			if spent >= readBudget {
+				n.refuse(req, client.Busy)
+				continue
+			}
+			r, work := n.lookup(req)
+			n.replies = append(n.replies, r)
+			spent += work
 		}
 		n.reads = slices.Delete(n.reads, i, i+1)
 	}

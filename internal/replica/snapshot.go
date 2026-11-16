@@ -37,7 +37,7 @@ type snapHead struct {
 	sessions    uint64
 }
 
-func parseHead(b []byte) (snapHead, error) {
+func (n *Node) parseHead(b []byte) (snapHead, error) {
 	if string(b[:len(snapMagic)]) != snapMagic || b[len(snapMagic)] != snapVersion {
 		return snapHead{}, fmt.Errorf("%w: magic or version", errBadSnapshot)
 	}
@@ -49,6 +49,9 @@ func parseHead(b []byte) (snapHead, error) {
 		sessions: binary.BigEndian.Uint64(b[24+sha256.Size:]),
 	}
 	copy(h.hash[:], b[16:])
+	if h.limit != uint64(n.cfg.MaxSessions) { //nolint:gosec // G115: Open refuses a MaxSessions below 1
+		return snapHead{}, fmt.Errorf("%w: the snapshot was written with %d, this node has %d", ErrMaxSessions, h.limit, n.cfg.MaxSessions)
+	}
 	return h, nil
 }
 
@@ -84,12 +87,9 @@ func (n *Node) load(r io.Reader) error {
 	if _, err := io.ReadFull(br, buf[:]); err != nil {
 		return err
 	}
-	head, err := parseHead(buf[:])
+	head, err := n.parseHead(buf[:])
 	if err != nil {
 		return err
-	}
-	if head.limit != uint64(n.cfg.MaxSessions) { //nolint:gosec // G115: Open refuses a MaxSessions below 1
-		return fmt.Errorf("%w: the snapshot was written with %d, this node has %d", ErrMaxSessions, head.limit, n.cfg.MaxSessions)
 	}
 	sessions := make(map[u128.Uint128]*session)
 	var rec [sessionLen]byte
@@ -138,7 +138,7 @@ func (n *Node) install(s raft.Snapshot) error {
 	if _, err := io.ReadFull(src, buf[:]); err != nil {
 		return err
 	}
-	head, err := parseHead(buf[:])
+	head, err := n.parseHead(buf[:])
 	if err != nil {
 		return err
 	}

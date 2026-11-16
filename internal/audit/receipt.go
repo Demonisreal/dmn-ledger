@@ -100,7 +100,9 @@ func Decode(proof []byte) (Receipt, Head, []byte, error) {
 	if r.Seq = binary.BigEndian.Uint64(chain); r.Seq == 0 {
 		return Receipt{}, Head{}, nil, errSeq
 	}
-	r.Prev = Hash(chain[8:])
+	if r.Prev = Hash(chain[8:]); r.Seq == 1 && r.Prev != (Hash{}) {
+		return Receipt{}, Head{}, nil, errStart
+	}
 	r.Link = DecodeLink(chain[8+HashSize:])
 	if kind != KindBatch {
 		r.Record = proof[2 : 2+size : 2+size]
