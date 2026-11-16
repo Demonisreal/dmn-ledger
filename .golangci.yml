@@ -23,6 +23,7 @@ linters:
             - "**/internal/client/*.go"
             - "**/internal/workload/*.go"
             - "**/internal/wire/*.go"
+            - "**/internal/audit/*.go"
             - "!$test"
           deny:
             - pkg: time
@@ -35,6 +36,21 @@ linters:
               desc: deterministic core, single thread
             - pkg: crypto/rand
               desc: deterministic core, randomness is passed in
+        keyless:
+          files:
+            - "**/internal/state/*.go"
+            - "**/internal/replica/*.go"
+            - "**/internal/raft/*.go"
+            - "**/internal/sim/*.go"
+            - "**/internal/client/*.go"
+            - "**/internal/workload/*.go"
+            - "**/internal/audit/*.go"
+            - "**/internal/oracle/*.go"
+          deny:
+            - pkg: crypto/ed25519
+              desc: no signing key in the core, stamps are made in internal/notary
+            - pkg: github.com/Demonisreal/dmn-ledger/internal/notary
+              desc: no signing key in the core, stamps are made outside it
         checkers:
           files:
             - "**/internal/check/*.go"
