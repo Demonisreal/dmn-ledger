@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -28,6 +29,9 @@ const (
 	answerWithin = 15 * time.Second
 	agreeWithin  = 10 * time.Second
 	probeFor     = 200 * time.Millisecond
+	fillFor      = 60 * time.Second
+	awayFor      = 90 * time.Second
+	stampLayout  = "2006/01/02 15:04:05.000000"
 )
 
 func TestChaos(t *testing.T) {
@@ -100,20 +104,84 @@ func (h *harness) connect() bool {
 }
 
 func (h *harness) conduct(rounds int, r *check.Replayer) {
-	for k := range rounds {
-		base, offset := time.Now(), time.Duration(k)*round
-		h.begun = append(h.begun, base)
+	var late time.Duration
+	for k := 0; k < rounds-int(late/round); k++ {
+		offset := time.Duration(k) * round
 		var ws []*window
 		for _, w := range h.plan {
 			if w.start >= offset && w.start < offset+round {
 				ws = append(ws, w)
 			}
 		}
+		if i := slices.IndexFunc(ws, func(w *window) bool { return w.kind == away }); i >= 0 {
+			if !h.leave(ws[i]) {
+				return
+			}
+			late += ws[i].waited
+		}
+		base := time.Now()
+		h.begun = append(h.begun, base)
 		if !h.storm(base, offset, ws) || !h.calm(base) {
 			return
 		}
 	}
 	h.final(r)
+}
+
+func (h *harness) leave(w *window) bool {
+	h.aim(w)
+	began := time.Now()
+	for !h.filled(w.hit) && time.Since(began) < fillFor {
+		if !h.sleep(100 * time.Millisecond) {
+			return false
+		}
+	}
+	last := h.reach()
+	h.strike(w)
+	w.behind = max(last, h.reach())
+	for !h.compacted(w.hit, w.behind) {
+		if time.Since(began) > awayFor {
+			w.waited, w.absent = time.Since(began), time.Since(w.on)
+			return true
+		}
+		if !h.sleep(100 * time.Millisecond) {
+			return false
+		}
+	}
+	w.waited, w.absent, w.passed = time.Since(began), time.Since(w.on), true
+	return true
+}
+
+func (h *harness) reach() uint64 {
+	var last uint64
+	for _, st := range h.statuses() {
+		if st != nil {
+			last = max(last, st.Last)
+		}
+	}
+	return last
+}
+
+func (h *harness) filled(missing int) bool {
+	lead := h.leader()
+	for _, n := range h.nodes {
+		if n.id == missing || lead != 0 && lead != missing && n.id != lead {
+			continue
+		}
+		if _, tail := n.segments(); tail >= segmentSize*15/16 {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *harness) compacted(missing int, index uint64) bool {
+	lead := h.leader()
+	if lead == 0 || lead == missing {
+		return false
+	}
+	first, _ := h.nodes[lead-1].segments()
+	return first > index+1
 }
 
 func (h *harness) storm(base time.Time, offset time.Duration, ws []*window) bool {
@@ -124,7 +192,10 @@ func (h *harness) storm(base time.Time, offset time.Duration, ws []*window) bool
 	}
 	var events []event
 	for _, w := range ws {
-		events = append(events, event{w.start - offset, w, true}, event{w.end - offset, w, false})
+		if w.kind != away {
+			events = append(events, event{w.start - offset, w, true})
+		}
+		events = append(events, event{w.end - offset, w, false})
 	}
 	slices.SortStableFunc(events, func(a, b event) int {
 		if a.at != b.at || a.begin == b.begin {
@@ -149,8 +220,13 @@ func (h *harness) storm(base time.Time, offset time.Duration, ws []*window) bool
 }
 
 func (h *harness) begin(w *window) {
-	h.kinds[w.kind]++
-	if w.kind == crash || w.kind == freeze || w.kind == cut {
+	h.aim(w)
+	h.strike(w)
+}
+
+func (h *harness) aim(w *window) {
+	switch w.act() {
+	case crash, freeze, cut:
 		w.hit = w.node
 		if w.leader {
 			if id := h.leader(); id != 0 {
@@ -158,7 +234,12 @@ func (h *harness) begin(w *window) {
 			}
 		}
 	}
-	switch w.kind {
+}
+
+func (h *harness) strike(w *window) {
+	h.kinds[w.kind]++
+	w.on = time.Now()
+	switch w.act() {
 	case crash:
 		h.nodes[w.hit-1].kill()
 	case freeze:
@@ -170,7 +251,7 @@ func (h *harness) begin(w *window) {
 }
 
 func (h *harness) lift(w *window) {
-	switch w.kind {
+	switch w.act() {
 	case crash:
 		if err := h.nodes[w.hit-1].start(); err != nil {
 			h.fail("restart", "n%d: %v", w.hit, err)
@@ -179,6 +260,7 @@ func (h *harness) lift(w *window) {
 		h.nodes[w.hit-1].signal(syscall.SIGCONT)
 	}
 	h.shape(w, false)
+	w.off = time.Now()
 }
 
 func (h *harness) shape(w *window, on bool) {
@@ -399,6 +481,93 @@ func (h *harness) summary() string {
 	for k, n := range h.kinds {
 		faults = append(faults, fmt.Sprintf("%s %d", kind(k), n))
 	}
-	return fmt.Sprintf("seed %d: %d calls in %d windows; faults: %s; a node became leader %d times; snapshots sent %d, received %d",
-		h.seed, calls, windows, strings.Join(faults, ", "), h.logged(" leader in term "), h.logged(" sending snapshot "), h.logged(" receiving snapshot "))
+	passed, waited := 0, time.Duration(0)
+	for _, w := range h.plan {
+		if w.passed {
+			passed++
+		}
+		waited += w.waited
+	}
+	streams, received, dropped := h.snapshots()
+	sent, under := 0, 0
+	for _, st := range streams {
+		if st.sent {
+			sent++
+		}
+		if h.disturbed(st) {
+			under++
+		}
+	}
+	return fmt.Sprintf("seed %d: %d calls in %d windows over %d rounds; faults: %s; the leader compacted past the absent node in %d long outages, %v before the storms; "+
+		"a node became leader %d times; snapshots begun %d, sent %d, received %d, dropped %d, %d of the begun ones under a fault",
+		h.seed, calls, windows, len(h.begun), strings.Join(faults, ", "), passed, waited.Round(time.Second),
+		h.logged(" leader in term "), len(streams), sent, received, dropped, under)
+}
+
+type stream struct {
+	from, to     int
+	began, ended time.Time
+	sent         bool
+}
+
+func (h *harness) snapshots() (streams []stream, received, dropped int) {
+	for _, n := range h.nodes {
+		b, _ := os.ReadFile(n.log)
+		open := map[int]int{}
+		end := func(to int, at time.Time, sent bool) {
+			if i, ok := open[to]; ok {
+				streams[i].ended, streams[i].sent = at, sent
+				delete(open, to)
+			}
+		}
+		for line := range strings.Lines(string(b)) {
+			head := min(len(line), len(stampLayout))
+			at, err := time.Parse(stampLayout, line[:head])
+			f := strings.Fields(line[head:])
+			if err != nil || len(f) < 6 {
+				continue
+			}
+			switch {
+			case f[0] == "sending" && f[1] == "snapshot":
+				to, _ := strconv.Atoi(f[5])
+				open[to] = len(streams)
+				streams = append(streams, stream{from: n.id, to: to, began: at, ended: at})
+			case f[0] == "sent" && f[1] == "snapshot":
+				to, _ := strconv.Atoi(strings.TrimSuffix(f[5], ","))
+				end(to, at, true)
+			case f[0] == "snapshot":
+				to, _ := strconv.Atoi(f[4])
+				end(to, at, false)
+			case f[0] == "node" && len(f) > 7 && f[7] == "started:":
+				for _, i := range open {
+					streams[i].ended = at
+				}
+				clear(open)
+			case f[0] == "received" && f[1] == "snapshot":
+				received++
+			case f[0] == "dropped" && f[1] == "snapshot":
+				dropped++
+			}
+		}
+	}
+	return streams, received, dropped
+}
+
+func (h *harness) disturbed(st stream) bool {
+	for _, w := range h.plan {
+		if w.on.IsZero() || w.on.After(st.ended) || !w.off.IsZero() && w.off.Before(st.began) {
+			continue
+		}
+		switch w.act() {
+		case crash, freeze:
+			if w.hit == st.from || w.hit == st.to {
+				return true
+			}
+		default:
+			if slices.Contains(w.routes, route{st.from, st.to}) {
+				return true
+			}
+		}
+	}
+	return false
 }

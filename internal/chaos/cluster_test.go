@@ -23,14 +23,16 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/faultnet"
 	"github.com/Demonisreal/dmn-ledger/internal/sim"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/internal/workload"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
 const (
-	clusterID = 1
-	nodes     = 3
-	clients   = 4
+	clusterID   = 1
+	nodes       = 3
+	clients     = 4
+	segmentSize = 2 << 20
 )
 
 var (
@@ -168,21 +170,22 @@ func newHarness(t *testing.T, seed uint64, bug string) *harness {
 				list[to-1] = h.links[route{id, to}].Addr()
 			}
 		}
+		dir := filepath.Join(h.dir, fmt.Sprintf("n%d", id))
 		env := []string{
 			"LEDGER_ID=" + strconv.Itoa(id),
 			"LEDGER_CLUSTER=" + strconv.Itoa(clusterID),
 			"LEDGER_PEERS=" + strings.Join(list, ","),
 			"LEDGER_CLIENT_ADDR=" + addrs[id-1],
-			"LEDGER_DIR=" + filepath.Join(h.dir, fmt.Sprintf("n%d", id)),
+			"LEDGER_DIR=" + dir,
 			"LEDGER_SWEEP=off",
 			"LEDGER_SNAPSHOT_EVERY=500",
-			"LEDGER_SEGMENT_SIZE=2097152",
+			"LEDGER_SEGMENT_SIZE=" + strconv.Itoa(segmentSize),
 			"LEDGER_MAX_SESSIONS=64",
 		}
 		if bug != "" {
 			env = append(env, "LEDGER_BUG="+bug)
 		}
-		n := &node{h: h, id: id, env: env, log: filepath.Join(h.dir, fmt.Sprintf("n%d.log", id))}
+		n := &node{h: h, id: id, env: env, dir: dir, log: filepath.Join(h.dir, fmt.Sprintf("n%d.log", id))}
 		h.nodes = append(h.nodes, n)
 		if err := n.start(); err != nil {
 			t.Fatal(err)
@@ -268,7 +271,7 @@ func (h *harness) keep() string {
 	}
 	var b strings.Builder
 	for k, at := range h.begun {
-		fmt.Fprintf(&b, "round %d began %s\n", k+1, at.UTC().Format(time.RFC3339Nano))
+		fmt.Fprintf(&b, "storm %d began %s\n", k+1, at.UTC().Format(time.RFC3339Nano))
 	}
 	b.WriteString(planText(h.plan))
 	if err := os.WriteFile(filepath.Join(dst, "plan.txt"), []byte(b.String()), 0o600); err != nil {
@@ -319,6 +322,7 @@ type node struct {
 	h   *harness
 	id  int
 	env []string
+	dir string
 	log string
 
 	mu     sync.Mutex
@@ -407,6 +411,25 @@ func (n *node) halt() {
 	if n.cmd != nil {
 		_ = n.cmd.Process.Signal(syscall.SIGSTOP)
 	}
+}
+
+func (n *node) segments() (first uint64, tail int64) {
+	segs, _ := os.ReadDir(filepath.Join(n.dir, "wal"))
+	for _, seg := range segs {
+		num, ok := strings.CutPrefix(seg.Name(), wal.SegmentPrefix)
+		num, done := strings.CutSuffix(num, ".log")
+		i, err := strconv.ParseUint(num, 10, 64)
+		if !ok || !done || err != nil {
+			continue
+		}
+		if first == 0 {
+			first = i
+		}
+		if fi, err := seg.Info(); err == nil {
+			tail = fi.Size()
+		}
+	}
+	return first, tail
 }
 
 func tail(path string, lines int) string {

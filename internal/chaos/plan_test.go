@@ -15,9 +15,11 @@ import (
 )
 
 const (
-	round   = 30 * time.Second
-	storm   = 20 * time.Second
-	downGap = 500 * time.Millisecond
+	round    = 30 * time.Second
+	storm    = 20 * time.Second
+	downGap  = 500 * time.Millisecond
+	awayOdds = 4
+	backIn   = 10 * time.Second
 )
 
 type kind int
@@ -29,9 +31,10 @@ const (
 	blackhole
 	stall
 	noise
+	away
 )
 
-var kindNames = [...]string{"crash", "freeze", "cut", "blackhole", "stall", "noise"}
+var kindNames = [...]string{"crash", "freeze", "cut", "blackhole", "stall", "noise", "away"}
 
 func (k kind) String() string {
 	return kindNames[k]
@@ -87,6 +90,7 @@ func (s side) routes(node int) []route {
 
 type window struct {
 	kind       kind
+	via        kind
 	start, end time.Duration
 	node       int
 	leader     bool
@@ -94,6 +98,23 @@ type window struct {
 	routes     []route
 	fault      faultnet.Fault
 	hit        int
+
+	on, off time.Time
+	behind  uint64
+	waited  time.Duration
+	absent  time.Duration
+	passed  bool
+}
+
+func (w *window) act() kind {
+	if w.kind == away {
+		return w.via
+	}
+	return w.kind
+}
+
+func (w *window) down() bool {
+	return w.kind == crash || w.kind == freeze || w.kind == away
 }
 
 func (w *window) near(o *window) bool {
@@ -103,16 +124,23 @@ func (w *window) near(o *window) bool {
 func (w *window) String() string {
 	var target string
 	switch w.kind {
-	case crash, freeze, cut:
+	case crash, freeze, cut, away:
 		target = fmt.Sprintf("n%d", w.node)
 		if w.leader {
 			target = fmt.Sprintf("the leader, else n%d", w.node)
 		}
-		if w.kind == cut {
+		if w.act() == cut {
 			target = sideNames[w.side] + " " + target
+		}
+		if w.kind == away {
+			target += " by " + w.via.String()
 		}
 		if w.hit != 0 {
 			target += fmt.Sprintf(", hit n%d", w.hit)
+		}
+		if w.waited != 0 {
+			target += fmt.Sprintf(", %v before the storm and gone for %v of it, the leader compacted past index %d: %t",
+				w.waited.Round(time.Millisecond), w.absent.Round(time.Millisecond), w.behind, w.passed)
 		}
 	case noise:
 		target = fmt.Sprintf("all routes, delay %v loss %.1f%% flip %.2f%%", w.fault.Delay, 100*w.fault.Loss, 100*w.fault.Flip)
@@ -133,8 +161,25 @@ func plan(seed uint64, rounds int) []*window {
 	for r := range rounds {
 		base := time.Duration(r) * round
 		var down []*window
-		for range 1 + rng.IntN(6) {
-			w := &window{kind: kind(rng.IntN(len(kindNames))), node: 1 + rng.IntN(nodes), leader: rng.IntN(2) == 0}
+		windows := 1 + rng.IntN(6)
+		if rng.IntN(awayOdds) == 0 {
+			w := &window{kind: away, via: kind(rng.IntN(int(cut) + 1)), node: 1 + rng.IntN(nodes), leader: rng.IntN(2) == 0}
+			w.start, w.end = base, base+span(rng, backIn)
+			if w.via == cut {
+				w.fault = faultnet.Fault{Cut: true}
+			}
+			down = append(down, w)
+			ws = append(ws, w)
+			if rng.IntN(2) == 0 {
+				windows--
+				back := &window{kind: noise, routes: all, fault: noisy(rng)}
+				back.start = max(base, w.end-span(rng, time.Second))
+				back.end = back.start + 2*time.Second + span(rng, 6*time.Second)
+				ws = append(ws, back)
+			}
+		}
+		for range windows {
+			w := &window{kind: kind(rng.IntN(int(away))), node: 1 + rng.IntN(nodes), leader: rng.IntN(2) == 0}
 			length := 500*time.Millisecond + span(rng, 7500*time.Millisecond)
 			if w.kind == crash {
 				length = 200*time.Millisecond + span(rng, 2800*time.Millisecond)
@@ -159,18 +204,21 @@ func plan(seed uint64, rounds int) []*window {
 				w.routes = []route{all[rng.IntN(len(all))]}
 				w.fault = faultnet.Fault{Stall: true}
 			case noise:
-				w.routes = all
-				w.fault = faultnet.Fault{
-					Delay: 5*time.Millisecond + span(rng, 295*time.Millisecond),
-					Loss:  0.3 * rng.Float64(),
-					Flip:  0.01 * rng.Float64(),
-				}
+				w.routes, w.fault = all, noisy(rng)
 			}
 			ws = append(ws, w)
 		}
 	}
 	slices.SortStableFunc(ws, func(a, b *window) int { return cmp.Compare(a.start, b.start) })
 	return ws
+}
+
+func noisy(rng *rand.Rand) faultnet.Fault {
+	return faultnet.Fault{
+		Delay: 5*time.Millisecond + span(rng, 295*time.Millisecond),
+		Loss:  0.3 * rng.Float64(),
+		Flip:  0.01 * rng.Float64(),
+	}
 }
 
 func span(rng *rand.Rand, d time.Duration) time.Duration {
@@ -196,25 +244,33 @@ func TestPlanFollowsTheSeed(t *testing.T) {
 		t.Fatal("seeds 7 and 8 plan the same storms")
 	}
 
+	var ways [len(kindNames)]int
 	for seed := range uint64(200) {
 		ws := plan(seed, rounds)
-		perRound := map[int]int{}
+		perRound, outages := map[int]int{}, map[int]int{}
 		var down []*window
 		for _, w := range ws {
 			r := int(w.start / round)
-			perRound[r]++
 			length := w.end - w.start
 			base := time.Duration(r) * round
 			switch {
 			case w.start < base || w.end > base+storm:
 				t.Fatalf("seed %d: %v leaves the storm of round %d", seed, w, r)
+			case w.kind == away && (w.start != base || length >= backIn || w.via > cut):
+				t.Fatalf("seed %d: %v is not a long outage before the storm", seed, w)
 			case w.kind == crash && (length < 200*time.Millisecond || length >= 3*time.Second),
-				w.kind != crash && (length < 500*time.Millisecond || length >= 8*time.Second):
+				w.kind != crash && w.kind != away && (length < 500*time.Millisecond || length >= 8*time.Second):
 				t.Fatalf("seed %d: %v lasts %v", seed, w, length)
 			case w.kind == noise && (w.fault.Delay < 5*time.Millisecond || w.fault.Delay > 300*time.Millisecond || w.fault.Loss > 0.3 || w.fault.Flip > 0.01):
 				t.Fatalf("seed %d: %v is out of bounds", seed, w)
 			}
-			if w.kind == crash || w.kind == freeze {
+			if w.kind == away {
+				outages[r]++
+				ways[w.via]++
+			} else {
+				perRound[r]++
+			}
+			if w.down() {
 				if k := slices.IndexFunc(down, w.near); k >= 0 {
 					t.Fatalf("seed %d: %v and %v hold two nodes down at once", seed, down[k], w)
 				}
@@ -225,6 +281,17 @@ func TestPlanFollowsTheSeed(t *testing.T) {
 			if n > 6 {
 				t.Fatalf("seed %d: round %d has %d windows", seed, r, n)
 			}
+		}
+		for r, n := range outages {
+			if n > 1 {
+				t.Fatalf("seed %d: round %d has %d long outages", seed, r, n)
+			}
+		}
+	}
+	want := 200 * rounds / awayOdds / 3
+	for _, k := range []kind{crash, freeze, cut} {
+		if ways[k] < want*3/4 {
+			t.Errorf("%d long outages by %s in %d rounds, want about %d", ways[k], k, 200*rounds, want)
 		}
 	}
 }
