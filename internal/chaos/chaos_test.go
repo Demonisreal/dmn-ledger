@@ -456,6 +456,9 @@ func (h *harness) final(r *check.Replayer) {
 			return
 		}
 	}
+	if !h.prove(h.clients[0], sts) {
+		return
+	}
 	h.sound()
 }
 
@@ -499,9 +502,9 @@ func (h *harness) summary() string {
 		}
 	}
 	return fmt.Sprintf("seed %d: %d calls in %d windows over %d rounds; faults: %s; the leader compacted past the absent node in %d long outages, %v before the storms; "+
-		"a node became leader %d times; snapshots begun %d, sent %d, received %d, dropped %d, %d of the begun ones under a fault",
+		"a node became leader %d times; snapshots begun %d, sent %d, received %d, dropped %d, %d of the begun ones under a fault; %d receipts checked",
 		h.seed, calls, windows, len(h.begun), strings.Join(faults, ", "), passed, waited.Round(time.Second),
-		h.logged(" leader in term "), len(streams), sent, received, dropped, under)
+		h.logged(" leader in term "), len(streams), sent, received, dropped, under, h.receipts)
 }
 
 type stream struct {

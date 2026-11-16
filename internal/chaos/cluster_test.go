@@ -5,6 +5,7 @@ package chaos
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/gob"
 	"flag"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Demonisreal/dmn-ledger/internal/faultnet"
+	"github.com/Demonisreal/dmn-ledger/internal/notary"
 	"github.com/Demonisreal/dmn-ledger/internal/sim"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 	"github.com/Demonisreal/dmn-ledger/internal/wal"
@@ -81,6 +83,7 @@ type harness struct {
 	wg     sync.WaitGroup
 
 	nodes   []*node
+	keys    [][]byte
 	addrs   []string
 	links   map[route]*faultnet.Link
 	clients []*ledger.Client
@@ -111,6 +114,7 @@ type harness struct {
 	transferIDs map[u128.Uint128]bool
 	history     *gob.Encoder
 	checked     chan struct{}
+	receipts    int
 }
 
 func newHarness(t *testing.T, seed uint64, bug string) *harness {
@@ -171,6 +175,12 @@ func newHarness(t *testing.T, seed uint64, bug string) *harness {
 			}
 		}
 		dir := filepath.Join(h.dir, fmt.Sprintf("n%d", id))
+		key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{byte(id)}, ed25519.SeedSize))
+		keyFile := filepath.Join(h.dir, fmt.Sprintf("n%d.key", id))
+		if err := notary.WriteKey(keyFile, key); err != nil {
+			t.Fatal(err)
+		}
+		h.keys = append(h.keys, key.Public().(ed25519.PublicKey))
 		env := []string{
 			"LEDGER_ID=" + strconv.Itoa(id),
 			"LEDGER_CLUSTER=" + strconv.Itoa(clusterID),
@@ -181,6 +191,7 @@ func newHarness(t *testing.T, seed uint64, bug string) *harness {
 			"LEDGER_SNAPSHOT_EVERY=500",
 			"LEDGER_SEGMENT_SIZE=" + strconv.Itoa(segmentSize),
 			"LEDGER_MAX_SESSIONS=64",
+			"LEDGER_KEY_FILE=" + keyFile,
 		}
 		if bug != "" {
 			env = append(env, "LEDGER_BUG="+bug)

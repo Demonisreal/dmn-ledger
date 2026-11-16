@@ -240,6 +240,9 @@ func vectors(t testing.TB) []vector {
 	head := append(audit.AppendHead(nil, b.head), notary.Sign(key, cluster, b.head)...)
 	relabelled := stamped(transfers.receipt(2), otherCluster, key)
 	binary.BigEndian.PutUint64(relabelled[len(relabelled)-notary.StampSize:], cluster)
+	early := accounts.receipt(2)
+	early.Prev[31] = 1
+	before := append(audit.AppendReceipt(nil, early), notary.Sign(key, cluster, audit.Head{Hash: early.Prev}.Next(early.Link))...)
 
 	cases := []struct {
 		name  string
@@ -270,6 +273,7 @@ func vectors(t testing.TB) []vector {
 		{"signature with S plus the group order", plusOrder(good), cluster, pub, notary.ErrSignature},
 		{"head with a changed hash", flip(head, 2+8+31), cluster, pub, notary.ErrSignature},
 		{"receipt without a stamp", good[:len(good)-notary.StampSize], cluster, pub, notary.ErrUnsigned},
+		{"first link with a head before it", before, cluster, pub, audit.ErrBadReceipt},
 	}
 	var vs []vector
 	for _, c := range cases {
@@ -320,7 +324,7 @@ func TestVectors(t *testing.T) {
 			valid++
 		}
 	}
-	if valid < 6 || len(pinned)-valid < 16 {
+	if valid < 6 || len(pinned)-valid < 17 {
 		t.Errorf("%d valid and %d invalid vectors", valid, len(pinned)-valid)
 	}
 	if !reflect.DeepEqual(pinned, built) {

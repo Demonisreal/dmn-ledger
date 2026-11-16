@@ -59,6 +59,7 @@ async function decode(proof) {
   const seq = view.getBigUint64(at)
   const link = proof.subarray(at + 40, end)
   if (seq === 0n) return null
+  if (seq === 1n && proof.subarray(at + 8, at + 40).some((x) => x !== 0)) return null
   if (kind === 0 && (index !== 0 || hops !== 0)) return null
   if (kind !== 0) {
     const path = Array.from({ length: hops }, (_, i) => proof.subarray(start + 32 * i, start + 32 * (i + 1)))
