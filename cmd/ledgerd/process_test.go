@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"net"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Demonisreal/dmn-ledger/internal/notary"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
@@ -150,13 +152,20 @@ func TestExitCodes(t *testing.T) {
 			p.signal(t, sig)
 			code := p.exit(t)
 			lines := strings.Split(strings.TrimSpace(p.logs(t)), "\n")
-			first := fmt.Sprintf(" node 1 of 1 in cluster 1 started: peers on %s, clients on %s, term %d, repair no", addrs[0], addrs[1], term)
+			first := fmt.Sprintf(" node 1 of 1 in cluster 1 started: peers on %s, clients on %s, term %d, repair no, no key", addrs[0], addrs[1], term)
 			if code != 0 || !strings.HasSuffix(lines[0], first) || !strings.HasSuffix(lines[len(lines)-1], " node 1 stopped: "+sig.String()+" signal received") {
 				t.Fatalf("%v: exit %d, log:\n%s\nwant it to start with %q", sig, code, p.logs(t), first)
 			}
 		}
 	})
 	t.Run("2 on a configuration error", func(t *testing.T) {
+		open := filepath.Join(t.TempDir(), "node.key")
+		if err := notary.WriteKey(open, ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(open, 0o644); err != nil { //nolint:gosec // G302: the key file is opened to its group on purpose
+			t.Fatal(err)
+		}
 		for _, tc := range []struct {
 			env  []string
 			want string
@@ -165,11 +174,38 @@ func TestExitCodes(t *testing.T) {
 			{append(nodeEnv(1, []string{"127.0.0.1:7201"}, "127.0.0.1:7101", "/var/lib/ledger"), "LEDGER_SNAPSHOTS=5"), "ledgerd: unknown variable LEDGER_SNAPSHOTS\n"},
 			{nodeEnv(1, []string{"127.0.0.1:7201"}, "127.0.0.1:7101", "/var/lib/ledger", "LEDGER_BUG=B11"), "ledgerd: unknown variable LEDGER_BUG\n"},
 			{nodeEnv(1, []string{"127.0.0.1:7201"}, "127.0.0.1:7101", "/var/lib/ledger", "LEDGER_TICK=2s"), "ledgerd: LEDGER_TICK=\"2s\": want a duration from 1ms to 1s\n"},
+			{nodeEnv(1, []string{"127.0.0.1:7201"}, "127.0.0.1:7101", "/var/lib/ledger", "LEDGER_KEY_FILE="+open), "ledgerd: LEDGER_KEY_FILE=\"" + open + "\": notary: bad key file: " + open + " is open to group or others (mode 0644)\n"},
 		} {
 			p := launch(t, tc.env...)
 			if code := p.exit(t); code != 2 || p.logs(t) != tc.want {
 				t.Errorf("%v: exit %d, stderr %q, want exit 2 and %q", tc.env, code, p.logs(t), tc.want)
 			}
+		}
+	})
+	t.Run("2 when LEDGER_MAX_SESSIONS does not fit the directory", func(t *testing.T) {
+		addrs := freeAddrs(t, 2)
+		dir := t.TempDir()
+		env := nodeEnv(1, addrs[:1], addrs[1], dir, "LEDGER_SNAPSHOT_EVERY=1")
+		p := launch(t, env...)
+		awaitStatus(t, addrs[1], func(st ledger.NodeStatus) bool { return st.Role == ledger.Leader })
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cl, err := ledger.Dial(ctx, ledger.Config{Cluster: 1, Nodes: addrs[1:]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cl.CreateAccounts(ctx, []ledger.Account{{ID: ledger.From64(1), Ledger: 1, Code: 1}}); err != nil {
+			t.Fatal(err)
+		}
+		_ = cl.Close()
+		p.signal(t, syscall.SIGTERM)
+		if code := p.exit(t); code != 0 {
+			t.Fatalf("first start: exit %d, log:\n%s", code, p.logs(t))
+		}
+		p = launch(t, append(env, "LEDGER_MAX_SESSIONS=17")...)
+		want := "node 1 cannot start: LEDGER_MAX_SESSIONS=17 does not fit the data directory, set the value the cluster runs with: replica: MaxSessions differs from the snapshot: the snapshot was written with 1024, this node has 17"
+		if code := p.exit(t); code != 2 || !strings.Contains(p.logs(t), want) {
+			t.Fatalf("exit %d, log:\n%s\nwant exit 2 and %q", code, p.logs(t), want)
 		}
 	})
 	t.Run("3 on a locked directory", func(t *testing.T) {

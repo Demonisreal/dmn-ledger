@@ -195,7 +195,7 @@ func TestSecondSnapshotIsDropped(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		toss(second, wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: wire.KindSnapshot}))
+		toss(second, wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: wire.KindSnapshot}))
 		_ = second.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 		if b, err := io.ReadAll(second); err != nil || len(b) != 0 {
 			t.Fatalf("a second snapshot connection from peer 2 read %d bytes and %v, want it closed without a hello", len(b), err)

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -147,7 +148,7 @@ func (f *fakePeer) serve(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	if _, err := conn.Write(wire.AppendHello(nil, testCluster, wire.Hello{From: f.id, To: h.From, Kind: h.Kind})); err != nil {
+	if _, err := conn.Write(wire.AppendHello(nil, testCluster, wire.Hello{From: f.id, To: h.From, MaxSessions: testSessions, Kind: h.Kind})); err != nil {
 		return
 	}
 	switch {
@@ -230,7 +231,7 @@ func dialHello(pn *pipeNet, to, from uint64, kind uint8) (net.Conn, error) {
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(patience))
-	if _, err := conn.Write(wire.AppendHello(nil, testCluster, wire.Hello{From: from, To: to, Kind: kind})); err != nil {
+	if _, err := conn.Write(wire.AppendHello(nil, testCluster, wire.Hello{From: from, To: to, MaxSessions: testSessions, Kind: kind})); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -259,14 +260,14 @@ func TestHelloFromAStrangerIsRefused(t *testing.T) {
 		pn := newPipeNet()
 		n := start(t, pn.config(1, 3, t.TempDir()))
 		for name, first := range map[string][]byte{
-			"unknown sender":  wire.AppendHello(nil, testCluster, wire.Hello{From: 9, To: 1, Kind: wire.KindMessages}),
-			"own id":          wire.AppendHello(nil, testCluster, wire.Hello{From: 1, To: 1, Kind: wire.KindMessages}),
-			"other target":    wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 3, Kind: wire.KindMessages}),
-			"unknown kind":    wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: 3}),
-			"kind 0":          wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1}),
+			"unknown sender":  wire.AppendHello(nil, testCluster, wire.Hello{From: 9, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages}),
+			"own id":          wire.AppendHello(nil, testCluster, wire.Hello{From: 1, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages}),
+			"other target":    wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 3, MaxSessions: testSessions, Kind: wire.KindMessages}),
+			"unknown kind":    wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: 3}),
+			"kind 0":          wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions}),
 			"message first":   mustMessage(t, raft.Message{Type: raft.MsgAppResp, From: 2, To: 1, Term: 1}),
 			"request first":   wire.AppendRequest(nil, testCluster, client.Request{Client: u128.From64(1), Op: client.Register}),
-			"truncated hello": wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: wire.KindMessages})[:30],
+			"truncated hello": wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages})[:30],
 		} {
 			conn, err := pn.dial(t.Context(), peerAddr(1))
 			if err != nil {
@@ -301,7 +302,7 @@ func TestHelloIsReadWithItsOwnLimit(t *testing.T) {
 		pn.fake(t, 3, 1, listening)
 		ear := pn.listen(peerAddr(2))
 		n := start(t, pn.config(1, 3, t.TempDir()))
-		hello := wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: wire.KindMessages})
+		hello := wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages})
 		for _, size := range []uint32{wire.HelloSize + 1, wire.MaxPeerBody} {
 			conn, err := pn.dial(t.Context(), peerAddr(1))
 			if err != nil {
@@ -321,7 +322,7 @@ func TestHelloIsReadWithItsOwnLimit(t *testing.T) {
 		if _, err := dialed.read(); err != nil {
 			t.Fatalf("no hello from node 1: %v", err)
 		}
-		toss(conn, header(wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: wire.KindMessages}), wire.MaxPeerBody))
+		toss(conn, header(wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages}), wire.MaxPeerBody))
 		if !dialed.shut(time.Millisecond) {
 			t.Error("node 1 waits for the body of an answer that claims 4 MiB for a hello")
 		}
@@ -353,7 +354,7 @@ func TestPeerConnectionsBeforeTheHelloAreLimited(t *testing.T) {
 		if !knock().shut(time.Millisecond) {
 			t.Fatalf("a peer connection beyond %d waiting for their hello stays open", 2*hellosOfPeer)
 		}
-		silent[0].write(wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: wire.KindMessages}))
+		silent[0].write(wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages}))
 		if _, err := silent[0].read(); err != nil {
 			t.Fatalf("no hello back: %v", err)
 		}
@@ -700,6 +701,66 @@ func TestStalledLeaderReadsAcksBeforeItChecksQuorum(t *testing.T) {
 		time.Sleep(stall - 200*time.Millisecond + 2*testTick)
 		if role := probe.status().Role; role != raft.Leader {
 			t.Fatalf("after a stall of %s with an ack waiting: %s, the leader checked its quorum before it read the ack", stall, role)
+		}
+	})
+}
+
+func TestPeerWithAnotherMaxSessionsIsRefused(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pn := newPipeNet()
+		dialed := make(chan net.Conn, 16)
+		for _, id := range []uint64{2, 3} {
+			l := pn.listen(peerAddr(id))
+			t.Cleanup(func() { _ = l.Close() })
+			go func() {
+				for {
+					conn, err := l.Accept()
+					if err != nil {
+						return
+					}
+					dialed <- conn
+				}
+			}()
+		}
+		cfg := pn.config(1, 3, t.TempDir())
+		out := logged(&cfg)
+		n := start(t, cfg)
+
+		conn := <-dialed
+		t.Cleanup(func() { _ = conn.Close() })
+		_ = conn.SetDeadline(time.Now().Add(patience))
+		frame, _, err := wire.ReadFrame(conn, nil, testCluster, wire.HelloSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := frame.Hello()
+		if err != nil || h.From != 1 || h.MaxSessions != testSessions {
+			t.Fatalf("node 1 greets with %+v, %v", h, err)
+		}
+		toss(conn, wire.AppendHello(nil, testCluster, wire.Hello{From: h.To, To: 1, MaxSessions: testSessions + 1, Kind: h.Kind}))
+		if b, err := io.ReadAll(conn); err != nil || len(b) != 0 {
+			t.Fatalf("node 1 sent %d bytes after a hello with another MaxSessions, %v", len(b), err)
+		}
+
+		for _, kind := range []uint8{wire.KindMessages, wire.KindSnapshot} {
+			time.Sleep(refusalGap)
+			conn, err := pn.dial(t.Context(), peerAddr(1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			toss(conn, wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions + 1, Kind: kind}))
+			_ = conn.SetReadDeadline(time.Now().Add(patience))
+			if b, err := io.ReadAll(conn); err != nil || len(b) != 0 {
+				t.Errorf("hello of kind %d with MaxSessions %d: read %d bytes and %v, want the connection closed without a hello", kind, testSessions+1, len(b), err)
+			}
+		}
+		synctest.Wait()
+		if err := n.halt(); err != nil {
+			t.Fatal(err)
+		}
+		refusals := out.count("refused peer hello from pipe: server: peer runs with another MaxSessions: node ")
+		if exact := out.count(" has 65, node 1 has 64"); refusals != 3 || exact != 3 {
+			t.Fatalf("%d refusals, %d naming both values; want one for the hello node 1 got back and two for the hellos it was sent:\n%s", refusals, exact, strings.Join(out.lines(), "\n"))
 		}
 	})
 }

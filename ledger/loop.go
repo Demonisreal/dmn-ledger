@@ -145,6 +145,7 @@ func (c *Client) split(batch []*call, r client.Reply) {
 	results := make([]Result, len(batch))
 	for k, cl := range batch {
 		results[k].Timestamp = r.Time + uint64(cl.off) //nolint:gosec // G115: an offset into a batch below MaxBody
+		results[k].Batch = r.Time
 	}
 	for _, f := range client.DecodeFailures(r.Body) {
 		k := sort.Search(len(batch), func(k int) bool { return batch[k].off+batch[k].records > f.Index })

@@ -26,9 +26,10 @@ import (
 )
 
 const (
-	testCluster = 7
-	testTick    = 10 * time.Millisecond
-	patience    = 5 * time.Second
+	testCluster  = 7
+	testTick     = 10 * time.Millisecond
+	patience     = 5 * time.Second
+	testSessions = 64
 )
 
 var errRefused = errors.New("pipe: connection refused")
@@ -326,7 +327,7 @@ func (n *pipeNet) config(id uint64, nodes int, dir string) Config {
 		FS:            disk.OS{},
 		Tick:          testTick,
 		SnapshotEvery: 100_000,
-		MaxSessions:   64,
+		MaxSessions:   testSessions,
 		MaxClients:    16,
 		Clients:       n.listen(clientAddr(id)),
 		Peering:       n.listen(peerAddr(id)),
@@ -570,12 +571,12 @@ func (pn *pipeNet) greet(t *testing.T, to, from uint64, kind uint8) *testPeer {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	p := &testPeer{t: t, id: from, conn: conn}
-	p.write(wire.AppendHello(nil, testCluster, wire.Hello{From: from, To: to, Kind: kind}))
+	p.write(wire.AppendHello(nil, testCluster, wire.Hello{From: from, To: to, MaxSessions: testSessions, Kind: kind}))
 	frame, err := p.read()
 	if err != nil {
 		t.Fatalf("hello from node %d: %v", to, err)
 	}
-	if h, err := frame.Hello(); err != nil || h != (wire.Hello{From: to, To: from, Kind: kind}) {
+	if h, err := frame.Hello(); err != nil || h != (wire.Hello{From: to, To: from, MaxSessions: testSessions, Kind: kind}) {
 		t.Fatalf("hello from node %d: %+v, %v", to, h, err)
 	}
 	return p

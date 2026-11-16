@@ -6,4 +6,13 @@
 // same transfers again with the same IDs, and those that already applied come back as Exists. Any
 // other error means the write was not applied. After ErrEvicted the client is finished and never
 // registers again on its own; dial a new one and decide what to send again.
+//
+// Prove, ProveBatch and Head fetch receipts as bytes, stamped by the answering leader if it has a key,
+// and VerifyProof checks one offline: a valid receipt shows that the holder of a trusted key declared
+// the head of this cluster's chain at one link number, and SHA-256 puts the record under that head;
+// it shows neither a majority, nor that the head is the newest, nor a balance or the state of a
+// transfer today, nor that anything is absent. ProveBatch takes Result.Batch, the time of the batch a
+// write ran in, which is earlier than Result.Timestamp for a write bundled behind others. Links asks
+// for at most 1024 links per request and, when a request fails, returns the links it already has
+// together with the error.
 package ledger

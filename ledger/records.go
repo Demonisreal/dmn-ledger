@@ -86,6 +86,7 @@ type Failure struct {
 
 type Result struct {
 	Timestamp uint64
+	Batch     uint64
 	Failures  []Failure
 }
 

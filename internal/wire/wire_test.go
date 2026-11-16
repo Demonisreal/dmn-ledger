@@ -14,6 +14,7 @@ import (
 	"testing"
 	"testing/iotest"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
@@ -152,14 +153,15 @@ func TestRoundTrip(t *testing.T) {
 	}
 	busy := Status{
 		ID: top, Role: raft.Leader, Repair: true, Term: top, Lead: top, Commit: top, Applied: top, Last: top,
-		Sessions: math.MaxUint32, Time: top, Clock: top, NextExpiry: top,
+		Sessions: math.MaxUint32, Time: top, Clock: top, NextExpiry: top, Head: audit.Head{Seq: top},
 	}
 	for i := range busy.ApplyHash {
-		busy.ApplyHash[i] = 0xff
+		busy.ApplyHash[i], busy.Head.Hash[i], busy.Key[i] = 0xff, 0xff, 0xff
 	}
 	distinct := Status{
 		ID: 1, Role: raft.Candidate, Term: 2, Lead: 3, Commit: 4, Applied: 5, Last: 6,
 		ApplyHash: [32]byte{7, 31: 8}, Sessions: 9, Time: 10, Clock: 11, NextExpiry: 12,
+		Head: audit.Head{Seq: 13, Hash: audit.Hash{14, 31: 15}}, Key: [32]byte{16, 31: 17},
 	}
 	for _, st := range []Status{{}, busy, distinct} {
 		got, err := parse(t, AppendStatus(nil, cluster, st)).Status()
@@ -167,7 +169,7 @@ func TestRoundTrip(t *testing.T) {
 			t.Errorf("status %+v came back as %+v, %v", st, got, err)
 		}
 	}
-	for _, h := range []Hello{{}, {From: top, To: top, Kind: 255}, {From: 1, To: 2, Kind: KindMessages}} {
+	for _, h := range []Hello{{}, {From: top, To: top, MaxSessions: top, Kind: 255}, {From: 1, To: 2, MaxSessions: 3, Kind: KindMessages}} {
 		got, err := parse(t, AppendHello(nil, cluster, h)).Hello()
 		if err != nil || got != h {
 			t.Errorf("hello %+v came back as %+v, %v", h, got, err)
@@ -308,7 +310,7 @@ func TestLengthIsCheckedBeforeAllocation(t *testing.T) {
 }
 
 func TestLimitsAreExact(t *testing.T) {
-	if MaxClientBody != 42+1<<20 || MaxPeerBody != 4<<20 || MaxEntryBody != 41+1<<20 || ChunkSize != 256<<10 || HelloSize != 17 {
+	if MaxClientBody != 42+1<<20 || MaxPeerBody != 4<<20 || MaxEntryBody != 41+1<<20 || ChunkSize != 256<<10 || HelloSize != 25 {
 		t.Fatalf("limits %d %d %d %d %d", MaxClientBody, MaxPeerBody, MaxEntryBody, ChunkSize, HelloSize)
 	}
 	for _, limit := range []uint32{MaxClientBody, MaxPeerBody} {
@@ -330,8 +332,8 @@ func TestLimitsAreExact(t *testing.T) {
 		{TypeRequest, []int{33, 33 + 1<<20}, []int{32, 33 + 1<<20 + 1}},
 		{TypeReply, []int{42, 42 + 1<<20}, []int{41, 42 + 1<<20 + 1}},
 		{TypeStatusRequest, []int{0}, []int{1}},
-		{TypeStatus, []int{110}, []int{109, 111}},
-		{TypeHello, []int{17}, []int{16, 18}},
+		{TypeStatus, []int{182}, []int{181, 183}},
+		{TypeHello, []int{25}, []int{24, 26}},
 		{TypeMessage + Type(raft.MsgPreVote), []int{40}, []int{39, 41}},
 		{TypeMessage + Type(raft.MsgPreVoteResp), []int{25}, []int{24, 26}},
 		{TypeMessage + Type(raft.MsgVote), []int{40}, []int{39, 41}},
@@ -536,7 +538,7 @@ func TestOtherClusterIsRefused(t *testing.T) {
 }
 
 func TestOtherVersionIsRefused(t *testing.T) {
-	for _, version := range []byte{0, Version + 1, 0xff} {
+	for _, version := range []byte{0, Version - 1, Version + 1, 0xff} {
 		head := appendHeader(nil, cluster, TypeRequest)
 		head[offVersion] = version
 		frame := finish(append(head, make([]byte, 128)...), 0)

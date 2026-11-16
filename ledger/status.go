@@ -35,6 +35,9 @@ type NodeStatus struct {
 	Time       uint64
 	Clock      uint64
 	NextExpiry uint64
+	HeadSeq    uint64
+	Head       [32]byte
+	Key        []byte
 }
 
 func Status(ctx context.Context, cluster uint64, addr string) (NodeStatus, error) {
@@ -60,6 +63,10 @@ func status(ctx context.Context, cluster uint64, addr string, dial dialFunc) (No
 	if err != nil {
 		return NodeStatus{}, err
 	}
+	var key []byte
+	if st.Key != ([32]byte{}) {
+		key = st.Key[:]
+	}
 	return NodeStatus{
 		ID:         st.ID,
 		Role:       Role(st.Role),
@@ -74,5 +81,8 @@ func status(ctx context.Context, cluster uint64, addr string, dial dialFunc) (No
 		Time:       st.Time,
 		Clock:      st.Clock,
 		NextExpiry: st.NextExpiry,
+		HeadSeq:    st.Head.Seq,
+		Head:       st.Head.Hash,
+		Key:        key,
 	}, nil
 }

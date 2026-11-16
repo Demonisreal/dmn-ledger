@@ -25,6 +25,7 @@ const (
 
 var (
 	errStranger      = errors.New("server: frame from an unexpected peer")
+	errSessions      = errors.New("server: peer runs with another MaxSessions")
 	errSnapshotBusy  = errors.New("server: a snapshot from this peer is still in flight")
 	errTooManyHellos = errors.New("server: too many peer connections waiting for their hello")
 )
@@ -132,6 +133,9 @@ func (s *Server) dial(ctx context.Context, p *peer, kind uint8) (net.Conn, func(
 	}
 	done := closeOnStop(ctx, conn)
 	if err := s.greet(conn, p.id, kind); err != nil {
+		if errors.Is(err, errSessions) {
+			s.refused("peer hello", conn, err)
+		}
 		done()
 		return nil, nil, err
 	}
@@ -140,7 +144,7 @@ func (s *Server) dial(ctx context.Context, p *peer, kind uint8) (net.Conn, func(
 
 func (s *Server) greet(conn net.Conn, to uint64, kind uint8) error {
 	_ = conn.SetDeadline(time.Now().Add(helloTimeout))
-	if _, err := conn.Write(wire.AppendHello(nil, s.cfg.Cluster, wire.Hello{From: s.cfg.ID, To: to, Kind: kind})); err != nil {
+	if _, err := conn.Write(wire.AppendHello(nil, s.cfg.Cluster, s.hi(to, kind))); err != nil {
 		return err
 	}
 	frame, _, err := wire.ReadFrame(conn, nil, s.cfg.Cluster, wire.HelloSize)
@@ -148,13 +152,23 @@ func (s *Server) greet(conn net.Conn, to uint64, kind uint8) error {
 		return err
 	}
 	h, err := frame.Hello()
-	if err != nil {
+	switch {
+	case err != nil:
 		return err
-	}
-	if h != (wire.Hello{From: to, To: s.cfg.ID, Kind: kind}) {
+	case h.From != to || h.To != s.cfg.ID || h.Kind != kind:
 		return errStranger
+	case h.MaxSessions != s.hi(to, kind).MaxSessions:
+		return s.otherSessions(h)
 	}
 	return conn.SetDeadline(time.Time{})
+}
+
+func (s *Server) hi(to uint64, kind uint8) wire.Hello {
+	return wire.Hello{From: s.cfg.ID, To: to, MaxSessions: uint64(s.cfg.MaxSessions), Kind: kind} //nolint:gosec // G115: replica.Open refuses a MaxSessions below 1
+}
+
+func (s *Server) otherSessions(h wire.Hello) error {
+	return fmt.Errorf("%w: node %d has %d, node %d has %d", errSessions, h.From, h.MaxSessions, s.cfg.ID, s.cfg.MaxSessions)
 }
 
 func (s *Server) acceptPeers(ctx context.Context) {
@@ -217,12 +231,14 @@ func (s *Server) hello(conn net.Conn) (wire.Hello, error) {
 		return wire.Hello{}, err
 	case h.To != s.cfg.ID, s.peers[h.From] == nil, h.Kind != wire.KindMessages && h.Kind != wire.KindSnapshot:
 		return wire.Hello{}, errStranger
+	case h.MaxSessions != s.hi(h.From, h.Kind).MaxSessions:
+		return wire.Hello{}, s.otherSessions(h)
 	}
 	return h, nil
 }
 
 func (s *Server) welcome(conn net.Conn, h wire.Hello) error {
-	if _, err := conn.Write(wire.AppendHello(nil, s.cfg.Cluster, wire.Hello{From: s.cfg.ID, To: h.From, Kind: h.Kind})); err != nil {
+	if _, err := conn.Write(wire.AppendHello(nil, s.cfg.Cluster, s.hi(h.From, h.Kind))); err != nil {
 		return err
 	}
 	return conn.SetDeadline(time.Time{})

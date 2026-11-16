@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Demonisreal/dmn-ledger/internal/notary"
 	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
@@ -29,6 +31,7 @@ type config struct {
 	maxSessions   int
 	maxClients    int
 	sweep         bool
+	key           ed25519.PrivateKey
 }
 
 func parse(environ []string) (config, error) {
@@ -88,6 +91,13 @@ func parse(environ []string) (config, error) {
 			}
 			cfg.sweep = s == "on"
 			return nil
+		}},
+		{"LEDGER_KEY_FILE", false, func(s string) (err error) {
+			if !filepath.IsAbs(s) {
+				return errors.New("want an absolute path")
+			}
+			cfg.key, err = notary.ReadKey(s)
+			return err
 		}},
 	}
 	for _, st := range steps {

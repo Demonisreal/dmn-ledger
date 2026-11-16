@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	Version    = 1
+	Version    = 2
 	HeaderSize = 24
 
 	MaxClientBody = replyHead + client.MaxBody

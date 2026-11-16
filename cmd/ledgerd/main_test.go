@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"io"
 	"log"
@@ -51,12 +53,17 @@ func TestGreetingShowsWhatOpenFound(t *testing.T) {
 		repair bool
 		want   string
 	}{
-		{0, false, "node 2 of 3 in cluster 7 started: peers on 127.0.0.1:2, clients on 127.0.0.1:9, term 0, repair no"},
-		{41, true, "node 2 of 3 in cluster 7 started: peers on 127.0.0.1:2, clients on 127.0.0.1:9, term 41, repair yes"},
+		{0, false, "node 2 of 3 in cluster 7 started: peers on 127.0.0.1:2, clients on 127.0.0.1:9, term 0, repair no, no key"},
+		{41, true, "node 2 of 3 in cluster 7 started: peers on 127.0.0.1:2, clients on 127.0.0.1:9, term 41, repair yes, no key"},
 	} {
 		if got := greeting(cfg, "127.0.0.1:9", tc.term, tc.repair); got != tc.want {
 			t.Errorf("got %q, want %q", got, tc.want)
 		}
+	}
+	cfg.key = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, ed25519.SeedSize))
+	want := "node 2 of 3 in cluster 7 started: peers on 127.0.0.1:2, clients on 127.0.0.1:9, term 3, repair no, key 8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+	if got := greeting(cfg, "127.0.0.1:9", 3, false); got != want {
+		t.Errorf("with a key: got %q, want %q", got, want)
 	}
 }
 
@@ -90,6 +97,12 @@ func TestServerGetsEveryVariable(t *testing.T) {
 		t.Fatalf("tick %v, snapshot every %d, segments of %d, sessions %d, clients %d, sweep %v", sc.Tick, sc.SnapshotEvery, sc.SegmentSize, sc.MaxSessions, sc.MaxClients, sc.Sweep)
 	case sc.Clients != clients || !ok || known.Listener != peering || len(known.ips) != 5 || sc.Dial == nil || sc.Log != logger:
 		t.Fatalf("clients %v, peering %#v, dial set %v, log %v", sc.Clients, sc.Peering, sc.Dial != nil, sc.Log)
+	case sc.Key != nil:
+		t.Fatalf("a key without LEDGER_KEY_FILE: %x", sc.Key)
+	}
+	cfg.key = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, ed25519.SeedSize))
+	if !cfg.server(clients, peering, logger).Key.Equal(cfg.key) {
+		t.Fatal("the key did not reach the server")
 	}
 	cfg.sweep = true
 	if !cfg.server(clients, peering, logger).Sweep {

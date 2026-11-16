@@ -2,19 +2,24 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
 	crand "crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math/rand/v2"
 	"net"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
+	"github.com/Demonisreal/dmn-ledger/internal/notary"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
 	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
@@ -46,6 +51,7 @@ type Config struct {
 	MaxSessions   int
 	MaxClients    int
 	Sweep         bool
+	Key           ed25519.PrivateKey
 	Clients       net.Listener
 	Peering       net.Listener
 	Dial          func(ctx context.Context, addr string) (net.Conn, error)
@@ -73,6 +79,7 @@ type Server struct {
 	lead     uint64
 	repair   bool
 	opened   replica.Status
+	stamper  [32]byte
 	wg       sync.WaitGroup
 }
 
@@ -102,6 +109,8 @@ func Open(cfg Config) (*Server, error) {
 		return nil, errors.New("server: tick must be positive")
 	case cfg.MaxClients < 1:
 		return nil, errors.New("server: MaxClients must be at least 1")
+	case cfg.Key != nil && len(cfg.Key) != ed25519.PrivateKeySize:
+		return nil, fmt.Errorf("server: a signing key has %d bytes, not %d", ed25519.PrivateKeySize, len(cfg.Key))
 	}
 	var seed [16]byte
 	if _, err := crand.Read(seed[:]); err != nil {
@@ -149,6 +158,9 @@ func Open(cfg Config) (*Server, error) {
 		notes:    make(chan note, logQueue),
 	}
 	s.opened = node.Status()
+	if cfg.Key != nil {
+		s.stamper = [32]byte(cfg.Key.Public().(ed25519.PublicKey))
+	}
 	s.role, s.term, s.lead, s.repair = s.opened.Role, s.opened.Term, s.opened.Lead, s.opened.Repair
 	for i, addr := range cfg.Peers {
 		if id := uint64(i) + 1; id != cfg.ID {
@@ -248,7 +260,9 @@ func (s *Server) loop(ctx context.Context) error {
 		if err := s.send(ctx, out.Messages); err != nil {
 			return err
 		}
-		s.answer(out.Replies)
+		if err := s.answer(out.Replies); err != nil {
+			return err
+		}
 		s.answerStatus()
 		s.watch()
 	}
@@ -289,6 +303,8 @@ func (s *Server) status() wire.Status {
 		Time:       st.Time,
 		Clock:      wallClock(),
 		NextExpiry: st.NextExpiry,
+		Head:       st.Head,
+		Key:        s.stamper,
 	}
 }
 
@@ -321,16 +337,29 @@ func (s *Server) send(ctx context.Context, msgs []raft.Message) error {
 	return nil
 }
 
-func (s *Server) answer(replies []client.Reply) {
+func (s *Server) answer(replies []client.Reply) error {
 	for _, r := range replies {
 		if s.sweeper.owns(r.Client) {
 			s.sweeper.step(r)
 			continue
 		}
-		if c, ok := s.conns[r.Client]; ok {
-			s.reply(c, wire.AppendReply(nil, s.cfg.Cluster, r))
+		c, ok := s.conns[r.Client]
+		if !ok {
+			continue
 		}
+		if s.cfg.Key != nil && r.Status == client.OK && (r.Op == client.Prove || r.Op == client.Head) && len(r.Body) > 0 {
+			_, h, rest, err := audit.Decode(r.Body)
+			if err == nil && rest != nil {
+				err = errors.New("it already carries a stamp")
+			}
+			if err != nil {
+				return fmt.Errorf("server: the node answered %s #%d with a receipt it cannot stamp: %w", r.Op, r.Number, err)
+			}
+			r.Body = append(slices.Clip(r.Body), notary.Sign(s.cfg.Key, s.cfg.Cluster, h)...)
+		}
+		s.reply(c, wire.AppendReply(nil, s.cfg.Cluster, r))
 	}
+	return nil
 }
 
 func (s *Server) answerStatus() {

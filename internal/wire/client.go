@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
@@ -12,7 +13,7 @@ import (
 const (
 	requestHead = client.IDSize + 8 + 8 + 1
 	replyHead   = client.IDSize + 8 + 1 + 1 + 8 + 8
-	statusSize  = 110
+	statusSize  = 182
 
 	flagRepair = 1
 )
@@ -31,6 +32,8 @@ type Status struct {
 	Time       uint64
 	Clock      uint64
 	NextExpiry uint64
+	Head       audit.Head
+	Key        [32]byte
 }
 
 func AppendRequest(dst []byte, cluster uint64, req client.Request) []byte {
@@ -112,6 +115,9 @@ func AppendStatus(dst []byte, cluster uint64, st Status) []byte {
 	dst = binary.BigEndian.AppendUint64(dst, st.Time)
 	dst = binary.BigEndian.AppendUint64(dst, st.Clock)
 	dst = binary.BigEndian.AppendUint64(dst, st.NextExpiry)
+	dst = binary.BigEndian.AppendUint64(dst, st.Head.Seq)
+	dst = append(dst, st.Head.Hash[:]...)
+	dst = append(dst, st.Key[:]...)
 	return finish(dst, start)
 }
 
@@ -134,6 +140,8 @@ func (f Frame) Status() (Status, error) {
 		Time:       binary.BigEndian.Uint64(b[86:]),
 		Clock:      binary.BigEndian.Uint64(b[94:]),
 		NextExpiry: binary.BigEndian.Uint64(b[102:]),
+		Head:       audit.Head{Seq: binary.BigEndian.Uint64(b[110:]), Hash: audit.Hash(b[118:])},
+		Key:        [32]byte(b[150:]),
 	}, nil
 }
 

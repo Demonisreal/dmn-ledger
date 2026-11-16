@@ -98,8 +98,8 @@ func TestTimestampOfABundledCall(t *testing.T) {
 		await(t, first)
 		f.next(t).reply(t, client.Reply{Status: client.OK, Leader: 1, Time: 1_000})
 		for k, want := range []uint64{1_000, 1_002, 1_005, 1_005} {
-			if r := await(t, calls[k]); r.err != nil || r.res.Timestamp != want {
-				t.Fatalf("call %d: %+v, %v, want timestamp %d", k, r.res, r.err, want)
+			if r := await(t, calls[k]); r.err != nil || r.res.Timestamp != want || r.res.Batch != 1_000 {
+				t.Fatalf("call %d: %+v, %v, want timestamp %d in batch 1000", k, r.res, r.err, want)
 			}
 		}
 
@@ -112,8 +112,8 @@ func TestTimestampOfABundledCall(t *testing.T) {
 		await(t, first)
 		f.next(t).reply(t, client.Reply{Status: client.OK, Leader: 1, Time: 7_000})
 		for k, want := range []uint64{7_000, 7_004} {
-			if r := await(t, accounts[k]); r.err != nil || r.res.Timestamp != want {
-				t.Fatalf("account call %d: %+v, %v, want timestamp %d", k, r.res, r.err, want)
+			if r := await(t, accounts[k]); r.err != nil || r.res.Timestamp != want || r.res.Batch != 7_000 {
+				t.Fatalf("account call %d: %+v, %v, want timestamp %d in batch 7000", k, r.res, r.err, want)
 			}
 		}
 	})

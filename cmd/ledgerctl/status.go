@@ -22,7 +22,9 @@ type probe struct {
 }
 
 func (c *ctl) status(args []string) int {
-	if code, ok := c.parse(c.flags("status"), args, false); !ok {
+	flags := c.flags("status")
+	keys := flags.Bool("keys", false, "print the public key of each node, one line per node, for a keys file")
+	if code, ok := c.parse(flags, args, false); !ok {
 		return code
 	}
 	probes := make([]probe, len(c.nodes))
@@ -33,7 +35,38 @@ func (c *ctl) status(args []string) int {
 		probes[i] = probe{addr: addr, st: st, err: err, clock: offset(st.Clock, sent, time.Now())}
 		cancel()
 	}
+	if *keys {
+		return c.keyList(probes)
+	}
 	return report(c.stdout, probes)
+}
+
+func (c *ctl) keyList(probes []probe) int {
+	code, answered := 0, 0
+	for i, p := range probes {
+		switch {
+		case p.err != nil:
+			fmt.Fprintf(c.stderr, "node %d at %s: unreachable: %v\n", i+1, p.addr, p.err)
+			code = 1
+		case p.st.Key == nil:
+			answered++
+			fmt.Fprintf(c.stderr, "node %d at %s has no key\n", i+1, p.addr)
+			code = 1
+		default:
+			answered++
+			fmt.Fprintf(c.stdout, "%s node %d\n", hex.EncodeToString(p.st.Key), i+1)
+		}
+	}
+	if answered == 0 {
+		return 3
+	}
+	return code
+}
+
+type point struct {
+	apply [32]byte
+	seq   uint64
+	head  [32]byte
 }
 
 func offset(clock uint64, sent, back time.Time) time.Duration {
@@ -41,9 +74,9 @@ func offset(clock uint64, sent, back time.Time) time.Duration {
 }
 
 func report(w io.Writer, probes []probe) int {
-	rows := [][]string{{"node", "address", "role", "term", "commit", "applied", "apply hash", "repair", "ledger time", "clock", "next expiry"}}
+	rows := [][]string{{"node", "address", "role", "term", "commit", "applied", "apply hash", "head", "repair", "ledger time", "clock", "next expiry"}}
 	code, answered := 0, 0
-	hashes := make(map[uint64][][32]byte)
+	hashes := make(map[uint64][]point)
 	for i, p := range probes {
 		node := strconv.Itoa(i + 1)
 		if p.err != nil {
@@ -57,10 +90,10 @@ func report(w io.Writer, probes []probe) int {
 			repair = "yes"
 			code = 1
 		}
-		hashes[p.st.Applied] = append(hashes[p.st.Applied], p.st.ApplyHash)
+		hashes[p.st.Applied] = append(hashes[p.st.Applied], point{p.st.ApplyHash, p.st.HeadSeq, p.st.Head})
 		rows = append(rows, []string{node, p.addr, p.st.Role.String(),
 			strconv.FormatUint(p.st.Term, 10), strconv.FormatUint(p.st.Commit, 10), strconv.FormatUint(p.st.Applied, 10),
-			hex.EncodeToString(p.st.ApplyHash[:8]), repair, stamp(p.st.Time),
+			hex.EncodeToString(p.st.ApplyHash[:8]), fmt.Sprintf("%d:%x", p.st.HeadSeq, p.st.Head[:8]), repair, stamp(p.st.Time),
 			fmt.Sprintf("%+dms", p.clock.Round(time.Millisecond).Milliseconds()), stamp(p.st.NextExpiry)})
 	}
 	table(w, rows)
@@ -86,7 +119,7 @@ func report(w io.Writer, probes []probe) int {
 	return code
 }
 
-func agree(hs [][32]byte) bool {
+func agree(hs []point) bool {
 	for _, h := range hs[1:] {
 		if h != hs[0] {
 			return false

@@ -45,8 +45,11 @@ func samples() []sample {
 		Clock:      0x9192939495969798,
 		NextExpiry: 0xa1a2a3a4a5a6a7a8,
 	}
+	st.Head.Seq = 0xb1b2b3b4b5b6b7b8
 	for i := range st.ApplyHash {
 		st.ApplyHash[i] = 0xe0 + byte(i)
+		st.Head.Hash[i] = 0xc0 + byte(i)
+		st.Key[i] = 0xd0 + byte(i)
 	}
 	m := raft.Message{
 		From:    0x1112131415161718,
@@ -85,7 +88,7 @@ func samples() []sample {
 		})},
 		{"StatusRequest", AppendStatusRequest(nil, cluster)},
 		{"Status", AppendStatus(nil, cluster, st)},
-		{"Hello", AppendHello(nil, cluster, Hello{From: 0x1112131415161718, To: 0x2122232425262728, Kind: KindSnapshot})},
+		{"Hello", AppendHello(nil, cluster, Hello{From: 0x1112131415161718, To: 0x2122232425262728, MaxSessions: 0x3132333435363738, Kind: KindSnapshot})},
 		{"PreVote", kind(raft.MsgPreVote)},
 		{"PreVoteResp", kind(raft.MsgPreVoteResp)},
 		{"Vote", kind(raft.MsgVote)},

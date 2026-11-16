@@ -137,7 +137,7 @@ func TestOtherClusterIsClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 		stranger := &testPeer{t: t, id: 2, conn: conn}
-		toss(stranger.conn, wire.AppendHello(nil, testCluster+1, wire.Hello{From: 2, To: 1, Kind: wire.KindMessages}))
+		toss(stranger.conn, wire.AppendHello(nil, testCluster+1, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages}))
 		if !stranger.shut(100 * time.Millisecond) {
 			t.Error("peer port: hello of another cluster leaves the connection open")
 		}
@@ -162,7 +162,7 @@ func TestPeerFrameOnTheClientPort(t *testing.T) {
 		n := start(t, pn.config(1, 3, t.TempDir()))
 		id := u128.From64(1)
 		for name, frame := range map[string][]byte{
-			"hello":          wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: wire.KindMessages}),
+			"hello":          wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages}),
 			"raft message":   mustMessage(t, raft.Message{Type: raft.MsgAppResp, From: 2, To: 1, Term: 1}),
 			"snapshot chunk": wire.AppendChunk(nil, testCluster, []byte{1}),
 			"reply":          wire.AppendReply(nil, testCluster, client.Reply{Client: id, Op: client.Register, Status: client.OK}),
@@ -177,7 +177,7 @@ func TestPeerFrameOnTheClientPort(t *testing.T) {
 		for name, frame := range map[string][]byte{
 			"request":        wire.AppendRequest(nil, testCluster, client.Request{Client: id, Op: client.Register}),
 			"status request": wire.AppendStatusRequest(nil, testCluster),
-			"second hello":   wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: wire.KindMessages}),
+			"second hello":   wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages}),
 		} {
 			p := pn.greet(t, 1, 2, wire.KindMessages)
 			toss(p.conn, frame)

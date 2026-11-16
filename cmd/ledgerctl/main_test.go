@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"net"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,12 @@ import (
 )
 
 func singleNode(t *testing.T) string {
+	t.Helper()
+	addr, _ := serveNode(t, nil, t.TempDir())
+	return addr
+}
+
+func serveNode(t *testing.T, key ed25519.PrivateKey, dir string) (string, func()) {
 	t.Helper()
 	clients, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -31,12 +39,13 @@ func singleNode(t *testing.T) string {
 		ID:            1,
 		Cluster:       1,
 		Peers:         []string{peering.Addr().String()},
-		Dir:           t.TempDir(),
+		Dir:           dir,
 		FS:            disk.OS{},
 		Tick:          time.Millisecond,
 		SnapshotEvery: 100000,
 		MaxSessions:   64,
 		MaxClients:    16,
+		Key:           key,
 		Clients:       clients,
 		Peering:       peering,
 		Dial: func(ctx context.Context, addr string) (net.Conn, error) {
@@ -49,13 +58,17 @@ func singleNode(t *testing.T) string {
 	ctx, cancel := context.WithCancel(context.Background())
 	halted := make(chan error, 1)
 	go func() { halted <- srv.Run(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		if err := <-halted; err != nil {
-			t.Error(err)
-		}
-	})
-	return clients.Addr().String()
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			if err := <-halted; err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return clients.Addr().String(), stop
 }
 
 func deadAddr(t *testing.T) string {
@@ -110,7 +123,7 @@ func TestExitCodes(t *testing.T) {
 		{args("account get 1 2"), 0, `^id=1 ledger=1 code=10 flags=0 debits_pending=0 debits_posted=120 credits_pending=0 credits_posted=0 timestamp=\S+\n` +
 			`id=2 ledger=1 code=10 flags=1 debits_pending=0 debits_posted=0 credits_pending=0 credits_posted=120 timestamp=\S+\n$`},
 		{args("account get 0x63 1"), 1, `^id=1 .*\nnot found 99\n$`},
-		{args("status"), 0, `^node  address  .*\n1\s+127\.0\.0\.1:\d+\s+leader\s+1\s+\d+\s+\d+\s+[0-9a-f]{16}\s+no\s+20\S+\s+[+-]\d+ms\s+-\nno two nodes at the same index\n$`},
+		{args("status"), 0, `^node  address  .*\n1\s+127\.0\.0\.1:\d+\s+leader\s+1\s+\d+\s+\d+\s+[0-9a-f]{16}\s+11:[0-9a-f]{16}\s+no\s+20\S+\s+[+-]\d+ms\s+-\nno two nodes at the same index\n$`},
 	} {
 		s.check(t)
 	}
@@ -132,6 +145,22 @@ func TestNoAnswer(t *testing.T) {
 		{args("status"), 3, `unreachable: dial tcp .*connection refused\nno two nodes at the same index\n$`},
 	} {
 		s.check(t)
+	}
+}
+
+func TestBatchTimeOnlyWhenItDiffers(t *testing.T) {
+	for _, tc := range []struct {
+		booked ledger.Result
+		want   string
+	}{
+		{ledger.Result{Timestamp: 1794808307000000005, Batch: 1794808307000000005}, "ok 7 at 2026-11-16T05:51:47.000000005Z\n"},
+		{ledger.Result{Timestamp: 1794808307000000005, Batch: 1794808307000000002}, "ok 7 at 2026-11-16T05:51:47.000000005Z in the batch of 2026-11-16T05:51:47.000000002Z\n"},
+	} {
+		var out bytes.Buffer
+		c := &ctl{stdout: &out}
+		if code := c.written(ledger.From64(7), tc.booked, nil); code != 0 || out.String() != tc.want {
+			t.Errorf("%+v: exit %d, %q, want %q", tc.booked, code, out.String(), tc.want)
+		}
 	}
 }
 

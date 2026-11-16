@@ -12,10 +12,9 @@ import (
 )
 
 const (
-	offType   = 5
-	offSize   = 16
-	helloSize = 17
-	maxHeld   = 4 << 20
+	offType = 5
+	offSize = 16
+	maxHeld = 4 << 20
 )
 
 type Fault struct {
@@ -213,7 +212,7 @@ func (l *Link) read(c *conn) {
 			return
 		}
 		t := wire.Type(raw[offType])
-		if t == wire.TypeHello && size == helloSize && raw[n-1] == wire.KindSnapshot {
+		if t == wire.TypeHello && size == wire.HelloSize && raw[n-1] == wire.KindSnapshot {
 			spare = true
 		}
 

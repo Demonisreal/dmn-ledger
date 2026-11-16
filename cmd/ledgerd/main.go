@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/server"
 )
 
@@ -29,6 +33,10 @@ func run(ctx context.Context, environ []string, stderr io.Writer) int {
 	}
 	logger := log.New(stderr, "", log.LstdFlags|log.Lmicroseconds|log.LUTC)
 	srv, clients, err := start(cfg, logger)
+	if errors.Is(err, replica.ErrMaxSessions) {
+		logger.Printf("node %d cannot start: LEDGER_MAX_SESSIONS=%d does not fit the data directory, set the value the cluster runs with: %v", cfg.id, cfg.maxSessions, err)
+		return 2
+	}
 	if err != nil {
 		logger.Printf("node %d cannot start: %v", cfg.id, err)
 		return 3
@@ -74,6 +82,7 @@ func (cfg config) server(clients, peering net.Listener, logger *log.Logger) serv
 		MaxSessions:   cfg.maxSessions,
 		MaxClients:    cfg.maxClients,
 		Sweep:         cfg.sweep,
+		Key:           cfg.key,
 		Clients:       clients,
 		Peering:       &knownPeers{Listener: peering, ips: peerIPs(cfg.peers), log: logger},
 		Dial:          dialPeer,
@@ -86,8 +95,12 @@ func greeting(cfg config, clients string, term uint64, repair bool) string {
 	if repair {
 		flag = "yes"
 	}
-	return fmt.Sprintf("node %d of %d in cluster %d started: peers on %s, clients on %s, term %d, repair %s",
-		cfg.id, len(cfg.peers), cfg.cluster, cfg.peers[cfg.id-1], clients, term, flag)
+	key := "no key"
+	if cfg.key != nil {
+		key = "key " + hex.EncodeToString(cfg.key.Public().(ed25519.PublicKey))
+	}
+	return fmt.Sprintf("node %d of %d in cluster %d started: peers on %s, clients on %s, term %d, repair %s, %s",
+		cfg.id, len(cfg.peers), cfg.cluster, cfg.peers[cfg.id-1], clients, term, flag, key)
 }
 
 func serve(ctx context.Context, runServer func(context.Context) error, cfg config, logger *log.Logger) int {

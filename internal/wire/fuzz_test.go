@@ -40,8 +40,8 @@ func FuzzReadFrame(f *testing.F) {
 		all = append(all, s.frame...)
 		f.Add(s.frame, []byte{0}, uint16(1024))
 	}
-	f.Add(all, []byte{0, 3, 200, 24}, uint16(110))
-	f.Add(all, []byte{23, 0, 0, 255}, uint16(109))
+	f.Add(all, []byte{0, 3, 200, 24}, uint16(182))
+	f.Add(all, []byte{23, 0, 0, 255}, uint16(181))
 	f.Add(all[:len(all)-1], []byte{}, uint16(4096))
 	f.Fuzz(func(t *testing.T, stream, sizes []byte, limit uint16) {
 		r := &pieces{stream: stream, sizes: sizes}

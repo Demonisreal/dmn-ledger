@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Demonisreal/dmn-ledger/internal/notary"
 )
 
 const threePeers = "127.0.0.1:7201,127.0.0.1:7202,127.0.0.1:7203"
@@ -181,5 +187,39 @@ func TestUnknownVariablesAreAllNamed(t *testing.T) {
 	_, err := parse(append(environ(required()), "LEDGER_TIKC=5ms", "LEDGER_SWEEEP=off"))
 	if err == nil || err.Error() != "unknown variable LEDGER_SWEEEP, LEDGER_TIKC" {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestKeyFile(t *testing.T) {
+	dir := t.TempDir()
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
+	good := filepath.Join(dir, "node.key")
+	if err := notary.WriteKey(good, key); err != nil {
+		t.Fatal(err)
+	}
+	open := filepath.Join(dir, "open.key")
+	if err := notary.WriteKey(open, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(open, 0o640); err != nil { //nolint:gosec // G302: the key file is opened to its group on purpose
+		t.Fatal(err)
+	}
+	vars := required()
+	vars["LEDGER_KEY_FILE"] = good
+	cfg, err := parse(environ(vars))
+	if err != nil || !cfg.key.Equal(key) {
+		t.Fatalf("key %x, %v", cfg.key, err)
+	}
+	for _, tc := range []struct{ path, want string }{
+		{"node.key", `LEDGER_KEY_FILE="node.key": want an absolute path`},
+		{"", `LEDGER_KEY_FILE="": want an absolute path`},
+		{open, `LEDGER_KEY_FILE="` + open + `": notary: bad key file: ` + open + ` is open to group or others (mode 0640)`},
+		{dir, `LEDGER_KEY_FILE="` + dir + `": notary: bad key file: ` + dir + ` is not a regular file`},
+		{filepath.Join(dir, "missing.key"), `LEDGER_KEY_FILE="` + filepath.Join(dir, "missing.key") + `": open `},
+	} {
+		vars["LEDGER_KEY_FILE"] = tc.path
+		if _, err := parse(environ(vars)); err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+			t.Errorf("%q: %v, want %q", tc.path, err, tc.want)
+		}
 	}
 }

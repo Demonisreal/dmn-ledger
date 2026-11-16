@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -28,13 +29,17 @@ func TestStatus(t *testing.T) {
 		Clock:      1_763_112_307_474_000_000,
 		NextExpiry: 1_763_112_317_000_000_000,
 	}
+	sample.Head.Seq = 4269
 	for i := range sample.ApplyHash {
 		sample.ApplyHash[i] = byte(i + 1)
+		sample.Head.Hash[i] = byte(i + 0x41)
+		sample.Key[i] = byte(i + 0x81)
 	}
 	want := NodeStatus{
 		ID: 3, Role: Leader, Repair: true, Term: 5, Leader: 2, Commit: 4271, Applied: 4270, Last: 4272,
 		ApplyHash: sample.ApplyHash, Sessions: 17,
 		Time: sample.Time, Clock: sample.Clock, NextExpiry: sample.NextExpiry,
+		HeadSeq: 4269, Head: sample.Head.Hash, Key: sample.Key[:],
 	}
 	node := func(answer func(nc net.Conn)) dialFunc {
 		return func(_ context.Context, addr string) (net.Conn, error) {
@@ -58,8 +63,16 @@ func TestStatus(t *testing.T) {
 		st, err := status(context.Background(), cluster, "n3:7101", node(func(nc net.Conn) {
 			_, _ = nc.Write(wire.AppendStatus(nil, cluster, sample))
 		}))
-		if err != nil || st != want {
+		if err != nil || !reflect.DeepEqual(st, want) {
 			t.Fatalf("status %+v, %v, want %+v", st, err, want)
+		}
+		keyless := sample
+		keyless.Key = [32]byte{}
+		st, err = status(context.Background(), cluster, "n3:7101", node(func(nc net.Conn) {
+			_, _ = nc.Write(wire.AppendStatus(nil, cluster, keyless))
+		}))
+		if err != nil || st.Key != nil || st.HeadSeq != 4269 {
+			t.Fatalf("status of a node without a key: key %x, head %d, %v", st.Key, st.HeadSeq, err)
 		}
 		if st.Role.String() != "leader" {
 			t.Fatalf("role %q", st.Role)

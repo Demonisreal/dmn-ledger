@@ -13,7 +13,7 @@ const (
 )
 
 const (
-	helloSize   = 17
+	helloSize   = 25
 	messageHead = 24
 	appendHead  = messageHead + 36
 	entryHead   = 13
@@ -33,9 +33,10 @@ var messageSize = [...]int{
 }
 
 type Hello struct {
-	From uint64
-	To   uint64
-	Kind uint8
+	From        uint64
+	To          uint64
+	MaxSessions uint64
+	Kind        uint8
 }
 
 func AppendHello(dst []byte, cluster uint64, h Hello) []byte {
@@ -43,6 +44,7 @@ func AppendHello(dst []byte, cluster uint64, h Hello) []byte {
 	dst = appendHeader(dst, cluster, TypeHello)
 	dst = binary.BigEndian.AppendUint64(dst, h.From)
 	dst = binary.BigEndian.AppendUint64(dst, h.To)
+	dst = binary.BigEndian.AppendUint64(dst, h.MaxSessions)
 	dst = append(dst, h.Kind)
 	return finish(dst, start)
 }
@@ -52,7 +54,12 @@ func (f Frame) Hello() (Hello, error) {
 	if f.Type != TypeHello || len(b) != helloSize {
 		return Hello{}, f.mismatch("hello")
 	}
-	return Hello{From: binary.BigEndian.Uint64(b), To: binary.BigEndian.Uint64(b[8:]), Kind: b[16]}, nil
+	return Hello{
+		From:        binary.BigEndian.Uint64(b),
+		To:          binary.BigEndian.Uint64(b[8:]),
+		MaxSessions: binary.BigEndian.Uint64(b[16:]),
+		Kind:        b[24],
+	}, nil
 }
 
 func AppendMessage(dst []byte, cluster uint64, m raft.Message) ([]byte, error) {

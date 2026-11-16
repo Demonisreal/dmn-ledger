@@ -182,7 +182,7 @@ func TestLogThrottlesRefusedConnections(t *testing.T) {
 		cfg.MaxClients = 1
 		out := logged(&cfg)
 		n := start(t, cfg)
-		stranger := wire.AppendHello(nil, testCluster, wire.Hello{From: 9, To: 1, Kind: wire.KindMessages})
+		stranger := wire.AppendHello(nil, testCluster, wire.Hello{From: 9, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages})
 		knock := func() {
 			conn, err := pn.dial(t.Context(), peerAddr(1))
 			if err != nil {
