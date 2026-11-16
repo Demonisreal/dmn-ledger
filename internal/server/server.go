@@ -1,0 +1,337 @@
+package server
+
+import (
+	"context"
+	crand "crypto/rand"
+	"encoding/binary"
+	"errors"
+	"io"
+	"log"
+	"math/rand/v2"
+	"net"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/Demonisreal/dmn-ledger/internal/client"
+	"github.com/Demonisreal/dmn-ledger/internal/disk"
+	"github.com/Demonisreal/dmn-ledger/internal/raft"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
+	"github.com/Demonisreal/dmn-ledger/internal/u128"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
+	"github.com/Demonisreal/dmn-ledger/internal/wire"
+)
+
+const (
+	heartbeatTicks = 5
+	electionTicks  = 50
+	snapshotTicks  = 500
+	maxAppendBytes = 1 << 20
+
+	eventQueue  = 256
+	maxSnapshot = 8 << 30
+
+	recvDir = "recv"
+	snapDir = "snap"
+)
+
+var segmentSize int64 = wal.MaxSegmentSize
+
+type Config struct {
+	ID            uint64
+	Cluster       uint64
+	Peers         []string
+	Dir           string
+	FS            disk.FS
+	Tick          time.Duration
+	SnapshotEvery uint64
+	MaxSessions   int
+	MaxClients    int
+	Sweep         bool
+	Clients       net.Listener
+	Peering       net.Listener
+	Dial          func(ctx context.Context, addr string) (net.Conn, error)
+	Log           *log.Logger
+}
+
+type Server struct {
+	cfg      Config
+	node     *replica.Node
+	ticks    ticks
+	ticked   uint64
+	events   chan event
+	fatal    chan error
+	slots    chan struct{}
+	peers    map[uint64]*peer
+	conns    map[u128.Uint128]*clientConn
+	spools   []*spool
+	spoolMax int64
+	sweeper  sweeper
+	notes    chan note
+	role     raft.Role
+	repair   bool
+	wg       sync.WaitGroup
+}
+
+type eventKind uint8
+
+const (
+	gotMessage eventKind = iota
+	gotSnapshot
+	gotRequest
+	gotStatus
+	connClosed
+)
+
+type event struct {
+	kind  eventKind
+	msg   raft.Message
+	spool *spool
+	req   client.Request
+	conn  *clientConn
+}
+
+func Open(cfg Config) (*Server, error) {
+	switch {
+	case cfg.Cluster == 0:
+		return nil, errors.New("server: cluster id must not be 0")
+	case cfg.Tick <= 0:
+		return nil, errors.New("server: tick must be positive")
+	case cfg.MaxClients < 1:
+		return nil, errors.New("server: MaxClients must be at least 1")
+	}
+	var seed [16]byte
+	if _, err := crand.Read(seed[:]); err != nil {
+		return nil, err
+	}
+	ids := make([]uint64, len(cfg.Peers))
+	for i := range ids {
+		ids[i] = uint64(i) + 1
+	}
+	node, err := replica.Open(replica.Config{
+		ID:             cfg.ID,
+		Peers:          ids,
+		FS:             cfg.FS,
+		Dir:            cfg.Dir,
+		Clock:          wallClock,
+		Rand:           rand.New(rand.NewPCG(binary.BigEndian.Uint64(seed[:]), binary.BigEndian.Uint64(seed[8:]))), //nolint:gosec // G404: a PCG seeded from crypto/rand, as the driver contract asks
+		MaxSessions:    cfg.MaxSessions,
+		SnapshotEvery:  cfg.SnapshotEvery,
+		SegmentSize:    segmentSize,
+		ClockStep:      uint64(cfg.Tick + cfg.Tick/4), //nolint:gosec // G115: the tick is positive
+		ElectionTicks:  electionTicks,
+		HeartbeatTicks: heartbeatTicks,
+		SnapshotTicks:  snapshotTicks,
+		MaxAppendBytes: maxAppendBytes,
+		MaxUncommitted: 2 * uint64(cfg.MaxClients),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := clearSpools(cfg.FS, filepath.Join(cfg.Dir, recvDir)); err != nil {
+		return nil, errors.Join(err, node.Close())
+	}
+	s := &Server{
+		cfg:      cfg,
+		node:     node,
+		ticks:    ticks{every: cfg.Tick, most: electionTicks - 1},
+		events:   make(chan event, eventQueue),
+		fatal:    make(chan error, 1),
+		slots:    make(chan struct{}, cfg.MaxClients),
+		peers:    make(map[uint64]*peer),
+		conns:    make(map[u128.Uint128]*clientConn),
+		spoolMax: maxSnapshot,
+		sweeper:  sweeper{on: cfg.Sweep, self: cfg.ID},
+		notes:    make(chan note, logQueue),
+	}
+	st := node.Status()
+	s.role, s.repair = st.Role, st.Repair
+	for i, addr := range cfg.Peers {
+		if id := uint64(i) + 1; id != cfg.ID {
+			s.peers[id] = &peer{id: id, addr: addr, out: make(chan []byte, peerQueue)}
+		}
+	}
+	return s, nil
+}
+
+func wallClock() uint64 {
+	return uint64(time.Now().UnixNano()) //nolint:gosec // G115: the wall clock is after 1970
+}
+
+func clearSpools(fsys disk.FS, dir string) error {
+	if err := fsys.MkdirAll(dir); err != nil {
+		return err
+	}
+	names, err := fsys.List(dir)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := fsys.Remove(filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	quiet := make(chan struct{})
+	var logs sync.WaitGroup
+	if s.cfg.Log != nil {
+		logs.Go(func() { s.writeLog(quiet) })
+	}
+	s.wg.Go(func() { s.acceptClients(ctx) })
+	s.wg.Go(func() { s.acceptPeers(ctx) })
+	for _, p := range s.peers {
+		s.wg.Go(func() { s.writePeer(ctx, p) })
+	}
+	err := s.loop(ctx)
+	cancel()
+	_ = s.cfg.Clients.Close()
+	_ = s.cfg.Peering.Close()
+	s.wg.Wait()
+	for len(s.events) > 0 {
+		if ev := <-s.events; ev.spool != nil {
+			s.discard(ev.spool)
+		}
+	}
+	close(quiet)
+	logs.Wait()
+	return errors.Join(err, s.node.Close())
+}
+
+func (s *Server) loop(ctx context.Context) error {
+	start := time.Now()
+	timer := time.NewTimer(s.cfg.Tick)
+	defer timer.Stop()
+	for {
+		timer.Reset(s.ticks.wake(time.Since(start)))
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-s.fatal:
+			return err
+		case ev := <-s.events:
+			s.feed(ev)
+		case <-timer.C:
+		}
+		for range len(s.events) {
+			s.feed(<-s.events)
+		}
+		owed := s.ticks.take(time.Since(start))
+		for range owed {
+			s.node.Tick()
+		}
+		s.ticked += uint64(owed) //nolint:gosec // G115: take never returns less than 0
+		s.sweep(owed)
+		out, err := s.node.Process()
+		s.release()
+		if err != nil {
+			return err
+		}
+		if err := s.send(ctx, out.Messages); err != nil {
+			return err
+		}
+		s.answer(out.Replies)
+		s.watch()
+	}
+}
+
+func (s *Server) feed(ev event) {
+	switch ev.kind {
+	case gotMessage:
+		s.node.Receive(ev.msg, nil)
+	case gotSnapshot:
+		s.spools = append(s.spools, ev.spool)
+		s.node.Receive(ev.msg, io.NewSectionReader(ev.spool.file, 0, ev.spool.size))
+	case gotRequest:
+		s.conns[ev.req.Client] = ev.conn
+		s.node.Request(ev.req)
+	case gotStatus:
+		s.reply(ev.conn, wire.AppendStatus(nil, s.cfg.Cluster, s.status()))
+	case connClosed:
+		if s.conns[ev.req.Client] == ev.conn {
+			delete(s.conns, ev.req.Client)
+		}
+	}
+}
+
+func (s *Server) status() wire.Status {
+	st := s.node.Status()
+	return wire.Status{
+		ID:         st.ID,
+		Role:       st.Role,
+		Repair:     st.Repair,
+		Term:       st.Term,
+		Lead:       st.Lead,
+		Commit:     st.Commit,
+		Applied:    st.Applied,
+		Last:       st.Last,
+		ApplyHash:  st.ApplyHash,
+		Sessions:   uint32(st.Sessions), //nolint:gosec // G115: MaxSessions is an int the operator sets, far below 2^32
+		Time:       st.Time,
+		Clock:      wallClock(),
+		NextExpiry: st.NextExpiry,
+	}
+}
+
+func (s *Server) release() {
+	for _, sp := range s.spools {
+		s.discard(sp)
+	}
+	clear(s.spools)
+	s.spools = s.spools[:0]
+}
+
+func (s *Server) send(ctx context.Context, msgs []raft.Message) error {
+	for _, m := range msgs {
+		frame, err := wire.AppendMessage(nil, s.cfg.Cluster, m)
+		if err != nil {
+			return err
+		}
+		p := s.peers[m.To]
+		if m.Type != raft.MsgSnap {
+			p.push(frame)
+			continue
+		}
+		if p.sending.CompareAndSwap(false, true) {
+			s.wg.Go(func() {
+				defer p.sending.Store(false)
+				s.sendSnapshot(ctx, p, m, frame)
+			})
+		}
+	}
+	return nil
+}
+
+func (s *Server) answer(replies []client.Reply) {
+	for _, r := range replies {
+		if s.sweeper.owns(r.Client) {
+			s.sweeper.step(r)
+			continue
+		}
+		if c, ok := s.conns[r.Client]; ok {
+			s.reply(c, wire.AppendReply(nil, s.cfg.Cluster, r))
+		}
+	}
+}
+
+func (s *Server) stop(err error) {
+	select {
+	case s.fatal <- err:
+	default:
+	}
+}
+
+func closeOnStop(ctx context.Context, conn net.Conn) func() {
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	return func() {
+		stop()
+		_ = conn.Close()
+	}
+}
+
+func keepAccepting(ctx context.Context, err error) bool {
+	return !errors.Is(err, net.ErrClosed) && sleep(ctx, acceptPause)
+}
