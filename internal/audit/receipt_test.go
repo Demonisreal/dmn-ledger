@@ -297,7 +297,7 @@ func FuzzDecode(f *testing.F) {
 		r, h, rest, err := audit.Decode(proof)
 		if err != nil {
 			if !errors.Is(err, audit.ErrBadReceipt) {
-				t.Fatalf("error %v is no ErrBadReceipt", err)
+				t.Fatalf("error %v is not ErrBadReceipt", err)
 			}
 			return
 		}

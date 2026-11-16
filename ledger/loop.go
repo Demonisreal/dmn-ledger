@@ -154,7 +154,7 @@ func (c *Client) split(batch []*call, r client.Reply) {
 		results[k].Failures = append(results[k].Failures, Failure{Index: f.Index - batch[k].off, Reason: Reason(f.Reason)})
 	}
 	for k, cl := range batch {
-		cl.answer(outcome{res: results[k]})
+		cl.answer(outcome{written: results[k]})
 	}
 }
 

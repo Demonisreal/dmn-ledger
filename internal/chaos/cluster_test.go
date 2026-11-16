@@ -176,6 +176,7 @@ func newHarness(t *testing.T, seed uint64, bug string) *harness {
 			"LEDGER_DIR=" + filepath.Join(h.dir, fmt.Sprintf("n%d", id)),
 			"LEDGER_SWEEP=off",
 			"LEDGER_SNAPSHOT_EVERY=500",
+			"LEDGER_SEGMENT_SIZE=2097152",
 			"LEDGER_MAX_SESSIONS=64",
 		}
 		if bug != "" {

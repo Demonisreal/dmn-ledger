@@ -70,9 +70,9 @@ type call struct {
 }
 
 type outcome struct {
-	res  Result
-	body []byte
-	err  error
+	written Result
+	body    []byte
+	err     error
 }
 
 func Dial(ctx context.Context, cfg Config) (*Client, error) {
@@ -129,7 +129,7 @@ func (c *Client) CreateAccounts(ctx context.Context, accounts []Account) (Result
 		cl.body = appendAccount(cl.body, a)
 	}
 	o := c.do(ctx, cl)
-	return o.res, o.err
+	return o.written, o.err
 }
 
 func (c *Client) CreateTransfers(ctx context.Context, transfers []Transfer) (Result, error) {
@@ -142,7 +142,7 @@ func (c *Client) CreateTransfers(ctx context.Context, transfers []Transfer) (Res
 	}
 	cl.linked = len(transfers) > 0 && transfers[len(transfers)-1].Flags&Linked != 0
 	o := c.do(ctx, cl)
-	return o.res, o.err
+	return o.written, o.err
 }
 
 func (c *Client) LookupAccounts(ctx context.Context, ids []Uint128) ([]Account, error) {

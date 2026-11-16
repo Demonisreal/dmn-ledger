@@ -89,7 +89,7 @@ func (f *fake) serve(node uint64, nc net.Conn) {
 		}
 		req, err := frame.Request()
 		if err != nil {
-			f.t.Errorf("node %d got a frame that is no request: %v", node, err)
+			f.t.Errorf("node %d got a frame that is not a request: %v", node, err)
 			return
 		}
 		select {

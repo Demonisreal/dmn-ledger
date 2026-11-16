@@ -32,8 +32,8 @@ func (c *ctl) createAccount(args []string) int {
 		a.ID = ledger.NewID()
 	}
 	return c.call(a.ID.String(), func(ctx context.Context, cl *ledger.Client) int {
-		res, err := cl.CreateAccounts(ctx, []ledger.Account{a})
-		return c.written(a.ID, res, err)
+		booked, err := cl.CreateAccounts(ctx, []ledger.Account{a})
+		return c.written(a.ID, booked, err)
 	})
 }
 
@@ -76,8 +76,8 @@ func (c *ctl) transfer(fs *flag.FlagSet, tr ledger.Transfer) int {
 		tr.ID = ledger.NewID()
 	}
 	return c.call(tr.ID.String(), func(ctx context.Context, cl *ledger.Client) int {
-		res, err := cl.CreateTransfers(ctx, []ledger.Transfer{tr})
-		return c.written(tr.ID, res, err)
+		booked, err := cl.CreateTransfers(ctx, []ledger.Transfer{tr})
+		return c.written(tr.ID, booked, err)
 	})
 }
 

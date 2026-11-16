@@ -135,15 +135,15 @@ func (c *ctl) fail(subject string, err error) int {
 	return 3
 }
 
-func (c *ctl) written(id ledger.Uint128, res ledger.Result, err error) int {
+func (c *ctl) written(id ledger.Uint128, booked ledger.Result, err error) int {
 	switch {
 	case err != nil:
 		return c.fail(id.String(), err)
-	case len(res.Failures) > 0:
-		fmt.Fprintf(c.stdout, "failed %s: %s\n", id, res.Failures[0].Reason)
+	case len(booked.Failures) > 0:
+		fmt.Fprintf(c.stdout, "failed %s: %s\n", id, booked.Failures[0].Reason)
 		return 1
 	}
-	fmt.Fprintf(c.stdout, "ok %s at %s\n", id, stamp(res.Timestamp))
+	fmt.Fprintf(c.stdout, "ok %s at %s\n", id, stamp(booked.Timestamp))
 	return 0
 }
 
