@@ -1,0 +1,391 @@
+{
+  "schema": 1,
+  "id": "m2-l1-twophase-20-1",
+  "measurement": "m2",
+  "pass": 1,
+  "started": "2000-01-01T00:00:00Z",
+  "build": {
+    "commit": "6d4b109",
+    "dirty": false,
+    "tags": [],
+    "go": "go1.27.4"
+  },
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "threads": 16,
+    "allowed": "8-15",
+    "gomaxprocs": 8,
+    "ram": 16430473216,
+    "kernel": "6.12.117+deb13-amd64",
+    "governor": "powersave",
+    "turbo": "on",
+    "power": "mains",
+    "filesystem": "ext4",
+    "mount": "rw,relatime",
+    "disk": "nvme0n1",
+    "model": "PC801 NVMe SK hynix 512GB",
+    "used": 0.75
+  },
+  "target": {
+    "kind": "ledger",
+    "nodes": 1,
+    "variant": "",
+    "lanes": 2,
+    "cores": "0,1",
+    "env": {
+      "LEDGER_SNAPSHOT_EVERY": "4294967296"
+    },
+    "version": "",
+    "settings": null
+  },
+  "load": {
+    "workload": "twophase",
+    "accounts": 10000,
+    "rate": 20,
+    "stage": 0,
+    "stages": null,
+    "warmup_ns": 1000000000,
+    "window_ns": 3000000000,
+    "max_window_ns": 3000000000,
+    "drain_ns": 1000000000,
+    "need": 2,
+    "seed": 42
+  },
+  "probe": {
+    "growing": [
+      {
+        "syncs": 2012,
+        "sync_ns": 999000000,
+        "flushes": 2016,
+        "flush_ns": 438000000,
+        "speed": "fast"
+      }
+    ],
+    "prealloc": [
+      {
+        "syncs": 4242,
+        "sync_ns": 999000000,
+        "flushes": 4242,
+        "flush_ns": 911000000,
+        "speed": "fast"
+      }
+    ],
+    "means": [
+      {
+        "speed": "slow",
+        "growing_seconds": 0,
+        "growing_ns": 0,
+        "prealloc_seconds": 0,
+        "prealloc_ns": 0,
+        "ratio": 0
+      },
+      {
+        "speed": "fast",
+        "growing_seconds": 1,
+        "growing_ns": 496857,
+        "prealloc_seconds": 1,
+        "prealloc_ns": 235693,
+        "ratio": 2.108
+      }
+    ]
+  },
+  "thresholds": {
+    "fast_ns": 500000,
+    "slow_ns": 1000000,
+    "min_flushes": 20
+  },
+  "before": [
+    {
+      "name": "n1",
+      "role": "leader",
+      "term": 1,
+      "syncs": 0,
+      "sync_ns": 0,
+      "requests": 0,
+      "counters": {
+        "logsync": 0,
+        "metasync": 0,
+        "rounds": 0
+      }
+    }
+  ],
+  "seconds": [
+    {
+      "phase": "warmup",
+      "due": 20,
+      "booked": 40,
+      "open": 0,
+      "retries": 20,
+      "failed": 0,
+      "count": 20,
+      "p50_ns": 6016000,
+      "p99_ns": 6016000,
+      "late_p99_ns": 1000,
+      "flushes": 120,
+      "flush_ns": 84000000,
+      "writes": 360,
+      "write_ns": 18000000,
+      "cpu": {
+        "generator": 0.02,
+        "target": 0.04,
+        "foreign": 0.3
+      },
+      "mhz": [
+        2500,
+        2480
+      ],
+      "throttled": 0,
+      "available": 7516192768,
+      "swapped_out": 0,
+      "speed": "transition",
+      "valid": false,
+      "why": [
+        "transition"
+      ],
+      "parts": [
+        {
+          "name": "n1",
+          "role": "leader",
+          "term": 1,
+          "syncs": 10,
+          "sync_ns": 14000000,
+          "requests": 20,
+          "counters": {
+            "logsync": 5,
+            "metasync": 5,
+            "rounds": 10
+          }
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 20,
+      "booked": 40,
+      "open": 0,
+      "retries": 20,
+      "failed": 0,
+      "count": 20,
+      "p50_ns": 6016000,
+      "p99_ns": 6016000,
+      "late_p99_ns": 1000,
+      "flushes": 120,
+      "flush_ns": 168000000,
+      "writes": 360,
+      "write_ns": 18000000,
+      "cpu": {
+        "generator": 0.02,
+        "target": 0.04,
+        "foreign": 0.3
+      },
+      "mhz": [
+        2500,
+        2480
+      ],
+      "throttled": 0,
+      "available": 7516192768,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": false,
+      "why": [
+        "first second after a change"
+      ],
+      "parts": [
+        {
+          "name": "n1",
+          "role": "leader",
+          "term": 1,
+          "syncs": 20,
+          "sync_ns": 28000000,
+          "requests": 40,
+          "counters": {
+            "logsync": 10,
+            "metasync": 10,
+            "rounds": 20
+          }
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 20,
+      "booked": 40,
+      "open": 0,
+      "retries": 20,
+      "failed": 0,
+      "count": 20,
+      "p50_ns": 6016000,
+      "p99_ns": 6016000,
+      "late_p99_ns": 1000,
+      "flushes": 120,
+      "flush_ns": 168000000,
+      "writes": 360,
+      "write_ns": 18000000,
+      "cpu": {
+        "generator": 0.02,
+        "target": 0.04,
+        "foreign": 0.3
+      },
+      "mhz": [
+        2500,
+        2480
+      ],
+      "throttled": 0,
+      "available": 7516192768,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "leader",
+          "term": 1,
+          "syncs": 30,
+          "sync_ns": 42000000,
+          "requests": 60,
+          "counters": {
+            "logsync": 15,
+            "metasync": 15,
+            "rounds": 30
+          }
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 20,
+      "booked": 40,
+      "open": 0,
+      "retries": 20,
+      "failed": 0,
+      "count": 20,
+      "p50_ns": 6016000,
+      "p99_ns": 6016000,
+      "late_p99_ns": 1000,
+      "flushes": 120,
+      "flush_ns": 168000000,
+      "writes": 360,
+      "write_ns": 18000000,
+      "cpu": {
+        "generator": 0.02,
+        "target": 0.04,
+        "foreign": 0.3
+      },
+      "mhz": [
+        2500,
+        2480
+      ],
+      "throttled": 0,
+      "available": 7516192768,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "leader",
+          "term": 1,
+          "syncs": 40,
+          "sync_ns": 56000000,
+          "requests": 80,
+          "counters": {
+            "logsync": 20,
+            "metasync": 20,
+            "rounds": 40
+          }
+        }
+      ]
+    }
+  ],
+  "bands": {
+    "slow": {
+      "seconds": 2,
+      "throughput": 40,
+      "histogram": {
+        "buckets": [
+          [
+            6016000,
+            40
+          ]
+        ],
+        "never": 0
+      },
+      "p50_ns": 6016000,
+      "p99_ns": 6016000,
+      "p999_ns": 6016000,
+      "max_ns": 6016000,
+      "unfinished": 0,
+      "reserve": {
+        "buckets": [
+          [
+            3008000,
+            40
+          ]
+        ],
+        "never": 0
+      },
+      "reserve_p50_ns": 3008000,
+      "reserve_p99_ns": 3008000,
+      "syncs_per_transfer": 0.25,
+      "part_syncs_per_transfer": {
+        "n1": 0.25
+      },
+      "transfers_per_request": 2,
+      "flush_ns": 1400000,
+      "p50_flushes": 4.297142857142857
+    },
+    "fast": {
+      "seconds": 0,
+      "throughput": 0,
+      "histogram": {
+        "buckets": [],
+        "never": 0
+      },
+      "p50_ns": 0,
+      "p99_ns": 0,
+      "p999_ns": 0,
+      "max_ns": 0,
+      "unfinished": 0,
+      "reserve": {
+        "buckets": [],
+        "never": 0
+      },
+      "reserve_p50_ns": 0,
+      "reserve_p99_ns": 0,
+      "syncs_per_transfer": 0,
+      "part_syncs_per_transfer": null,
+      "transfers_per_request": 0,
+      "flush_ns": 0,
+      "p50_flushes": 0
+    }
+  },
+  "verdict": {
+    "valid": true,
+    "speed": "slow",
+    "saturated": false,
+    "capped": false,
+    "limit": "",
+    "open_at_end": 0,
+    "horizon_ns": 0,
+    "throughput": 40,
+    "late_p99_ns": 1000,
+    "generator_share": 0.0025,
+    "reasons": null,
+    "problems": null
+  },
+  "books": {
+    "confirmed": 160,
+    "existed": 0,
+    "posted": 3513,
+    "pending": 0,
+    "sampled": 80,
+    "verified": true,
+    "found": 80,
+    "debits_posted": 1,
+    "credits_posted": 1,
+    "debits_pending": 0,
+    "credits_pending": 0
+  }
+}
