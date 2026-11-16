@@ -5,11 +5,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -36,11 +39,35 @@ func TestServeTurnsTheEndOfRunIntoTheExitCode(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs lockedBuffer
 			ran := false
-			code := serve(tc.ctx, func(context.Context) error { ran = true; return tc.err }, cfg, log.New(&logs, "", 0))
-			if line := strings.TrimSpace(logs.String()); !ran || code != tc.code || line != tc.last {
-				t.Fatalf("ran %v, exit %d, log %q, want exit %d and %q", ran, code, line, tc.code, tc.last)
+			code := serve(tc.ctx, func(context.Context) error { ran = true; return tc.err }, cfg, log.New(&logs, "", 0), nil, func() string { return "stats up=1" })
+			want := "stats up=1\n" + tc.last
+			if lines := strings.TrimSpace(logs.String()); !ran || code != tc.code || lines != want {
+				t.Fatalf("ran %v, exit %d, log %q, want exit %d and %q", ran, code, lines, tc.code, want)
 			}
 		})
+	}
+}
+
+func TestServeWritesStatsOnSignalAndAtTheEnd(t *testing.T) {
+	cfg := config{id: 1, peers: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:1")}}
+	stopped, stop := context.WithCancelCause(context.Background())
+	asked, halt := make(chan os.Signal), make(chan struct{})
+	var logs lockedBuffer
+	lines := 0
+	exited := make(chan int)
+	go func() {
+		exited <- serve(stopped, func(context.Context) error { <-halt; return nil }, cfg, log.New(&logs, "", 0), asked, func() string {
+			lines++
+			return fmt.Sprintf("stats %d", lines)
+		})
+	}()
+	asked <- syscall.SIGUSR1
+	asked <- syscall.SIGUSR1
+	stop(errors.New("terminated signal received"))
+	close(halt)
+	want := "stats 1\nstats 2\nstats 3\nnode 1 stopped: terminated signal received"
+	if code := <-exited; code != 0 || strings.TrimSpace(logs.String()) != want {
+		t.Fatalf("exit %d, log %q, want 0 and %q", code, logs.String(), want)
 	}
 }
 
@@ -86,10 +113,11 @@ func TestServerGetsEveryVariable(t *testing.T) {
 	}
 	clients, peering := &net.TCPListener{}, &net.TCPListener{}
 	logger := log.New(io.Discard, "", 0)
-	sc := cfg.server(clients, peering, logger)
+	disks := &countingFS{FS: disk.OS{}, dir: cfg.dir}
+	sc := cfg.server(disks, clients, peering, logger)
 	known, ok := sc.Peering.(*knownPeers)
 	switch {
-	case sc.ID != 3 || sc.Cluster != 0x99 || sc.Dir != "/srv/ledger/n3" || sc.FS != (disk.OS{}):
+	case sc.ID != 3 || sc.Cluster != 0x99 || sc.Dir != "/srv/ledger/n3" || sc.FS != disks:
 		t.Fatalf("id %d, cluster %d, dir %q, fs %T", sc.ID, sc.Cluster, sc.Dir, sc.FS)
 	case strings.Join(sc.Peers, ",") != "10.0.0.1:7201,10.0.0.2:7201,10.0.0.3:7201,10.0.0.4:7201,[fd00::5]:7201":
 		t.Fatalf("peers %v", sc.Peers)
@@ -101,11 +129,11 @@ func TestServerGetsEveryVariable(t *testing.T) {
 		t.Fatalf("a key without LEDGER_KEY_FILE: %x", sc.Key)
 	}
 	cfg.key = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, ed25519.SeedSize))
-	if !cfg.server(clients, peering, logger).Key.Equal(cfg.key) {
+	if !cfg.server(disks, clients, peering, logger).Key.Equal(cfg.key) {
 		t.Fatal("the key did not reach the server")
 	}
 	cfg.sweep = true
-	if !cfg.server(clients, peering, logger).Sweep {
+	if !cfg.server(disks, clients, peering, logger).Sweep {
 		t.Fatal("LEDGER_SWEEP=on did not reach the server")
 	}
 }

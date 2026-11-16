@@ -80,6 +80,7 @@ type Server struct {
 	repair   bool
 	opened   replica.Status
 	stamper  [32]byte
+	counters counters
 	wg       sync.WaitGroup
 }
 
@@ -234,6 +235,7 @@ func (s *Server) loop(ctx context.Context) error {
 	defer timer.Stop()
 	for {
 		timer.Reset(s.ticks.wake(time.Since(start)))
+		idle := time.Now()
 		select {
 		case <-ctx.Done():
 			return nil
@@ -243,6 +245,7 @@ func (s *Server) loop(ctx context.Context) error {
 			s.feed(ev)
 		case <-timer.C:
 		}
+		s.counters.waited(time.Since(idle))
 		for range len(s.events) {
 			s.feed(<-s.events)
 		}
@@ -252,7 +255,9 @@ func (s *Server) loop(ctx context.Context) error {
 		}
 		s.ticked += uint64(owed) //nolint:gosec // G115: take never returns less than 0
 		s.sweep(owed)
+		began := time.Now()
 		out, err := s.node.Process()
+		s.counters.processed(time.Since(began))
 		s.release()
 		if err != nil {
 			return err

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/replica"
@@ -26,13 +27,28 @@ func main() {
 }
 
 func run(ctx context.Context, environ []string, stderr io.Writer) int {
+	began := time.Now()
+	asked := make(chan os.Signal, 1)
+	signal.Notify(asked, syscall.SIGUSR1)
+	defer signal.Stop(asked)
 	cfg, err := parse(environ)
 	if err != nil {
 		fmt.Fprintln(stderr, "ledgerd:", err)
 		return 2
 	}
 	logger := log.New(stderr, "", log.LstdFlags|log.Lmicroseconds|log.LUTC)
-	srv, clients, err := start(cfg, logger)
+	stopProfile, err := startProfile(cfg.profile)
+	if err != nil {
+		logger.Printf("node %d cannot start: %v", cfg.id, err)
+		return 3
+	}
+	defer func() {
+		if err := stopProfile(); err != nil {
+			logger.Printf("node %d could not finish the profile: %v", cfg.id, err)
+		}
+	}()
+	disks := &countingFS{FS: disk.OS{}, dir: cfg.dir}
+	srv, clients, err := start(cfg, disks, logger)
 	if errors.Is(err, replica.ErrMaxSessions) {
 		logger.Printf("node %d cannot start: LEDGER_MAX_SESSIONS=%d does not fit the data directory, set the value the cluster runs with: %v", cfg.id, cfg.maxSessions, err)
 		return 2
@@ -43,10 +59,12 @@ func run(ctx context.Context, environ []string, stderr io.Writer) int {
 	}
 	term, repair := srv.Opened()
 	logger.Print(greeting(cfg, clients, term, repair))
-	return serve(ctx, srv.Run, cfg, logger)
+	return serve(ctx, srv.Run, cfg, logger, asked, func() string {
+		return statsLine(time.Since(began), srv.Stats(), disks)
+	})
 }
 
-func start(cfg config, logger *log.Logger) (*server.Server, string, error) {
+func start(cfg config, fsys disk.FS, logger *log.Logger) (*server.Server, string, error) {
 	clients, err := net.Listen("tcp", cfg.clients.String())
 	if err != nil {
 		return nil, "", err
@@ -56,7 +74,7 @@ func start(cfg config, logger *log.Logger) (*server.Server, string, error) {
 		_ = clients.Close()
 		return nil, "", err
 	}
-	srv, err := server.Open(cfg.server(clients, peering, logger))
+	srv, err := server.Open(cfg.server(fsys, clients, peering, logger))
 	if err != nil {
 		_ = clients.Close()
 		_ = peering.Close()
@@ -65,7 +83,7 @@ func start(cfg config, logger *log.Logger) (*server.Server, string, error) {
 	return srv, clients.Addr().String(), nil
 }
 
-func (cfg config) server(clients, peering net.Listener, logger *log.Logger) server.Config {
+func (cfg config) server(fsys disk.FS, clients, peering net.Listener, logger *log.Logger) server.Config {
 	addrs := make([]string, len(cfg.peers))
 	for i, p := range cfg.peers {
 		addrs[i] = p.String()
@@ -75,7 +93,7 @@ func (cfg config) server(clients, peering net.Listener, logger *log.Logger) serv
 		Cluster:       cfg.cluster,
 		Peers:         addrs,
 		Dir:           cfg.dir,
-		FS:            disk.OS{},
+		FS:            fsys,
 		Tick:          cfg.tick,
 		SnapshotEvery: cfg.snapshotEvery,
 		SegmentSize:   cfg.segmentSize,
@@ -103,11 +121,21 @@ func greeting(cfg config, clients string, term uint64, repair bool) string {
 		cfg.id, len(cfg.peers), cfg.cluster, cfg.peers[cfg.id-1], clients, term, flag, key)
 }
 
-func serve(ctx context.Context, runServer func(context.Context) error, cfg config, logger *log.Logger) int {
-	if err := runServer(ctx); err != nil {
-		logger.Printf("node %d halted: %v", cfg.id, err)
-		return 1
+func serve(ctx context.Context, runServer func(context.Context) error, cfg config, logger *log.Logger, asked <-chan os.Signal, stats func() string) int {
+	ran := make(chan error, 1)
+	go func() { ran <- runServer(ctx) }()
+	for {
+		select {
+		case <-asked:
+			logger.Print(stats())
+		case err := <-ran:
+			logger.Print(stats())
+			if err != nil {
+				logger.Printf("node %d halted: %v", cfg.id, err)
+				return 1
+			}
+			logger.Printf("node %d stopped: %v", cfg.id, context.Cause(ctx))
+			return 0
+		}
 	}
-	logger.Printf("node %d stopped: %v", cfg.id, context.Cause(ctx))
-	return 0
 }

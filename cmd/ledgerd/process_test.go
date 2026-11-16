@@ -173,6 +173,7 @@ func TestExitCodes(t *testing.T) {
 			{[]string{"LEDGER_ID=1"}, "ledgerd: LEDGER_PEERS is missing\n"},
 			{append(nodeEnv(1, []string{"127.0.0.1:7201"}, "127.0.0.1:7101", "/var/lib/ledger"), "LEDGER_SNAPSHOTS=5"), "ledgerd: unknown variable LEDGER_SNAPSHOTS\n"},
 			{nodeEnv(1, []string{"127.0.0.1:7201"}, "127.0.0.1:7101", "/var/lib/ledger", "LEDGER_BUG=B11"), "ledgerd: unknown variable LEDGER_BUG\n"},
+			{nodeEnv(1, []string{"127.0.0.1:7201"}, "127.0.0.1:7101", "/var/lib/ledger", "LEDGER_PROFILE=/var/tmp/ledgerd.prof"), "ledgerd: unknown variable LEDGER_PROFILE\n"},
 			{nodeEnv(1, []string{"127.0.0.1:7201"}, "127.0.0.1:7101", "/var/lib/ledger", "LEDGER_TICK=2s"), "ledgerd: LEDGER_TICK=\"2s\": want a duration from 1ms to 1s\n"},
 			{nodeEnv(1, []string{"127.0.0.1:7201"}, "127.0.0.1:7101", "/var/lib/ledger", "LEDGER_KEY_FILE="+open), "ledgerd: LEDGER_KEY_FILE=\"" + open + "\": notary: bad key file: " + open + " is open to group or others (mode 0644)\n"},
 		} {

@@ -32,6 +32,7 @@ type config struct {
 	maxClients    int
 	sweep         bool
 	key           ed25519.PrivateKey
+	profile       string
 }
 
 func parse(environ []string) (config, error) {
@@ -44,7 +45,11 @@ func parse(environ []string) (config, error) {
 	if err := takeBug(vars); err != nil {
 		return config{}, err
 	}
-	cfg := config{tick: 10 * time.Millisecond, snapshotEvery: 100000, segmentSize: wal.MaxSegmentSize, maxSessions: 1024, maxClients: 128, sweep: true}
+	profile, err := takeProfile(vars)
+	if err != nil {
+		return config{}, err
+	}
+	cfg := config{tick: 10 * time.Millisecond, snapshotEvery: 100000, segmentSize: wal.MaxSegmentSize, maxSessions: 1024, maxClients: 128, sweep: true, profile: profile}
 	steps := []struct {
 		name     string
 		required bool

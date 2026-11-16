@@ -143,6 +143,8 @@ func TestConfig(t *testing.T) {
 		{"LEDGER_SWEEP", "yes", `LEDGER_SWEEP="yes": want on or off`, nil, nil},
 		{"LEDGER_SWEEP", "", `LEDGER_SWEEP="": want on or off`, nil, nil},
 
+		{"LEDGER_PROFILE", "/var/tmp/ledgerd.prof", profileRefused, func(c config) any { return c.profile }, "/var/tmp/ledgerd.prof"},
+
 		{"LEDGER_TIKC", "5ms", "unknown variable LEDGER_TIKC", nil, nil},
 		{"LEDGER_NODES", "127.0.0.1:7101", "unknown variable LEDGER_NODES", nil, nil},
 		{"LEDGER_", "", "unknown variable LEDGER_", nil, nil},
