@@ -124,9 +124,6 @@ func (m *Machine) CheckInvariants() error {
 			return fmt.Errorf("account %v: balances do not match its transfers", a.ID)
 		}
 	}
-	if m.unchained {
-		return nil
-	}
 	return m.checkChain(lapsed)
 }
 

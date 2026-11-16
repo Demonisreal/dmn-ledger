@@ -84,7 +84,11 @@ func FuzzApply(f *testing.F) {
 	f.Fuzz(func(t *testing.T, seed []byte) {
 		src := &fuzzSource{b: seed}
 		r := rand.New(src)
-		run(t, r, workload.New(r), eventsPerRun, src.exhausted, nil)
+		batches := 0
+		run(t, r, workload.New(r), eventsPerRun, func() bool {
+			batches++
+			return src.exhausted() || batches > 256
+		}, nil)
 	})
 }
 
@@ -198,9 +202,10 @@ func run(t *testing.T, r *rand.Rand, g *workload.Gen, events int, stop func() bo
 		if replica != nil {
 			var rerr error
 			again, rerr = replica.Apply(b.Op, b.TS, b.Body, again[:0])
-			if (rerr == nil) != (err == nil) || !slices.Equal(again, got) || replica.Digest() != digest {
+			if (rerr == nil) != (err == nil) || !slices.Equal(again, got) || replica.Digest() != digest || replica.Head() != m.Head() {
 				t.Fatalf("batch %d: restored replica diverged: %v %v", batchNo, again, rerr)
 			}
+			checkReceipts(t, replica, o, b.IDs, start, err == nil)
 		}
 
 		g.Settle(b, got)

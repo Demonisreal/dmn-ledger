@@ -53,17 +53,15 @@ type Machine struct {
 	undo        []undo
 	last        uint64
 
-	links     []*[linkBlock]sealed
-	nlinks    uint64
-	expired   []int
-	tree      audit.Tree
-	rec       [TransferSize]byte
-	sum       [audit.HashSize]byte
-	unchained bool
+	links   []*[linkBlock]sealed
+	nlinks  uint64
+	expired []int
+	tree    audit.Tree
+	rec     [TransferSize]byte
+	sum     [audit.HashSize]byte
 
-	accountOrder, transferOrder order
-	hash                        hash.Hash
-	hashw                       *bufio.Writer
+	hash  hash.Hash
+	hashw *bufio.Writer
 }
 
 func New(accounts, transfers int) *Machine {

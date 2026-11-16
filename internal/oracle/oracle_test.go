@@ -60,6 +60,18 @@ func TestSharesOnlyTypesWithState(t *testing.T) {
 	}
 }
 
+func TestComputesTheChainItself(t *testing.T) {
+	t.Parallel()
+	fset := token.NewFileSet()
+	for _, f := range parseDir(t, fset, ".") {
+		for _, imp := range f.Imports {
+			if strings.HasSuffix(imp.Path.Value, `/internal/audit"`) {
+				t.Errorf("%v: oracle imports %s", fset.Position(imp.Pos()), imp.Path.Value)
+			}
+		}
+	}
+}
+
 func TestCloneIsIndependent(t *testing.T) {
 	t.Parallel()
 	id := u128.From64
@@ -94,10 +106,8 @@ func TestCloneIsIndependent(t *testing.T) {
 	if c.Digest() != before || c.Head() != head || c.Links() != 3 {
 		t.Fatal("clone has another digest or head")
 	}
-	for _, b := range later {
-		if fails, err := c.Apply(state.CreateTransfers, b.ts, b.body); err != nil || len(fails) > 0 {
-			t.Fatal(fails, err)
-		}
+	if fails, err := c.Apply(state.CreateTransfers, later[0].ts, later[0].body); err != nil || len(fails) > 0 {
+		t.Fatal(fails, err)
 	}
 	if l.Digest() != before || l.Head() != head || l.Links() != 3 {
 		t.Fatal("applying to the clone changed the original")
@@ -108,6 +118,9 @@ func TestCloneIsIndependent(t *testing.T) {
 	}
 	if c.HeadAt(4) != next || l.HeadAt(4) == next {
 		t.Fatal("applying to the original changed the chain of the clone")
+	}
+	if _, err := c.Apply(state.CreateTransfers, later[1].ts, later[1].body); err != nil {
+		t.Fatal(err)
 	}
 	for _, b := range later {
 		if _, err := twin.Apply(state.CreateTransfers, b.ts, b.body); err != nil {

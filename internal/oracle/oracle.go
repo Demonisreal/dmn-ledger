@@ -564,19 +564,22 @@ func (l *Ledger) LookupTransfers(ids []u128.Uint128) []state.Transfer {
 
 func (l *Ledger) Digest() [sha256.Size]byte {
 	h := sha256.New()
-	_ = binary.Write(h, binary.BigEndian, uint8(1))
+	_ = binary.Write(h, binary.BigEndian, uint8(2))
 	_ = binary.Write(h, binary.BigEndian, l.last)
-	ids := slices.SortedFunc(maps.Keys(l.accounts), u128.Uint128.Cmp)
-	_ = binary.Write(h, binary.BigEndian, uint64(len(ids)))
-	for _, id := range ids {
-		_ = binary.Write(h, binary.BigEndian, l.accounts[id].export())
+	accts := slices.SortedFunc(maps.Values(l.accounts), func(a, b *account) int { return cmp.Compare(a.timestamp, b.timestamp) })
+	_ = binary.Write(h, binary.BigEndian, uint64(len(accts)))
+	for _, a := range accts {
+		_ = binary.Write(h, binary.BigEndian, a.export())
 	}
-	ids = slices.SortedFunc(maps.Keys(l.transfers), u128.Uint128.Cmp)
-	_ = binary.Write(h, binary.BigEndian, uint64(len(ids)))
-	for _, id := range ids {
-		t := l.transfers[id]
+	trs := slices.SortedFunc(maps.Values(l.transfers), func(a, b *transfer) int { return cmp.Compare(a.Timestamp, b.Timestamp) })
+	_ = binary.Write(h, binary.BigEndian, uint64(len(trs)))
+	for _, t := range trs {
 		_ = binary.Write(h, binary.BigEndian, t.Transfer)
 		_ = binary.Write(h, binary.BigEndian, t.status)
+	}
+	_ = binary.Write(h, binary.BigEndian, uint64(len(l.links)))
+	for _, link := range l.links {
+		h.Write(link)
 	}
 	return [sha256.Size]byte(h.Sum(nil))
 }

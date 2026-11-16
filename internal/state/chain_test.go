@@ -309,3 +309,47 @@ func TestReceiptsMatchTheVectors(t *testing.T) {
 		}
 	}
 }
+
+func TestChainSurvivesSnapshot(t *testing.T) {
+	t.Parallel()
+	m := newLedger(t)
+	mustApply(t, m, 1e9, hold(300, 1))
+	c, err := state.ReadSnapshot(bytes.NewReader(snapshot(t, m)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Head() != m.Head() {
+		t.Fatalf("restored head %d %x, want %d %x", c.Head().Seq, c.Head().Hash, m.Head().Seq, m.Head().Hash)
+	}
+	for _, x := range []*state.Machine{m, c} {
+		mustApply(t, x, 3e9, state.Transfer{ID: id128(400), DebitAccountID: id128(1), CreditAccountID: id128(2), Amount: id128(1),
+			Ledger: 1, Code: 1})
+	}
+	if c.Head() != m.Head() || m.Head().Seq != 4 {
+		t.Fatalf("heads after the next batch: %d %x and %d %x", c.Head().Seq, c.Head().Hash, m.Head().Seq, m.Head().Hash)
+	}
+	r, ok := c.ProveTransfer(id128(100))
+	if r = proven(t, m, r, ok); r.Seq != 2 {
+		t.Errorf("transfer 100 proven by link %d of the restored machine, want 2", r.Seq)
+	}
+}
+
+func TestExpiryReceiptAfterSnapshot(t *testing.T) {
+	t.Parallel()
+	m := newLedger(t)
+	mustApply(t, m, 1e9, hold(30, 3))
+	mustApply(t, m, 2e9, hold(10, 2), hold(20, 1))
+	mustApply(t, m, 5e9)
+	c, err := state.ReadSnapshot(bytes.NewReader(snapshot(t, m)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uint64{20, 10, 30} {
+		want, ok := m.ProveExpiry(id128(id))
+		proven(t, m, want, ok)
+		got, ok := c.ProveExpiry(id128(id))
+		if !ok || !bytes.Equal(audit.AppendReceipt(nil, got), audit.AppendReceipt(nil, want)) {
+			t.Errorf("expiry of %d: receipt of the restored machine differs", id)
+		}
+	}
+}

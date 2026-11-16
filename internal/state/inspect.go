@@ -2,7 +2,6 @@ package state
 
 import (
 	"crypto/sha256"
-	"slices"
 
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
@@ -36,43 +35,4 @@ func (m *Machine) Digest() [sha256.Size]byte {
 	var d [sha256.Size]byte
 	m.hash.Sum(d[:0])
 	return d
-}
-
-type order struct {
-	idx, spare, fresh []int
-}
-
-func (o *order) sync(n int, cmp func(i, j int) int) []int {
-	if len(o.idx) == n {
-		return o.idx
-	}
-	o.fresh = o.fresh[:0]
-	for i := len(o.idx); i < n; i++ {
-		o.fresh = append(o.fresh, i)
-	}
-	slices.SortFunc(o.fresh, cmp)
-
-	merged, a, b := o.spare[:0], o.idx, o.fresh
-	for len(a) > 0 && len(b) > 0 {
-		if cmp(a[0], b[0]) < 0 {
-			merged, a = append(merged, a[0]), a[1:]
-		} else {
-			merged, b = append(merged, b[0]), b[1:]
-		}
-	}
-	merged = append(append(merged, a...), b...)
-	o.idx, o.spare = merged, o.idx
-	return o.idx
-}
-
-func (m *Machine) sortedAccounts() []int {
-	return m.accountOrder.sync(len(m.accounts), func(i, j int) int {
-		return m.accounts[i].ID.Cmp(m.accounts[j].ID)
-	})
-}
-
-func (m *Machine) sortedTransfers() []int {
-	return m.transferOrder.sync(m.ntransfers, func(i, j int) int {
-		return m.transfer(i).ID.Cmp(m.transfer(j).ID)
-	})
 }

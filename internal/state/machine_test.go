@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
@@ -84,6 +85,12 @@ func newLedger(t *testing.T) *state.Machine {
 		}
 	}
 	return m
+}
+
+func records(t *testing.T, m *state.Machine) []byte {
+	t.Helper()
+	snap := snapshot(t, m)
+	return snap[:len(snap)-8-int(m.Head().Seq)*audit.LinkSize]
 }
 
 func burned(t *testing.T, events int) *state.Machine {
@@ -324,7 +331,7 @@ func TestLinked(t *testing.T) {
 					t.Errorf("transfer %v: found %v after failed=%v", tr.ID, found, failed)
 				}
 			}
-			if len(tt.want) == len(tt.trs) && m.Digest() != burned(t, len(tt.trs)).Digest() {
+			if len(tt.want) == len(tt.trs) && !bytes.Equal(records(t, m), records(t, burned(t, len(tt.trs)))) {
 				t.Error("state changed although every event failed")
 			}
 		})
@@ -344,7 +351,7 @@ func TestRollbackRestoresState(t *testing.T) {
 	if err != nil || len(fails) != 4 || fails[3].Reason != state.TransferMustHaveSameLedgerAsAccounts {
 		t.Fatalf("fails %v, err %v", fails, err)
 	}
-	if m.Digest() != burned(t, 4).Digest() {
+	if !bytes.Equal(records(t, m), records(t, burned(t, 4))) {
 		t.Fatal("rolled back chain left traces")
 	}
 	mustApply(t, m, 3e9, state.Transfer{ID: id128(1004), PendingID: id128(200), Flags: state.PostPending})
@@ -570,7 +577,7 @@ func TestChainAcrossBlockBoundary(t *testing.T) {
 	if _, err := twin.Apply(state.CreateTransfers, 2e9, make([]byte, len(chain)*state.TransferSize), nil); err != nil {
 		t.Fatal(err)
 	}
-	if m.Digest() != twin.Digest() {
+	if !bytes.Equal(records(t, m), records(t, twin)) {
 		t.Fatal("rolled back chain over the block boundary left traces")
 	}
 
