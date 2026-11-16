@@ -45,6 +45,8 @@ type Ledger struct {
 	accounts  map[u128.Uint128]*account
 	transfers map[u128.Uint128]*transfer
 	last      uint64
+	heads     [][32]byte
+	links     [][]byte
 }
 
 func New() *Ledger {
@@ -59,6 +61,8 @@ func (l *Ledger) Clone() *Ledger {
 		accounts:  make(map[u128.Uint128]*account, len(l.accounts)),
 		transfers: make(map[u128.Uint128]*transfer, len(l.transfers)),
 		last:      l.last,
+		heads:     l.heads[:len(l.heads):len(l.heads)],
+		links:     l.links[:len(l.links):len(l.links)],
 	}
 	for id, a := range l.accounts {
 		cp := *a
@@ -103,7 +107,10 @@ func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Failure, er
 	if now >= 1<<63 || next > 1<<63 {
 		return nil, fmt.Errorf("%w: timestamp %d", state.ErrMalformedBatch, ts)
 	}
-	l.expire(now)
+	var leaves [][32]byte
+	for _, t := range l.expire(now) {
+		leaves = append(leaves, leaf(3, t.Transfer))
+	}
 	l.last = now
 	if n > 0 {
 		l.last = stamps[n-1]
@@ -112,11 +119,15 @@ func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Failure, er
 	var failed []state.Failure
 	if op == state.CreateAccounts {
 		for i := range n {
-			reason := l.createAccount(decode[state.Account](body[i*size:]), stamps[i])
+			a := decode[state.Account](body[i*size:])
+			reason := l.createAccount(a, stamps[i])
 			if reason != state.OK {
 				failed = append(failed, state.Failure{Index: i, Reason: reason})
+				continue
 			}
+			leaves = append(leaves, leaf(1, l.accounts[a.ID].export()))
 		}
+		l.chain(op, now, n, body, failed, leaves)
 		return failed, nil
 	}
 
@@ -155,10 +166,81 @@ func (l *Ledger) Apply(op state.Op, ts uint64, body []byte) ([]state.Failure, er
 		if ok {
 			maps.Copy(l.accounts, x.accounts)
 			maps.Copy(l.transfers, x.transfers)
+			for _, tr := range trs[first : last+1] {
+				leaves = append(leaves, leaf(2, l.transfers[tr.ID].Transfer))
+			}
 		}
 		first = last + 1
 	}
+	l.chain(op, now, n, body, failed, leaves)
 	return failed, nil
+}
+
+func (l *Ledger) chain(op state.Op, now uint64, events int, body []byte, failed []state.Failure, leaves [][32]byte) {
+	var reply []uint32
+	for _, f := range failed {
+		reply = append(reply, uint32(f.Index), uint32(f.Reason)) //nolint:gosec // G115: an index into the batch
+	}
+	var link bytes.Buffer
+	_ = binary.Write(&link, binary.BigEndian, struct {
+		Time              uint64
+		Op                uint8
+		Events, Leaves    uint32
+		Body, Reply, Root [32]byte
+	}{now, uint8(op), uint32(events), uint32(len(leaves)), hashOf(3, body), hashOf(4, reply), root(leaves)}) //nolint:gosec // G115: a body is far below 4 GiB
+	l.heads = append(l.heads, hashOf(2, l.Head(), uint64(len(l.links)+1), link.Bytes()))
+	l.links = append(l.links, link.Bytes())
+}
+
+func hashOf(prefix uint8, parts ...any) [32]byte {
+	var buf bytes.Buffer
+	buf.WriteByte(prefix)
+	for _, p := range parts {
+		_ = binary.Write(&buf, binary.BigEndian, p)
+	}
+	return sha256.Sum256(buf.Bytes())
+}
+
+func leaf(kind uint8, record any) [32]byte {
+	return hashOf(0, kind, record)
+}
+
+func root(leaves [][32]byte) [32]byte {
+	switch len(leaves) {
+	case 0:
+		return sha256.Sum256(nil)
+	case 1:
+		return leaves[0]
+	}
+	k := 1
+	for k*2 < len(leaves) {
+		k *= 2
+	}
+	return hashOf(1, root(leaves[:k]), root(leaves[k:]))
+}
+
+func (l *Ledger) Head() [32]byte {
+	return l.HeadAt(len(l.heads))
+}
+
+func (l *Ledger) HeadAt(seq int) [32]byte {
+	if seq == 0 {
+		return [32]byte{}
+	}
+	return l.heads[seq-1]
+}
+
+func (l *Ledger) Links() int {
+	return len(l.links)
+}
+
+func (l *Ledger) Link(seq int) []byte {
+	return l.links[seq-1]
+}
+
+func (l *Ledger) Expired(id u128.Uint128) bool {
+	t, ok := l.transfers[id]
+	return ok && t.status == statusExpired
 }
 
 func (l *Ledger) createAccount(a state.Account, ts uint64) state.Reason {
@@ -436,7 +518,7 @@ func compare(e, tr state.Transfer) state.Reason {
 	return state.ExistsWithDifferentFields
 }
 
-func (l *Ledger) expire(now uint64) {
+func (l *Ledger) expire(now uint64) []*transfer {
 	var due []*transfer
 	for _, t := range l.transfers {
 		if t.status == statusPending && t.Timeout > 0 && expiresAt(t) <= now {
@@ -453,6 +535,7 @@ func (l *Ledger) expire(now uint64) {
 		cr.creditsPending = new(big.Int).Sub(cr.creditsPending, held)
 		t.status = statusExpired
 	}
+	return due
 }
 
 func expiresAt(t *transfer) uint64 {

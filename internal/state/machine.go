@@ -8,6 +8,7 @@ import (
 	"hash"
 	"math/bits"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
@@ -51,6 +52,14 @@ type Machine struct {
 	expiries    []expiry
 	undo        []undo
 	last        uint64
+
+	links     []*[linkBlock]sealed
+	nlinks    uint64
+	expired   []int
+	tree      audit.Tree
+	rec       [TransferSize]byte
+	sum       [audit.HashSize]byte
+	unchained bool
 
 	accountOrder, transferOrder order
 	hash                        hash.Hash
@@ -105,11 +114,22 @@ func (m *Machine) Apply(op Op, ts uint64, body []byte, dst []Failure) ([]Failure
 	}
 
 	m.last = start
+	accounts, transfers, failed := len(m.accounts), m.ntransfers, len(dst)
+	m.tree.Reset()
 	m.expire(start)
 	if op == CreateAccounts {
-		return m.createAccounts(start, body, dst), nil
+		dst = m.createAccounts(start, body, dst)
+		for i := accounts; i < len(m.accounts); i++ {
+			m.tree.Add(leafOf(audit.KindAccount, AppendAccount(m.rec[:0], m.accounts[i])))
+		}
+	} else {
+		dst = m.createTransfers(start, body, dst)
+		for i := transfers; i < m.ntransfers; i++ {
+			m.tree.Add(leafOf(audit.KindTransfer, AppendTransfer(m.rec[:0], m.transfer(i).Transfer)))
+		}
 	}
-	return m.createTransfers(start, body, dst), nil
+	m.seal(audit.Link{Time: start, Op: uint8(op), Events: uint32(len(body) / size)}, body, dst[failed:]) //nolint:gosec // G115: a body is far below 4 GiB
+	return dst, nil
 }
 
 func StartTime(ts, last uint64) uint64 {
@@ -417,11 +437,13 @@ func (tr *Transfer) expiresAt() uint64 {
 
 func (m *Machine) expire(now uint64) {
 	for len(m.expiries) > 0 && m.expiries[0].at <= now {
-		p := m.transfer(m.expiries[0].tr)
+		i := m.expiries[0].tr
+		p := m.transfer(i)
 		m.cancelExpiry(0)
 		dr, cr := &m.accounts[p.dr], &m.accounts[p.cr]
 		dr.DebitsPending = dr.DebitsPending.SubWrap(p.Amount)
 		cr.CreditsPending = cr.CreditsPending.SubWrap(p.Amount)
 		p.status = statusExpired
+		m.lapse(i)
 	}
 }

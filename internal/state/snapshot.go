@@ -61,6 +61,7 @@ func readSnapshot(r *bufio.Reader) (*Machine, error) {
 	}
 	m := New(0, 0)
 	m.last = binary.BigEndian.Uint64(head[1:])
+	m.unchained = true
 
 	for k := binary.BigEndian.Uint64(head[9:]); k > 0; k-- {
 		if _, err := io.ReadFull(r, buf[:AccountSize]); err != nil {

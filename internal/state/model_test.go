@@ -12,12 +12,16 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/oracle"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
+	"github.com/Demonisreal/dmn-ledger/internal/u128"
 	"github.com/Demonisreal/dmn-ledger/internal/workload"
 )
 
 const eventsPerRun = 2000
+
+var proved [audit.KindExpiry + 1]atomic.Int64
 
 func TestModel(t *testing.T) {
 	t.Parallel()
@@ -41,6 +45,11 @@ func TestModel(t *testing.T) {
 	for c := state.LinkedEventFailed; c <= state.LastReason; c++ {
 		if seen[c].Load() == 0 {
 			t.Errorf("generator never produced %v", c)
+		}
+	}
+	for kind := range proved {
+		if proved[kind].Load() == 0 {
+			t.Errorf("no receipt of kind %d", kind)
 		}
 	}
 }
@@ -129,8 +138,8 @@ func FuzzApplyRaw(f *testing.F) {
 			if (err == nil) != (oerr == nil) || !slices.Equal(got, want) {
 				t.Fatalf("batch %d: got %v %v, oracle %v %v", batchNo, got, err, want, oerr)
 			}
-			if m.Digest() != o.Digest() {
-				t.Fatalf("batch %d: digests differ", batchNo)
+			if m.Digest() != o.Digest() || m.Head().Hash != o.Head() {
+				t.Fatalf("batch %d: digests or heads differ", batchNo)
 			}
 			if err := m.CheckInvariants(); err != nil {
 				t.Fatalf("batch %d: %v", batchNo, err)
@@ -149,6 +158,7 @@ func run(t *testing.T, r *rand.Rand, g *workload.Gen, events int, stop func() bo
 			replica = restore(t, m)
 		}
 		b := g.Batch()
+		start := state.StartTime(b.TS, m.Last())
 		var err error
 		got, err = m.Apply(b.Op, b.TS, b.Body, got[:0])
 		want, oerr := o.Apply(b.Op, b.TS, b.Body)
@@ -174,6 +184,13 @@ func run(t *testing.T, r *rand.Rand, g *workload.Gen, events int, stop func() bo
 		if err := o.CheckInvariants(); err != nil {
 			t.Fatalf("batch %d: oracle: %v", batchNo, err)
 		}
+		if h := m.Head(); h.Seq != uint64(o.Links()) || h.Hash != o.Head() {
+			t.Fatalf("batch %d: head %d %x, oracle %d %x\n%s", batchNo, h.Seq, h.Hash, o.Links(), o.Head(), dump(b))
+		}
+		if n := o.Links(); n > 0 && !bytes.Equal(audit.AppendLink(nil, m.Links(uint64(n-1), uint64(n), nil)[0]), o.Link(n)) {
+			t.Fatalf("batch %d: link differs from the oracle\n%s", batchNo, dump(b))
+		}
+		checkReceipts(t, m, o, b.IDs, start, err == nil)
 		at, waiting := m.NextExpiry()
 		if scanned, ok := m.ScanExpiries(); at != scanned || waiting != ok {
 			t.Fatalf("batch %d: next expiry %d %v, a scan of all transfers finds %d %v\n%s", batchNo, at, waiting, scanned, ok, dump(b))
@@ -199,6 +216,61 @@ func run(t *testing.T, r *rand.Rand, g *workload.Gen, events int, stop func() bo
 		}
 	}
 	return m
+}
+
+func checkReceipts(t *testing.T, m *state.Machine, o *oracle.Ledger, ids []u128.Uint128, start uint64, accepted bool) {
+	t.Helper()
+	var batch []byte
+	if accepted {
+		batch = []byte{}
+	}
+	r, ok := m.ProveBatch(start)
+	checkReceipt(t, o, r, ok, batch)
+	for _, id := range ids {
+		var account, transfer, expiry []byte
+		if found := o.LookupAccounts([]u128.Uint128{id}); len(found) == 1 {
+			a := found[0]
+			a.DebitsPending, a.DebitsPosted, a.CreditsPending, a.CreditsPosted = u128.Uint128{}, u128.Uint128{}, u128.Uint128{}, u128.Uint128{}
+			account = state.AppendAccount(nil, a)
+		}
+		if found := o.LookupTransfers([]u128.Uint128{id}); len(found) == 1 {
+			transfer = state.AppendTransfer(nil, found[0])
+			if o.Expired(id) {
+				expiry = transfer
+			}
+		}
+		r, ok := m.ProveAccount(id)
+		checkReceipt(t, o, r, ok, account)
+		r, ok = m.ProveTransfer(id)
+		checkReceipt(t, o, r, ok, transfer)
+		r, ok = m.ProveExpiry(id)
+		checkReceipt(t, o, r, ok, expiry)
+	}
+}
+
+func checkReceipt(t *testing.T, o *oracle.Ledger, r audit.Receipt, ok bool, record []byte) {
+	t.Helper()
+	if ok != (record != nil) {
+		t.Fatalf("receipt of kind %d: found %v, the oracle holds %x", r.Kind, ok, record)
+	}
+	if !ok {
+		return
+	}
+	proof := audit.AppendReceipt(nil, r)
+	got, h, rest, err := audit.Decode(proof)
+	if err != nil || len(rest) > 0 {
+		t.Fatalf("receipt of kind %d does not decode: %v, %d bytes left", r.Kind, err, len(rest))
+	}
+	if again := audit.AppendReceipt(nil, got); !bytes.Equal(again, proof) {
+		t.Fatalf("receipt of kind %d is not canonical", r.Kind)
+	}
+	if h.Seq > uint64(o.Links()) || h.Hash != o.HeadAt(int(h.Seq)) {
+		t.Fatalf("receipt of kind %d leads to head %d %x, the oracle has another", r.Kind, h.Seq, h.Hash)
+	}
+	if !bytes.Equal(got.Record, record) {
+		t.Fatalf("receipt of kind %d holds %x, the oracle %x", r.Kind, got.Record, record)
+	}
+	proved[r.Kind].Add(1)
 }
 
 func restore(t *testing.T, m *state.Machine) *state.Machine {

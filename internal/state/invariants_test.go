@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
@@ -26,6 +27,7 @@ func TestCheckInvariantsCatches(t *testing.T) {
 			{ID: id(15), DebitAccountID: id(1), CreditAccountID: id(2), Amount: id(4), Flags: Pending},
 			{ID: id(16), DebitAccountID: id(1), CreditAccountID: id(2), Amount: id(3), Flags: Pending},
 			{ID: id(17), DebitAccountID: id(1), CreditAccountID: id(2), Amount: id(1), Flags: Pending, Timeout: 1},
+			{ID: id(18), DebitAccountID: id(1), CreditAccountID: id(2), Amount: id(1), Flags: Pending, Timeout: 1},
 			{ID: id(20), PendingID: id(15), Amount: id(3), Flags: PostPending},
 			{ID: id(21), PendingID: id(16), Flags: VoidPending},
 		} {
@@ -50,6 +52,9 @@ func TestCheckInvariantsCatches(t *testing.T) {
 	}
 	tr := func(m *Machine, n uint64) *stored {
 		return m.transfer(m.transferIdx[id(n)])
+	}
+	link := func(m *Machine, seq uint64) *sealed {
+		return m.sealedAt(seq - 1)
 	}
 	rename := func(m *Machine, n uint64, to u128.Uint128) {
 		i := m.transferIdx[id(n)]
@@ -112,6 +117,21 @@ func TestCheckInvariantsCatches(t *testing.T) {
 			m.accounts[0].DebitsPosted = m.accounts[0].DebitsPosted.SubWrap(id(10))
 			m.accounts[1].CreditsPosted = m.accounts[1].CreditsPosted.SubWrap(id(10))
 		}, "account 1: balances do not match"},
+		{"expiry list too short", func(m *Machine) { m.expired = m.expired[:1] }, "holds 1 entries for 2 expired"},
+		{"open transfer in the expiry list", func(m *Machine) { m.expired[0] = m.transferIdx[id(13)] }, "with status 1"},
+		{"expiry list out of order", func(m *Machine) { m.expired[0], m.expired[1] = m.expired[1], m.expired[0] }, "out of order at 1"},
+		{"link time out of range", func(m *Machine) { link(m, 3).link.Time = tsLimit }, "link 3: time"},
+		{"link before the end of the one before", func(m *Machine) { link(m, 2).link.Time = 2 }, "before the end"},
+		{"link with an unknown op", func(m *Machine) { link(m, 1).link.Op = 3 }, "link 1: op 3"},
+		{"link with another root", func(m *Machine) { link(m, 2).link.Root[0]++ }, "link 2: records give 11 leaves"},
+		{"link with another leaf count", func(m *Machine) { link(m, 3).link.Leaves++ }, "the link holds 3"},
+		{"expiry without a leaf", func(m *Machine) { link(m, 3).link.Leaves, link(m, 3).link.Root = 0, audit.Hash{} }, "link 3: records give 2 leaves"},
+		{"head not folded", func(m *Machine) { link(m, 2).head[0]++ }, "link 2: head"},
+		{"link with another body", func(m *Machine) { link(m, 2).link.Body[0]++ }, "link 2: head"},
+		{"transfer outside its link", func(m *Machine) { link(m, 2).link.Time++ }, "transfer 10: timestamp 1000000000 belongs to no link"},
+		{"transfers without a link", func(m *Machine) { m.nlinks = 1 }, "transfer 10: timestamp 1000000000 belongs to no link"},
+		{"expiry without a link", func(m *Machine) { m.nlinks = 2 }, "expiry of transfer 17 belongs to no link"},
+		{"last behind the links", func(m *Machine) { m.last++ }, "the links end at 3000000000"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

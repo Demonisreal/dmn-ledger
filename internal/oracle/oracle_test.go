@@ -86,25 +86,35 @@ func TestCloneIsIndependent(t *testing.T) {
 	if fails, err := l.Apply(state.CreateTransfers, 1e9, trs); err != nil || len(fails) > 0 {
 		t.Fatal(fails, err)
 	}
-	before := l.Digest()
-	c := l.Clone()
-	if c.Digest() != before {
-		t.Fatal("clone has another digest")
+	if _, err := l.Apply(state.CreateTransfers, 1e9, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, head := l.Digest(), l.Head()
+	c, twin := l.Clone(), l.Clone()
+	if c.Digest() != before || c.Head() != head || c.Links() != 3 {
+		t.Fatal("clone has another digest or head")
 	}
 	for _, b := range later {
 		if fails, err := c.Apply(state.CreateTransfers, b.ts, b.body); err != nil || len(fails) > 0 {
 			t.Fatal(fails, err)
 		}
 	}
-	if l.Digest() != before {
+	if l.Digest() != before || l.Head() != head || l.Links() != 3 {
 		t.Fatal("applying to the clone changed the original")
 	}
+	next := c.HeadAt(4)
+	if _, err := l.Apply(state.CreateTransfers, 3e9, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c.HeadAt(4) != next || l.HeadAt(4) == next {
+		t.Fatal("applying to the original changed the chain of the clone")
+	}
 	for _, b := range later {
-		if _, err := l.Apply(state.CreateTransfers, b.ts, b.body); err != nil {
+		if _, err := twin.Apply(state.CreateTransfers, b.ts, b.body); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if l.Digest() != c.Digest() {
-		t.Fatal("original and clone diverged on the same batches")
+	if twin.Digest() != c.Digest() || twin.Head() != c.Head() {
+		t.Fatal("two clones diverged on the same batches")
 	}
 }

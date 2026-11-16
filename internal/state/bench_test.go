@@ -111,6 +111,24 @@ func BenchmarkApplyFailedChain(b *testing.B) {
 	benchApply(b, trs, len(trs))
 }
 
+func BenchmarkProve(b *testing.B) {
+	for _, size := range []int{1, 128, 8000} {
+		b.Run(fmt.Sprintf("batch=%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			l := newBenchLedger(b)
+			trs := benchTransfers(size, 0)
+			l.apply(b, trs, encodeTransfers(trs...), 0)
+			id := id128(l.id - uint64(size)/2)
+			b.ResetTimer()
+			for range b.N {
+				if _, ok := l.m.ProveTransfer(id); !ok {
+					b.Fatal("no receipt")
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkDigest(b *testing.B) {
 	b.ReportAllocs()
 	l := newBenchLedger(b)

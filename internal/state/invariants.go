@@ -7,6 +7,7 @@ import (
 	"math/bits"
 	"slices"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
@@ -76,7 +77,7 @@ func (m *Machine) CheckInvariants() error {
 
 	booked := make([]sides, len(m.accounts))
 	claimed := make([]bool, m.ntransfers)
-	var resolvers, resolved, queued int
+	var resolvers, resolved, queued, lapsed int
 	for i := range m.ntransfers {
 		tr := m.transfer(i)
 		if j, ok := m.transferIdx[tr.ID]; !ok || j != i {
@@ -94,6 +95,9 @@ func (m *Machine) CheckInvariants() error {
 		}
 		if tr.heap >= 0 {
 			queued++
+		}
+		if tr.status == statusExpired {
+			lapsed++
 		}
 	}
 	if resolvers != resolved {
@@ -119,6 +123,86 @@ func (m *Machine) CheckInvariants() error {
 		if a := &m.accounts[i]; !booked[i].matches(a) {
 			return fmt.Errorf("account %v: balances do not match its transfers", a.ID)
 		}
+	}
+	if m.unchained {
+		return nil
+	}
+	return m.checkChain(lapsed)
+}
+
+func (m *Machine) checkChain(lapsed int) error {
+	if len(m.expired) != lapsed {
+		return fmt.Errorf("expiry list holds %d entries for %d expired transfers", len(m.expired), lapsed)
+	}
+	for x, i := range m.expired {
+		if tr := m.transfer(i); tr.status != statusExpired {
+			return fmt.Errorf("expiry list holds transfer %v with status %d", tr.ID, tr.status)
+		}
+		if x > 0 && m.lapseOrder(m.expired[x-1], i) >= 0 {
+			return fmt.Errorf("expiry list out of order at %d", x)
+		}
+	}
+
+	var (
+		tree        audit.Tree
+		head        audit.Head
+		rec         [TransferSize]byte
+		acct, tr, x int
+		end         uint64 = 1
+	)
+	for k := range m.nlinks {
+		s := m.sealedAt(k)
+		l := s.link
+		span := max(uint64(l.Events), 1)
+		switch {
+		case l.Time >= tsLimit || l.Time+span > tsLimit:
+			return fmt.Errorf("link %d: time %d and %d events out of range", k+1, l.Time, l.Events)
+		case l.Time < end:
+			return fmt.Errorf("link %d: time %d before the end %d of the link before", k+1, l.Time, end)
+		case l.Op != uint8(CreateAccounts) && l.Op != uint8(CreateTransfers):
+			return fmt.Errorf("link %d: op %d", k+1, l.Op)
+		}
+		end = l.Time + span
+
+		tree.Reset()
+		for ; x < len(m.expired) && m.transfer(m.expired[x]).expiresAt() <= l.Time; x++ {
+			tree.Add(audit.Leaf(audit.KindExpiry, AppendTransfer(rec[:0], m.transfer(m.expired[x]).Transfer)))
+		}
+		if l.Op == uint8(CreateAccounts) {
+			for ; acct < len(m.accounts) && m.accounts[acct].Timestamp < end; acct++ {
+				a := &m.accounts[acct]
+				if a.Timestamp < l.Time {
+					return fmt.Errorf("account %v: timestamp %d belongs to no link", a.ID, a.Timestamp)
+				}
+				tree.Add(audit.Leaf(audit.KindAccount, AppendAccount(rec[:0], opened(*a))))
+			}
+		} else {
+			for ; tr < m.ntransfers && m.transfer(tr).Timestamp < end; tr++ {
+				t := m.transfer(tr)
+				if t.Timestamp < l.Time {
+					return fmt.Errorf("transfer %v: timestamp %d belongs to no link", t.ID, t.Timestamp)
+				}
+				tree.Add(audit.Leaf(audit.KindTransfer, AppendTransfer(rec[:0], t.Transfer)))
+			}
+		}
+		if root := tree.Root(); tree.Len() != l.Leaves || root != l.Root {
+			return fmt.Errorf("link %d: records give %d leaves and root %x…, the link holds %d and %x…",
+				k+1, tree.Len(), root[:4], l.Leaves, l.Root[:4])
+		}
+		if head = head.Next(l); head.Hash != s.head {
+			return fmt.Errorf("link %d: head %x… is not the folded head %x…", k+1, s.head[:4], head.Hash[:4])
+		}
+	}
+
+	switch {
+	case acct < len(m.accounts):
+		return fmt.Errorf("account %v: timestamp %d belongs to no link", m.accounts[acct].ID, m.accounts[acct].Timestamp)
+	case tr < m.ntransfers:
+		return fmt.Errorf("transfer %v: timestamp %d belongs to no link", m.transfer(tr).ID, m.transfer(tr).Timestamp)
+	case x < len(m.expired):
+		return fmt.Errorf("expiry of transfer %v belongs to no link", m.transfer(m.expired[x]).ID)
+	case m.last != end-1:
+		return fmt.Errorf("last %d, the links end at %d", m.last, end-1)
 	}
 	return nil
 }
