@@ -118,8 +118,59 @@ func TestLogShowsTheEndOfRepair(t *testing.T) {
 		if err := n.halt(); err != nil {
 			t.Fatal(err)
 		}
-		if got := out.lines(); len(got) != 1 || got[0] != "repair flag cleared in term 2" {
-			t.Fatalf("log: %q, want only the end of the repair", got)
+		if got := out.lines(); len(got) != 2 || got[0] != "follower in term 2, leader 2" || got[1] != "repair flag cleared in term 2" {
+			t.Fatalf("log: %q, want the leader and then the end of the repair", got)
+		}
+	})
+}
+
+func TestLogShowsANewLeader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pn := newPipeNet()
+		pn.fake(t, 2, 1, listening)
+		pn.fake(t, 3, 1, listening)
+		cfg := pn.config(1, 3, t.TempDir())
+		out := logged(&cfg)
+		n := start(t, cfg)
+		for _, beat := range []struct{ from, term uint64 }{{2, 2}, {2, 2}, {3, 3}, {3, 3}} {
+			p := pn.greet(t, 1, beat.from, wire.KindMessages)
+			p.send(raft.Message{Type: raft.MsgApp, From: beat.from, To: 1, Term: beat.term})
+			time.Sleep(2 * testTick)
+		}
+		if err := n.halt(); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"follower in term 2, leader 2", "follower in term 3, leader 3"}
+		if got := out.lines(); strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Fatalf("log of a follower that got two leaders:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	})
+}
+
+type stuckWriter struct {
+	free chan struct{}
+}
+
+func (w stuckWriter) Write(b []byte) (int, error) {
+	<-w.free
+	return len(b), nil
+}
+
+func TestRunDoesNotWaitForAStuckLog(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pn, cfg := single(t, nil)
+		stuck := stuckWriter{free: make(chan struct{})}
+		cfg.Log = log.New(stuck, "", 0)
+		n := start(t, cfg)
+		t.Cleanup(func() { close(stuck.free) })
+		pn.connect(t, clientAddr(1), 1).leading()
+		n.stop()
+		began := time.Now()
+		if err := n.wait(2 * logGrace); err != nil {
+			t.Fatal(err)
+		}
+		if took := time.Since(began); took < logGrace {
+			t.Fatalf("Run returned %s after the end with the log stuck, want it to give the log %s", took, logGrace)
 		}
 	})
 }

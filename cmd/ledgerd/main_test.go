@@ -34,15 +34,29 @@ func TestServeTurnsTheEndOfRunIntoTheExitCode(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs lockedBuffer
 			ran := false
-			code := serve(tc.ctx, func(context.Context) error { ran = true; return tc.err }, cfg, "127.0.0.1:1", log.New(&logs, "", 0))
-			lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-			if !ran || code != tc.code || len(lines) != 2 || lines[1] != tc.last {
-				t.Fatalf("ran %v, exit %d, log %q, want exit %d ending in %q", ran, code, lines, tc.code, tc.last)
-			}
-			if !strings.HasPrefix(lines[0], "node 2 of 3 in cluster 7 started: peers on 127.0.0.1:2, clients on 127.0.0.1:1, no status: ") {
-				t.Fatalf("start line %q", lines[0])
+			code := serve(tc.ctx, func(context.Context) error { ran = true; return tc.err }, cfg, log.New(&logs, "", 0))
+			if line := strings.TrimSpace(logs.String()); !ran || code != tc.code || line != tc.last {
+				t.Fatalf("ran %v, exit %d, log %q, want exit %d and %q", ran, code, line, tc.code, tc.last)
 			}
 		})
+	}
+}
+
+func TestGreetingShowsWhatOpenFound(t *testing.T) {
+	cfg := config{id: 2, cluster: 7, peers: []netip.AddrPort{
+		netip.MustParseAddrPort("127.0.0.1:1"), netip.MustParseAddrPort("127.0.0.1:2"), netip.MustParseAddrPort("127.0.0.1:3"),
+	}}
+	for _, tc := range []struct {
+		term   uint64
+		repair bool
+		want   string
+	}{
+		{0, false, "node 2 of 3 in cluster 7 started: peers on 127.0.0.1:2, clients on 127.0.0.1:9, term 0, repair no"},
+		{41, true, "node 2 of 3 in cluster 7 started: peers on 127.0.0.1:2, clients on 127.0.0.1:9, term 41, repair yes"},
+	} {
+		if got := greeting(cfg, "127.0.0.1:9", tc.term, tc.repair); got != tc.want {
+			t.Errorf("got %q, want %q", got, tc.want)
+		}
 	}
 }
 
@@ -55,6 +69,7 @@ func TestServerGetsEveryVariable(t *testing.T) {
 		"LEDGER_DIR=/srv/ledger/n3",
 		"LEDGER_TICK=7ms",
 		"LEDGER_SNAPSHOT_EVERY=1234",
+		"LEDGER_SEGMENT_SIZE=3000000",
 		"LEDGER_MAX_SESSIONS=4321",
 		"LEDGER_MAX_CLIENTS=77",
 		"LEDGER_SWEEP=off",
@@ -71,8 +86,8 @@ func TestServerGetsEveryVariable(t *testing.T) {
 		t.Fatalf("id %d, cluster %d, dir %q, fs %T", sc.ID, sc.Cluster, sc.Dir, sc.FS)
 	case strings.Join(sc.Peers, ",") != "10.0.0.1:7201,10.0.0.2:7201,10.0.0.3:7201,10.0.0.4:7201,[fd00::5]:7201":
 		t.Fatalf("peers %v", sc.Peers)
-	case sc.Tick != 7*time.Millisecond || sc.SnapshotEvery != 1234 || sc.MaxSessions != 4321 || sc.MaxClients != 77 || sc.Sweep:
-		t.Fatalf("tick %v, snapshot every %d, sessions %d, clients %d, sweep %v", sc.Tick, sc.SnapshotEvery, sc.MaxSessions, sc.MaxClients, sc.Sweep)
+	case sc.Tick != 7*time.Millisecond || sc.SnapshotEvery != 1234 || sc.SegmentSize != 3000000 || sc.MaxSessions != 4321 || sc.MaxClients != 77 || sc.Sweep:
+		t.Fatalf("tick %v, snapshot every %d, segments of %d, sessions %d, clients %d, sweep %v", sc.Tick, sc.SnapshotEvery, sc.SegmentSize, sc.MaxSessions, sc.MaxClients, sc.Sweep)
 	case sc.Clients != clients || !ok || known.Listener != peering || len(known.ips) != 5 || sc.Dial == nil || sc.Log != logger:
 		t.Fatalf("clients %v, peering %#v, dial set %v, log %v", sc.Clients, sc.Peering, sc.Dial != nil, sc.Log)
 	}

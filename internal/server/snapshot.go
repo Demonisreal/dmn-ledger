@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -15,6 +16,8 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/internal/wire"
 )
+
+const footSize = 20
 
 var (
 	castagnoli = crc32.MakeTable(crc32.Castagnoli)
@@ -42,12 +45,20 @@ func (l *link) write(frame []byte) error {
 	return l.err
 }
 
-func (l *link) stream(r io.Reader) error {
+func (l *link) stream(body *io.SectionReader, head []byte) error {
+	file, _, size := body.Outer()
+	var foot [footSize]byte
+	if _, err := file.ReadAt(foot[:], size); err != nil {
+		return err
+	}
+	if err := l.write(head); err != nil {
+		return err
+	}
 	chunk := make([]byte, wire.ChunkSize)
 	frame := make([]byte, 0, wire.HeaderSize+wire.ChunkSize)
 	var crc uint32
 	for {
-		n, err := io.ReadFull(r, chunk)
+		n, err := io.ReadFull(body, chunk)
 		if n > 0 {
 			crc = crc32.Update(crc, castagnoli, chunk[:n])
 			l.size += uint64(n) //nolint:gosec // G115: n is at most ChunkSize
@@ -57,6 +68,9 @@ func (l *link) stream(r io.Reader) error {
 		}
 		switch {
 		case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+			if l.size != uint64(size) || crc32.Update(crc, castagnoli, foot[:16]) != binary.LittleEndian.Uint32(foot[16:]) { //nolint:gosec // G115: the size is never negative
+				return fmt.Errorf("server: snapshot file differs from its check after %d of %d bytes: %w", l.size, size, wal.ErrCorrupt)
+			}
 			return l.write(wire.AppendSnapshotEnd(frame[:0], l.cluster, l.size, crc))
 		case err != nil:
 			return err
@@ -65,19 +79,24 @@ func (l *link) stream(r io.Reader) error {
 }
 
 func (s *Server) sendSnapshot(ctx context.Context, p *peer, m raft.Message, head []byte) {
-	conn, done, err := s.dial(ctx, p, wire.KindSnapshot)
-	if err != nil {
+	l := &link{cluster: s.cfg.Cluster}
+	err := wal.ReadSnapshot(s.cfg.FS, filepath.Join(s.cfg.Dir, snapDir), wal.SnapshotMeta{Index: m.Index, Term: m.LogTerm}, func(r io.Reader) error {
+		conn, done, err := s.dial(ctx, p, wire.KindSnapshot)
+		if err != nil {
+			l.err = err
+			return err
+		}
+		defer done()
+		l.conn = conn
+		s.logf("sending snapshot %d/%d to node %d", m.Index, m.LogTerm, p.id)
+		return l.stream(r.(*io.SectionReader), head)
+	})
+	if l.conn == nil && l.err != nil {
 		return
-	}
-	defer done()
-	s.logf("sending snapshot %d/%d to node %d", m.Index, m.LogTerm, p.id)
-	l := &link{conn: conn, cluster: s.cfg.Cluster}
-	if l.write(head) == nil {
-		err = wal.ReadSnapshot(s.cfg.FS, filepath.Join(s.cfg.Dir, snapDir), wal.SnapshotMeta{Index: m.Index, Term: m.LogTerm}, l.stream)
 	}
 	switch {
 	case l.err != nil:
-		s.logf("snapshot %d/%d to node %d broke off: %v", m.Index, m.LogTerm, p.id, l.err)
+		s.logf("snapshot %d/%d to node %d aborted: %v", m.Index, m.LogTerm, p.id, l.err)
 	case errors.Is(err, wal.ErrNoSnapshot):
 		s.logf("snapshot %d/%d for node %d is gone", m.Index, m.LogTerm, p.id)
 	case err != nil:

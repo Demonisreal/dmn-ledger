@@ -18,6 +18,7 @@ const (
 	MaxPeerBody   = 4 << 20
 	MaxEntryBody  = requestHead + 8 + client.MaxBody
 	ChunkSize     = 256 << 10
+	HelloSize     = helloSize
 )
 
 const (
@@ -145,7 +146,7 @@ func Decode(b []byte, cluster uint64, limit uint32) (Frame, []byte, error) {
 }
 
 func (f Frame) mismatch(kind string) error {
-	return fmt.Errorf("%w: type %#x with %d bytes is no %s", ErrFormat, uint8(f.Type), len(f.Body), kind)
+	return fmt.Errorf("%w: type %#x with %d bytes is not a %s", ErrFormat, uint8(f.Type), len(f.Body), kind)
 }
 
 func trailing(b []byte) []byte {

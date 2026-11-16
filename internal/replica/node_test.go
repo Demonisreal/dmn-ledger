@@ -237,6 +237,30 @@ func TestBusyWhenTheCoreIsFull(t *testing.T) {
 	}
 }
 
+func TestBusyWhenTooManyReadsWait(t *testing.T) {
+	tn := newTestNet(t, 3, func(cfg *Config) { cfg.MaxUncommitted = 2 })
+	tn.elect(0)
+	c := tn.register(0, 1)
+	tn.cut[2], tn.cut[3] = true, true
+	first, second := c.request(client.LookupAccounts, ids(1)), c.request(client.LookupAccounts, ids(2))
+	tn.send(0, first)
+	tn.send(0, second)
+	busy := c.request(client.LookupTransfers, ids(3))
+	tn.send(0, busy)
+	if r := tn.take(); len(r) != 1 || r[0].Status != client.Busy || r[0].Number != busy.Number {
+		t.Fatalf("replies %+v, want Busy for the third read", r)
+	}
+	tn.cut[2], tn.cut[3] = false, false
+	for range 10 {
+		tn.tick(0)
+	}
+	got := tn.take()
+	if len(got) != 2 || got[0].Number != first.Number || got[1].Number != second.Number || got[0].Status != client.OK || got[1].Status != client.OK {
+		t.Fatalf("replies %+v, want both waiting reads answered", got)
+	}
+	ok(t, tn.call(0, c.request(client.LookupAccounts, ids(4))))
+}
+
 func TestReadBeforeOwnCommitIsBusy(t *testing.T) {
 	tn := newTestNet(t, 3, nil)
 	tn.drop = func(m raft.Message) bool { return m.Type == raft.MsgApp }

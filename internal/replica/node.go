@@ -398,14 +398,21 @@ func (n *Node) follow() {
 }
 
 func (n *Node) accept() error {
+	var reading uint64
+	for _, b := range n.reads {
+		reading += uint64(len(b.reqs))
+	}
 	for _, req := range n.inbox {
 		switch {
 		case n.leading == 0:
 			n.refuse(req, client.NotLeader)
 		case !wellFormed(req):
 			n.refuse(req, client.Malformed)
+		case req.Op.Lookup() && reading >= n.cfg.MaxUncommitted:
+			n.refuse(req, client.Busy)
 		case req.Op.Lookup():
 			n.lookups = append(n.lookups, req)
+			reading++
 		case n.proposed[keyOf(req)]:
 		default:
 			if err := n.propose(req); err != nil {

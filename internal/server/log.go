@@ -11,6 +11,7 @@ import (
 const (
 	logQueue   = 64
 	refusalGap = time.Second
+	logGrace   = time.Second
 )
 
 type note struct {
@@ -55,7 +56,8 @@ func (s *Server) writeLog(quiet <-chan struct{}) {
 		case n := <-s.notes:
 			show(n)
 		case <-quiet:
-			for len(s.notes) > 0 {
+			until := time.Now().Add(logGrace)
+			for len(s.notes) > 0 && time.Now().Before(until) {
 				show(<-s.notes)
 			}
 			return
@@ -68,10 +70,10 @@ func (s *Server) watch() {
 		return
 	}
 	st := s.node.Status()
-	if st.Role != s.role {
-		s.role = st.Role
+	if st.Role != s.role || st.Lead != 0 && (st.Lead != s.lead || st.Term != s.term) {
 		s.logf("%s in term %d, leader %d", st.Role, st.Term, st.Lead)
 	}
+	s.role, s.term, s.lead = st.Role, st.Term, st.Lead
 	if st.Repair != s.repair {
 		s.repair = st.Repair
 		if st.Repair {

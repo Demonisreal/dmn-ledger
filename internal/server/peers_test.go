@@ -295,6 +295,85 @@ func TestHelloFromAStrangerIsRefused(t *testing.T) {
 	})
 }
 
+func TestHelloIsReadWithItsOwnLimit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pn := newPipeNet()
+		pn.fake(t, 3, 1, listening)
+		ear := pn.listen(peerAddr(2))
+		n := start(t, pn.config(1, 3, t.TempDir()))
+		hello := wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: wire.KindMessages})
+		for _, size := range []uint32{wire.HelloSize + 1, wire.MaxPeerBody} {
+			conn, err := pn.dial(t.Context(), peerAddr(1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			toss(conn, header(hello, size))
+			if !(&testPeer{t: t, conn: conn}).shut(time.Millisecond) {
+				t.Errorf("a hello header with %d bytes leaves the connection open", size)
+			}
+		}
+
+		conn, err := ear.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		dialed := &testPeer{t: t, id: 2, conn: conn}
+		if _, err := dialed.read(); err != nil {
+			t.Fatalf("no hello from node 1: %v", err)
+		}
+		toss(conn, header(wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: wire.KindMessages}), wire.MaxPeerBody))
+		if !dialed.shut(time.Millisecond) {
+			t.Error("node 1 waits for the body of an answer that claims 4 MiB for a hello")
+		}
+		_ = ear.Close()
+		if err := n.halt(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestPeerConnectionsBeforeTheHelloAreLimited(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pn := newPipeNet()
+		pn.fake(t, 2, 1, listening)
+		pn.fake(t, 3, 1, listening)
+		n := start(t, pn.config(1, 3, t.TempDir()))
+		knock := func() *testPeer {
+			conn, err := pn.dial(t.Context(), peerAddr(1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			return &testPeer{t: t, id: 2, conn: conn}
+		}
+		var silent []*testPeer
+		for range 2 * hellosOfPeer {
+			silent = append(silent, knock())
+		}
+		if !knock().shut(time.Millisecond) {
+			t.Fatalf("a peer connection beyond %d waiting for their hello stays open", 2*hellosOfPeer)
+		}
+		silent[0].write(wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, Kind: wire.KindMessages}))
+		if _, err := silent[0].read(); err != nil {
+			t.Fatalf("no hello back: %v", err)
+		}
+		if knock().shut(time.Millisecond) {
+			t.Fatal("a hello did not free its place")
+		}
+		_ = silent[1].conn.Close()
+		synctest.Wait()
+		if knock().shut(time.Millisecond) {
+			t.Fatal("a closed connection did not free its place")
+		}
+		if !knock().shut(time.Millisecond) {
+			t.Fatal("all places are taken again, and still a connection stays open")
+		}
+		if err := n.halt(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestMessageFromAnotherPeerIsRefused(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
@@ -499,16 +578,11 @@ func TestFrozenFollowerDoesNotCampaign(t *testing.T) {
 		pn := newPipeNet()
 		fsys := newHookFS()
 		holds := make(chan time.Duration, 4)
-		var mu sync.Mutex
-		var resumed []time.Time
 		fsys.hook(func(name string) error {
 			if isWAL(name) {
 				select {
 				case d := <-holds:
 					time.Sleep(d)
-					mu.Lock()
-					resumed = append(resumed, time.Now())
-					mu.Unlock()
 				default:
 				}
 			}
@@ -549,17 +623,13 @@ func TestFrozenFollowerDoesNotCampaign(t *testing.T) {
 			if len(holds) != 0 {
 				t.Fatalf("round %d: %d stalls did not happen", round, len(holds))
 			}
-			mu.Lock()
-			woke := resumed[len(resumed)-1]
-			mu.Unlock()
 			for _, p := range peers {
 				p.mu.Lock()
-				for _, at := range p.votes {
-					if !at.Before(woke) && at.Before(woke.Add(testTick)) {
-						t.Errorf("round %d: the follower asked peer %d for a pre-vote in the round after a 5s stall", round, p.id)
-					}
-				}
+				asked := len(p.votes)
 				p.mu.Unlock()
+				if asked != 0 {
+					t.Fatalf("round %d: the follower asked peer %d for %d pre-votes around two stalls of 600ms and 5s", round, p.id, asked)
+				}
 			}
 		}
 		if st := pn.connect(t, clientAddr(1), 99).status(); st.Role != raft.Follower || st.Lead != 2 || st.Term != 2 {
@@ -567,6 +637,69 @@ func TestFrozenFollowerDoesNotCampaign(t *testing.T) {
 		}
 		if err := n.halt(); err != nil {
 			t.Fatal(err)
+		}
+	})
+}
+
+func TestStalledLeaderReadsAcksBeforeItChecksQuorum(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pn := newPipeNet()
+		fsys := newHookFS()
+		holds := make(chan time.Duration, 1)
+		fsys.hook(func(name string) error {
+			if isWAL(name) {
+				select {
+				case d := <-holds:
+					time.Sleep(d)
+				default:
+				}
+			}
+			return nil
+		})
+		peers := []*fakePeer{pn.fake(t, 2, 1, following), pn.fake(t, 3, 1, following)}
+		cfg := pn.config(1, 3, t.TempDir())
+		cfg.FS = fsys
+		began := time.Now()
+		n := start(t, cfg)
+		most := time.Duration(n.srv.ticks.most)
+		writer := pn.connect(t, clientAddr(1), 7)
+		probe := pn.connect(t, clientAddr(1), 8)
+
+		var first time.Time
+		for first.IsZero() {
+			time.Sleep(testTick)
+			peers[0].mu.Lock()
+			if len(peers[0].beats) > 0 {
+				first = peers[0].beats[0]
+			}
+			peers[0].mu.Unlock()
+		}
+		elected := first.Sub(began) / testTick
+		check := began.Add((elected + electionTicks) * testTick)
+		term := peers[0].messages(raft.MsgApp)[0].Term
+
+		time.Sleep(time.Until(check.Add(-testTick / 2)))
+		for _, p := range peers {
+			p.set(listening)
+		}
+		time.Sleep(time.Until(check.Add((electionTicks-most)*testTick + testTick/2)))
+		if role := probe.status().Role; role != raft.Leader {
+			t.Fatalf("before the stall: %s", role)
+		}
+		stall := most*testTick + testTick/2
+		holds <- stall
+		writer.write(wire.AppendRequest(nil, testCluster, client.Request{Client: writer.id, Op: client.Register}))
+		time.Sleep(200 * time.Millisecond)
+		if len(holds) != 0 {
+			t.Fatal("the stall did not happen")
+		}
+		pn.connect(t, clientAddr(1), 9).write(wire.AppendStatusRequest(nil, testCluster))
+		synctest.Wait()
+		ack := pn.greet(t, 1, 2, wire.KindMessages)
+		ack.send(raft.Message{Type: raft.MsgAppResp, From: 2, To: 1, Term: term, Index: 1})
+		time.Sleep(stall - 200*time.Millisecond + 2*testTick)
+		if role := probe.status().Role; role != raft.Leader {
+			t.Fatalf("after a stall of %s with an ack waiting: %s, the leader checked its quorum before it read the ack", stall, role)
 		}
 	})
 }

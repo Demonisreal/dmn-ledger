@@ -258,7 +258,7 @@ func TestSamplesEncodeBack(t *testing.T) {
 		all = rest
 	}
 	if len(all) != 0 {
-		t.Errorf("%d bytes left behind the last frame", len(all))
+		t.Errorf("%d bytes left after the last frame", len(all))
 	}
 }
 
@@ -308,8 +308,8 @@ func TestLengthIsCheckedBeforeAllocation(t *testing.T) {
 }
 
 func TestLimitsAreExact(t *testing.T) {
-	if MaxClientBody != 42+1<<20 || MaxPeerBody != 4<<20 || MaxEntryBody != 41+1<<20 || ChunkSize != 256<<10 {
-		t.Fatalf("limits %d %d %d %d", MaxClientBody, MaxPeerBody, MaxEntryBody, ChunkSize)
+	if MaxClientBody != 42+1<<20 || MaxPeerBody != 4<<20 || MaxEntryBody != 41+1<<20 || ChunkSize != 256<<10 || HelloSize != 17 {
+		t.Fatalf("limits %d %d %d %d %d", MaxClientBody, MaxPeerBody, MaxEntryBody, ChunkSize, HelloSize)
 	}
 	for _, limit := range []uint32{MaxClientBody, MaxPeerBody} {
 		fits, over := raw(TypeSnapshotChunk, make([]byte, limit)), raw(TypeSnapshotChunk, make([]byte, limit+1))
@@ -422,7 +422,7 @@ func TestTrailingBytesAreRefused(t *testing.T) {
 	}
 	empty := Frame{Type: TypeMessage + Type(raft.MsgApp), Body: make([]byte, appendHead+entryHead)}
 	if _, err := empty.Message(); !errors.Is(err, ErrFormat) {
-		t.Errorf("an entry behind a count of 0: %v", err)
+		t.Errorf("an entry after a count of 0: %v", err)
 	}
 }
 
@@ -749,7 +749,7 @@ func TestSnapshotEndCatchesAMissingChunk(t *testing.T) {
 		t.Errorf("end missing: %v", err)
 	}
 	if _, err := assemble(append(slices.Clone(frames), frames[0])); !errors.Is(err, errStream) {
-		t.Errorf("chunk behind the end: %v", err)
+		t.Errorf("chunk after the end: %v", err)
 	}
 	if got, err := assemble(chunked(nil)); err != nil || len(got) != 0 {
 		t.Errorf("empty snapshot: %d bytes, %v", len(got), err)

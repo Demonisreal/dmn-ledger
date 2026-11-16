@@ -18,7 +18,6 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
 	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
-	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/internal/wire"
 )
 
@@ -35,8 +34,6 @@ const (
 	snapDir = "snap"
 )
 
-var segmentSize int64 = wal.MaxSegmentSize
-
 type Config struct {
 	ID            uint64
 	Cluster       uint64
@@ -45,6 +42,7 @@ type Config struct {
 	FS            disk.FS
 	Tick          time.Duration
 	SnapshotEvery uint64
+	SegmentSize   int64
 	MaxSessions   int
 	MaxClients    int
 	Sweep         bool
@@ -62,14 +60,19 @@ type Server struct {
 	events   chan event
 	fatal    chan error
 	slots    chan struct{}
+	hellos   chan struct{}
 	peers    map[uint64]*peer
 	conns    map[u128.Uint128]*clientConn
 	spools   []*spool
+	asked    []*clientConn
 	spoolMax int64
 	sweeper  sweeper
 	notes    chan note
 	role     raft.Role
+	term     uint64
+	lead     uint64
 	repair   bool
+	opened   replica.Status
 	wg       sync.WaitGroup
 }
 
@@ -117,7 +120,7 @@ func Open(cfg Config) (*Server, error) {
 		Rand:           rand.New(rand.NewPCG(binary.BigEndian.Uint64(seed[:]), binary.BigEndian.Uint64(seed[8:]))), //nolint:gosec // G404: a PCG seeded from crypto/rand, as the driver contract asks
 		MaxSessions:    cfg.MaxSessions,
 		SnapshotEvery:  cfg.SnapshotEvery,
-		SegmentSize:    segmentSize,
+		SegmentSize:    cfg.SegmentSize,
 		ClockStep:      uint64(cfg.Tick + cfg.Tick/4), //nolint:gosec // G115: the tick is positive
 		ElectionTicks:  electionTicks,
 		HeartbeatTicks: heartbeatTicks,
@@ -134,24 +137,29 @@ func Open(cfg Config) (*Server, error) {
 	s := &Server{
 		cfg:      cfg,
 		node:     node,
-		ticks:    ticks{every: cfg.Tick, most: electionTicks - 1},
+		ticks:    ticks{every: cfg.Tick, most: electionTicks - 2*heartbeatTicks},
 		events:   make(chan event, eventQueue),
 		fatal:    make(chan error, 1),
 		slots:    make(chan struct{}, cfg.MaxClients),
+		hellos:   make(chan struct{}, hellosOfPeer*(len(cfg.Peers)-1)),
 		peers:    make(map[uint64]*peer),
 		conns:    make(map[u128.Uint128]*clientConn),
 		spoolMax: maxSnapshot,
 		sweeper:  sweeper{on: cfg.Sweep, self: cfg.ID},
 		notes:    make(chan note, logQueue),
 	}
-	st := node.Status()
-	s.role, s.repair = st.Role, st.Repair
+	s.opened = node.Status()
+	s.role, s.term, s.lead, s.repair = s.opened.Role, s.opened.Term, s.opened.Lead, s.opened.Repair
 	for i, addr := range cfg.Peers {
 		if id := uint64(i) + 1; id != cfg.ID {
 			s.peers[id] = &peer{id: id, addr: addr, out: make(chan []byte, peerQueue)}
 		}
 	}
 	return s, nil
+}
+
+func (s *Server) Opened() (term uint64, repair bool) {
+	return s.opened.Term, s.opened.Repair
 }
 
 func wallClock() uint64 {
@@ -176,10 +184,14 @@ func clearSpools(fsys disk.FS, dir string) error {
 
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
-	quiet := make(chan struct{})
-	var logs sync.WaitGroup
+	quiet, logged := make(chan struct{}), make(chan struct{})
 	if s.cfg.Log != nil {
-		logs.Go(func() { s.writeLog(quiet) })
+		go func() {
+			defer close(logged)
+			s.writeLog(quiet)
+		}()
+	} else {
+		close(logged)
 	}
 	s.wg.Go(func() { s.acceptClients(ctx) })
 	s.wg.Go(func() { s.acceptPeers(ctx) })
@@ -197,7 +209,10 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 	close(quiet)
-	logs.Wait()
+	select {
+	case <-logged:
+	case <-time.After(logGrace):
+	}
 	return errors.Join(err, s.node.Close())
 }
 
@@ -234,6 +249,7 @@ func (s *Server) loop(ctx context.Context) error {
 			return err
 		}
 		s.answer(out.Replies)
+		s.answerStatus()
 		s.watch()
 	}
 }
@@ -249,7 +265,7 @@ func (s *Server) feed(ev event) {
 		s.conns[ev.req.Client] = ev.conn
 		s.node.Request(ev.req)
 	case gotStatus:
-		s.reply(ev.conn, wire.AppendStatus(nil, s.cfg.Cluster, s.status()))
+		s.asked = append(s.asked, ev.conn)
 	case connClosed:
 		if s.conns[ev.req.Client] == ev.conn {
 			delete(s.conns, ev.req.Client)
@@ -315,6 +331,18 @@ func (s *Server) answer(replies []client.Reply) {
 			s.reply(c, wire.AppendReply(nil, s.cfg.Cluster, r))
 		}
 	}
+}
+
+func (s *Server) answerStatus() {
+	if len(s.asked) == 0 {
+		return
+	}
+	frame := wire.AppendStatus(nil, s.cfg.Cluster, s.status())
+	for _, c := range s.asked {
+		s.reply(c, frame)
+	}
+	clear(s.asked)
+	s.asked = s.asked[:0]
 }
 
 func (s *Server) stop(err error) {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
@@ -29,10 +30,7 @@ func fill(c *testClient, requests int) {
 	}
 }
 
-func smallSegments(t *testing.T) {
-	segmentSize = 64 << 10
-	t.Cleanup(func() { segmentSize = wal.MaxSegmentSize })
-}
+const smallSegment = 64 << 10
 
 func spoolsLeft(t *testing.T, dir string) []os.DirEntry {
 	t.Helper()
@@ -44,7 +42,6 @@ func spoolsLeft(t *testing.T, dir string) []os.DirEntry {
 }
 
 func TestLaggingNodeGetsTheSnapshotAsAStream(t *testing.T) {
-	smallSegments(t)
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
 		var mu sync.Mutex
@@ -69,7 +66,7 @@ func TestLaggingNodeGetsTheSnapshotAsAStream(t *testing.T) {
 		outs := make([]*logLines, 3)
 		for i := range cfgs {
 			cfgs[i] = pn.config(uint64(i)+1, 3, t.TempDir())
-			cfgs[i].SnapshotEvery = 20
+			cfgs[i].SnapshotEvery, cfgs[i].SegmentSize = 20, smallSegment
 			outs[i] = logged(&cfgs[i])
 			nodes[i] = start(t, cfgs[i])
 		}
@@ -82,7 +79,7 @@ func TestLaggingNodeGetsTheSnapshotAsAStream(t *testing.T) {
 		c.register()
 		fill(c, 45)
 		cfg := pn.config(lag, 3, cfgs[lag-1].Dir)
-		cfg.SnapshotEvery = 20
+		cfg.SnapshotEvery, cfg.SegmentSize = 20, smallSegment
 		took := logged(&cfg)
 		nodes[lag-1] = start(t, cfg)
 
@@ -126,7 +123,7 @@ func slowSnapshot(t *testing.T) (*testNode, *fakePeer) {
 	behind := pn.fake(t, 2, 1, deaf)
 	pn.fake(t, 3, 1, following)
 	cfg := pn.config(1, 3, t.TempDir())
-	cfg.SnapshotEvery = 10
+	cfg.SnapshotEvery, cfg.SegmentSize = 10, smallSegment
 	n := start(t, cfg)
 	c := pn.connect(t, clientAddr(1), 1)
 	c.leading()
@@ -150,7 +147,6 @@ func slowSnapshot(t *testing.T) (*testNode, *fakePeer) {
 }
 
 func TestHeartbeatsContinueDuringASnapshot(t *testing.T) {
-	smallSegments(t)
 	synctest.Test(t, func(t *testing.T) {
 		n, behind := slowSnapshot(t)
 		behind.mu.Lock()
@@ -172,7 +168,6 @@ func TestHeartbeatsContinueDuringASnapshot(t *testing.T) {
 }
 
 func TestSecondSnapshotIsDropped(t *testing.T) {
-	smallSegments(t)
 	synctest.Test(t, func(t *testing.T) {
 		n, behind := slowSnapshot(t)
 		time.Sleep(3 * time.Second)
@@ -301,14 +296,158 @@ func TestSnapshotOverTheLimitIsRefused(t *testing.T) {
 	})
 }
 
+func behindLeader(t *testing.T, pn *pipeNet, fsys *hookFS) (*testNode, *fakePeer) {
+	t.Helper()
+	behind := pn.fake(t, 2, 1, deaf)
+	pn.fake(t, 3, 1, following)
+	cfg := pn.config(1, 3, t.TempDir())
+	cfg.FS, cfg.SnapshotEvery, cfg.SegmentSize = fsys, 10, smallSegment
+	n := start(t, cfg)
+	c := pn.connect(t, clientAddr(1), 1)
+	c.leading()
+	c.register()
+	fill(c, 40)
+	return n, behind
+}
+
+func isSnap(name string) bool {
+	return filepath.Base(filepath.Dir(name)) == snapDir
+}
+
+func TestNothingOfASnapshotLeavesBeforeItsCheck(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pn := newPipeNet()
+		var mu sync.Mutex
+		var checked time.Time
+		var early []string
+		pn.sent = func(frame []byte) {
+			f, _, err := wire.Decode(frame, testCluster, wire.MaxPeerBody)
+			if err != nil {
+				return
+			}
+			h, err := f.Hello()
+			if f.Type != wire.TypeMessage+wire.Type(raft.MsgSnap) && (err != nil || h.Kind != wire.KindSnapshot) {
+				return
+			}
+			mu.Lock()
+			if checked.IsZero() {
+				early = append(early, fmt.Sprintf("type %#x", uint8(f.Type)))
+			}
+			mu.Unlock()
+		}
+		fsys := newHookFS()
+		var once sync.Once
+		fsys.reading(func(name string, _ int64) {
+			if isSnap(name) {
+				once.Do(func() {
+					time.Sleep(2 * bodyTimeout)
+					mu.Lock()
+					checked = time.Now()
+					mu.Unlock()
+				})
+			}
+		})
+		n, behind := behindLeader(t, pn, fsys)
+		behind.set(lagging)
+		for range 400 {
+			time.Sleep(100 * time.Millisecond)
+			behind.mu.Lock()
+			ends := behind.ends
+			behind.mu.Unlock()
+			if ends > 0 {
+				break
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if checked.IsZero() {
+			t.Fatal("no snapshot was read within 40s")
+		}
+		if len(early) != 0 {
+			t.Fatalf("frames of a snapshot connection left while the file was still being checked: %v", early)
+		}
+		behind.mu.Lock()
+		ends := behind.ends
+		behind.mu.Unlock()
+		if ends == 0 {
+			t.Fatal("the snapshot did not reach peer 2 after a check of 20s")
+		}
+		if err := n.halt(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestSnapshotThatChangesAfterItsCheckIsNotEnded(t *testing.T) {
+	for name, edit := range map[string]func(t *testing.T, file string){
+		"flipped": func(t *testing.T, file string) {
+			f, err := os.OpenFile(file, os.O_RDWR, 0)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			b := make([]byte, 1)
+			if _, err := f.ReadAt(b, 200); err != nil {
+				t.Error(err)
+			}
+			b[0] ^= 0x10
+			if _, err := f.WriteAt(b, 200); err != nil {
+				t.Error(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Error(err)
+			}
+		},
+		"cut": func(t *testing.T, file string) {
+			st, err := os.Stat(file)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if err := os.Truncate(file, st.Size()/2); err != nil {
+				t.Error(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				fsys := newHookFS()
+				n, behind := behindLeader(t, newPipeNet(), fsys)
+				var mu sync.Mutex
+				starts := 0
+				fsys.reading(func(file string, off int64) {
+					if !isSnap(file) || off != 0 {
+						return
+					}
+					mu.Lock()
+					starts++
+					second := starts == 2
+					mu.Unlock()
+					if second {
+						edit(t, file)
+					}
+				})
+				behind.set(lagging)
+				if err := n.wait(3 * patience); !errors.Is(err, wal.ErrCorrupt) {
+					t.Fatalf("Run returned %v, want the snapshot that changed after its check to stop the node", err)
+				}
+				behind.mu.Lock()
+				defer behind.mu.Unlock()
+				if behind.ends != 0 || len(behind.chunks) == 0 {
+					t.Fatalf("%d chunks and %d ends reached peer 2, want chunks and no end", len(behind.chunks), behind.ends)
+				}
+			})
+		})
+	}
+}
+
 func TestBrokenSnapshotStopsTheSender(t *testing.T) {
-	smallSegments(t)
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
 		behind := pn.fake(t, 2, 1, deaf)
 		pn.fake(t, 3, 1, following)
 		cfg := pn.config(1, 3, t.TempDir())
-		cfg.SnapshotEvery = 10
+		cfg.SnapshotEvery, cfg.SegmentSize = 10, smallSegment
 		n := start(t, cfg)
 		c := pn.connect(t, clientAddr(1), 1)
 		c.leading()

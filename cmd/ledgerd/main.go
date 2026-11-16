@@ -9,11 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/server"
-	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
 func main() {
@@ -35,7 +33,9 @@ func run(ctx context.Context, environ []string, stderr io.Writer) int {
 		logger.Printf("node %d cannot start: %v", cfg.id, err)
 		return 3
 	}
-	return serve(ctx, srv.Run, cfg, clients, logger)
+	term, repair := srv.Opened()
+	logger.Print(greeting(cfg, clients, term, repair))
+	return serve(ctx, srv.Run, cfg, logger)
 }
 
 func start(cfg config, logger *log.Logger) (*server.Server, string, error) {
@@ -70,6 +70,7 @@ func (cfg config) server(clients, peering net.Listener, logger *log.Logger) serv
 		FS:            disk.OS{},
 		Tick:          cfg.tick,
 		SnapshotEvery: cfg.snapshotEvery,
+		SegmentSize:   cfg.segmentSize,
 		MaxSessions:   cfg.maxSessions,
 		MaxClients:    cfg.maxClients,
 		Sweep:         cfg.sweep,
@@ -80,27 +81,17 @@ func (cfg config) server(clients, peering net.Listener, logger *log.Logger) serv
 	}
 }
 
-func greeting(ctx context.Context, cfg config, clients string) string {
-	line := fmt.Sprintf("node %d of %d in cluster %d started: peers on %s, clients on %s",
-		cfg.id, len(cfg.peers), cfg.cluster, cfg.peers[cfg.id-1], clients)
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	st, err := ledger.Status(ctx, cfg.cluster, clients)
-	if err != nil {
-		return fmt.Sprintf("%s, no status: %v", line, err)
+func greeting(cfg config, clients string, term uint64, repair bool) string {
+	flag := "no"
+	if repair {
+		flag = "yes"
 	}
-	repair := "no"
-	if st.Repair {
-		repair = "yes"
-	}
-	return fmt.Sprintf("%s, term %d, repair %s", line, st.Term, repair)
+	return fmt.Sprintf("node %d of %d in cluster %d started: peers on %s, clients on %s, term %d, repair %s",
+		cfg.id, len(cfg.peers), cfg.cluster, cfg.peers[cfg.id-1], clients, term, flag)
 }
 
-func serve(ctx context.Context, runServer func(context.Context) error, cfg config, clients string, logger *log.Logger) int {
-	halted := make(chan error, 1)
-	go func() { halted <- runServer(ctx) }()
-	logger.Print(greeting(ctx, cfg, clients))
-	if err := <-halted; err != nil {
+func serve(ctx context.Context, runServer func(context.Context) error, cfg config, logger *log.Logger) int {
+	if err := runServer(ctx); err != nil {
 		logger.Printf("node %d halted: %v", cfg.id, err)
 		return 1
 	}

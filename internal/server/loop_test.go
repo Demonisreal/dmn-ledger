@@ -19,6 +19,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
+	"github.com/Demonisreal/dmn-ledger/internal/u128"
 	"github.com/Demonisreal/dmn-ledger/internal/wire"
 )
 
@@ -53,7 +54,7 @@ func TestTicksFollowTheMonotonicClock(t *testing.T) {
 		{170 * ms, 14, 10 * ms},
 		{171 * ms, 0, 9 * ms},
 		{180 * ms, 1, 10 * ms},
-		{675 * ms, 49, 5 * ms},
+		{675 * ms, 40, 5 * ms},
 	} {
 		if owed := tk.take(step.at); owed != step.owed {
 			t.Fatalf("at %s: %d ticks owed, want %d", step.at, owed, step.owed)
@@ -66,8 +67,8 @@ func TestTicksFollowTheMonotonicClock(t *testing.T) {
 
 func TestStallOwesLessThanAnElection(t *testing.T) {
 	tk := openTicks(t)
-	if owed := tk.take(5 * time.Second); owed != electionTicks-1 {
-		t.Fatalf("after a stall of 5s: %d ticks, want %d", owed, electionTicks-1)
+	if owed := tk.take(5 * time.Second); owed != electionTicks-2*heartbeatTicks {
+		t.Fatalf("after a stall of 5s: %d ticks, want %d", owed, electionTicks-2*heartbeatTicks)
 	}
 	if owed := tk.take(5 * time.Second); owed != 0 {
 		t.Fatalf("right after the stall: %d more ticks, want 0", owed)
@@ -348,6 +349,120 @@ func TestSlowRoundsLoseNoTicks(t *testing.T) {
 	})
 }
 
+func TestBusyRoundsLoseNoTicks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fsys := newHookFS()
+		pn, cfg := single(t, fsys)
+		n := start(t, cfg)
+		a := pn.connect(t, clientAddr(1), 1)
+		b := pn.connect(t, clientAddr(1), 2)
+		a.leading()
+		a.register()
+		b.register()
+		a.ok(client.CreateAccounts, accounts(1, 2))
+		fsys.hook(func(name string) error {
+			if isWAL(name) {
+				time.Sleep(17 * time.Millisecond)
+			}
+			return nil
+		})
+		end := time.Now().Add(5 * time.Second)
+		var wg sync.WaitGroup
+		for k, c := range []*testClient{a, b} {
+			wg.Go(func() {
+				for id := uint64(1000 * (k + 1)); time.Now().Before(end); id++ {
+					sent := wallClock()
+					req := c.send(client.CreateTransfers, transfer(id, 1, 2, 1))
+					frame, err := c.read()
+					if err != nil {
+						t.Errorf("client %d: %v", k, err)
+						return
+					}
+					r, err := frame.Reply()
+					if err != nil || r.Number != req.Number || r.Status != client.OK {
+						t.Errorf("client %d: reply %+v, %v", k, r, err)
+						return
+					}
+					if r.Time < sent {
+						t.Errorf("client %d, transfer %d, %s before the end: stamped %d, sent at %d, %s behind", k, id, time.Until(end), r.Time, sent, time.Duration(sent-r.Time))
+						return
+					}
+				}
+			})
+		}
+		wg.Wait()
+		if err := n.halt(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestStatusShowsOnlyWhatIsSynced(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pn := newPipeNet()
+		pn.fake(t, 2, 1, listening)
+		pn.fake(t, 3, 1, listening)
+		fsys := newHookFS()
+		cfg := pn.config(1, 3, t.TempDir())
+		cfg.FS = fsys
+		n := start(t, cfg)
+		lead := pn.greet(t, 1, 2, wire.KindMessages)
+		probe := pn.connect(t, clientAddr(1), 1)
+		grow := func(index uint64) {
+			before := uint64(0)
+			if index > 1 {
+				before = 2
+			}
+			lead.send(raft.Message{Type: raft.MsgApp, From: 2, To: 1, Term: 2, Index: index - 1, LogTerm: before,
+				Entries: []raft.Entry{{Index: index, Term: 2, Kind: 1, Body: u128.From64(index).AppendBytes(nil)}}})
+		}
+		grow(1)
+		for range 100 {
+			if probe.status().Last == 1 {
+				break
+			}
+			time.Sleep(testTick)
+		}
+		gates := make(chan chan struct{}, 1)
+		fsys.hook(func(name string) error {
+			if isWAL(name) {
+				select {
+				case gate := <-gates:
+					<-gate
+				default:
+				}
+			}
+			return nil
+		})
+		first, second := make(chan struct{}), make(chan struct{})
+		gates <- first
+		grow(2)
+		synctest.Wait()
+		grow(3)
+		probe.write(wire.AppendStatusRequest(nil, testCluster))
+		synctest.Wait()
+		gates <- second
+		close(first)
+		synctest.Wait()
+		_ = probe.conn.SetReadDeadline(time.Now().Add(time.Second))
+		if frame, _, err := wire.ReadFrame(probe.conn, nil, testCluster, wire.MaxClientBody); err == nil {
+			st, _ := frame.Status()
+			t.Fatalf("a status with the log at %d arrived while the sync of entry 3 was held", st.Last)
+		}
+		close(second)
+		frame, err := probe.read()
+		if err != nil {
+			t.Fatalf("no status after the sync: %v", err)
+		}
+		if st, err := frame.Status(); err != nil || st.Last != 3 || st.Term != 2 {
+			t.Fatalf("status after the sync: %+v, %v; want the log at 3 in term 2", st, err)
+		}
+		if err := n.halt(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestStopLeavesNothingRunning(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
@@ -384,14 +499,13 @@ func TestStopLeavesNothingRunning(t *testing.T) {
 			}
 		}
 	})
-	smallSegments(t)
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
 		behind := pn.fake(t, 2, 1, deaf)
 		pn.fake(t, 3, 1, following)
 		fsys := newHookFS()
 		cfg := pn.config(1, 3, t.TempDir())
-		cfg.FS, cfg.SnapshotEvery = fsys, 10
+		cfg.FS, cfg.SnapshotEvery, cfg.SegmentSize = fsys, 10, smallSegment
 		n := start(t, cfg)
 		c := pn.connect(t, clientAddr(1), 1)
 		c.leading()
@@ -399,7 +513,7 @@ func TestStopLeavesNothingRunning(t *testing.T) {
 		fill(c, 40)
 		reading := make(chan struct{})
 		var once sync.Once
-		fsys.reading(func(name string) {
+		fsys.reading(func(name string, _ int64) {
 			if filepath.Base(filepath.Dir(name)) == snapDir {
 				once.Do(func() {
 					close(reading)

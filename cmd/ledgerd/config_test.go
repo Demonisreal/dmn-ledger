@@ -12,8 +12,8 @@ const threePeers = "127.0.0.1:7201,127.0.0.1:7202,127.0.0.1:7203"
 
 func environ(vars map[string]string) []string {
 	var env []string
-	for name, val := range vars {
-		env = append(env, name+"="+val)
+	for name, given := range vars {
+		env = append(env, name+"="+given)
 	}
 	return env
 }
@@ -41,6 +41,7 @@ func TestConfigDefaults(t *testing.T) {
 		dir:           "/var/lib/ledger",
 		tick:          10 * time.Millisecond,
 		snapshotEvery: 100000,
+		segmentSize:   64 << 20,
 		maxSessions:   1024,
 		maxClients:    128,
 		sweep:         true,
@@ -53,10 +54,10 @@ func TestConfigDefaults(t *testing.T) {
 func TestConfig(t *testing.T) {
 	const missing = "\x00"
 	for _, tc := range []struct {
-		name, val string
-		want      string
-		got       func(config) any
-		wantVal   any
+		name, given string
+		want        string
+		got         func(config) any
+		wantVal     any
 	}{
 		{"LEDGER_ID", "1", "", func(c config) any { return c.id }, uint64(1)},
 		{"LEDGER_ID", "3", "", func(c config) any { return c.id }, uint64(3)},
@@ -84,7 +85,7 @@ func TestConfig(t *testing.T) {
 		{"LEDGER_PEERS", "127.0.0.1:7201,127.0.0.1:7202", `LEDGER_PEERS="127.0.0.1:7201,127.0.0.1:7202": 2 peers, want 1, 3 or 5`, nil, nil},
 		{"LEDGER_PEERS", "127.0.0.1:7201,127.0.0.1:7202,127.0.0.1:7203,127.0.0.1:7204", "4 peers, want 1, 3 or 5", nil, nil},
 		{"LEDGER_PEERS", "127.0.0.1:1,127.0.0.1:2,127.0.0.1:3,127.0.0.1:4,127.0.0.1:5,127.0.0.1:6", "6 peers, want 1, 3 or 5", nil, nil},
-		{"LEDGER_PEERS", "127.0.0.1:7201,127.0.0.1:7202,127.0.0.1:7201", "127.0.0.1:7201 twice", nil, nil},
+		{"LEDGER_PEERS", "127.0.0.1:7201,127.0.0.1:7202,127.0.0.1:7201", "127.0.0.1:7201 listed twice", nil, nil},
 		{"LEDGER_PEERS", "127.0.0.1:7201,localhost:7202,127.0.0.1:7203", `"localhost:7202": want IP:port, no host names`, nil, nil},
 		{"LEDGER_PEERS", "127.0.0.1:7201,127.0.0.1:0,127.0.0.1:7203", `"127.0.0.1:0": want a port other than 0`, nil, nil},
 		{"LEDGER_PEERS", threePeers + ",", `"": want IP:port`, nil, nil},
@@ -115,6 +116,12 @@ func TestConfig(t *testing.T) {
 		{"LEDGER_SNAPSHOT_EVERY", "0", `LEDGER_SNAPSHOT_EVERY="0": want a number from 1 to 4294967296`, nil, nil},
 		{"LEDGER_SNAPSHOT_EVERY", "4294967297", `LEDGER_SNAPSHOT_EVERY="4294967297": want a number from 1 to 4294967296`, nil, nil},
 
+		{"LEDGER_SEGMENT_SIZE", "2097152", "", func(c config) any { return c.segmentSize }, int64(2 << 20)},
+		{"LEDGER_SEGMENT_SIZE", "67108864", "", func(c config) any { return c.segmentSize }, int64(64 << 20)},
+		{"LEDGER_SEGMENT_SIZE", "2097151", `LEDGER_SEGMENT_SIZE="2097151": want a number from 2097152 to 67108864`, nil, nil},
+		{"LEDGER_SEGMENT_SIZE", "67108865", `LEDGER_SEGMENT_SIZE="67108865": want a number from 2097152 to 67108864`, nil, nil},
+		{"LEDGER_SEGMENT_SIZE", "64MiB", `LEDGER_SEGMENT_SIZE="64MiB"`, nil, nil},
+
 		{"LEDGER_MAX_SESSIONS", "1", "", func(c config) any { return c.maxSessions }, 1},
 		{"LEDGER_MAX_SESSIONS", "1000000", "", func(c config) any { return c.maxSessions }, 1000000},
 		{"LEDGER_MAX_SESSIONS", "0", `LEDGER_MAX_SESSIONS="0": want a number from 1 to 1000000`, nil, nil},
@@ -134,12 +141,12 @@ func TestConfig(t *testing.T) {
 		{"LEDGER_NODES", "127.0.0.1:7101", "unknown variable LEDGER_NODES", nil, nil},
 		{"LEDGER_", "", "unknown variable LEDGER_", nil, nil},
 	} {
-		t.Run(tc.name+"="+strings.ReplaceAll(tc.val, missing, "missing"), func(t *testing.T) {
+		t.Run(tc.name+"="+strings.ReplaceAll(tc.given, missing, "missing"), func(t *testing.T) {
 			vars := required()
-			if tc.val == missing {
+			if tc.given == missing {
 				delete(vars, tc.name)
 			} else {
-				vars[tc.name] = tc.val
+				vars[tc.name] = tc.given
 			}
 			cfg, err := parse(environ(vars))
 			switch {

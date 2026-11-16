@@ -133,7 +133,7 @@ type hookFS struct {
 	dirty  map[string]bool
 	syncs  int
 	onSync func(name string) error
-	onRead func(name string)
+	onRead func(name string, off int64)
 	keep   bool
 	writes []diskWrite
 	turn   chan struct{}
@@ -166,7 +166,7 @@ func (h *hookFS) Open(name string) (disk.File, error) {
 	return &hookFile{File: f, fs: h, name: name}, nil
 }
 
-func (h *hookFS) reading(fn func(name string)) {
+func (h *hookFS) reading(fn func(name string, off int64)) {
 	h.mu.Lock()
 	h.onRead = fn
 	h.mu.Unlock()
@@ -246,7 +246,7 @@ func (f *hookFile) ReadAt(b []byte, off int64) (int, error) {
 	fn := f.fs.onRead
 	f.fs.mu.Unlock()
 	if fn != nil {
-		fn(f.name)
+		fn(f.name, off)
 	}
 	return f.File.ReadAt(b, off)
 }

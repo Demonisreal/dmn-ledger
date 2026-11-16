@@ -20,11 +20,13 @@ const (
 	helloTimeout = 2 * time.Second
 	minBackoff   = 50 * time.Millisecond
 	maxBackoff   = time.Second
+	hellosOfPeer = 4
 )
 
 var (
-	errStranger     = errors.New("server: frame from an unexpected peer")
-	errSnapshotBusy = errors.New("server: a snapshot from this peer is still in flight")
+	errStranger      = errors.New("server: frame from an unexpected peer")
+	errSnapshotBusy  = errors.New("server: a snapshot from this peer is still in flight")
+	errTooManyHellos = errors.New("server: too many peer connections waiting for their hello")
 )
 
 type peer struct {
@@ -141,7 +143,7 @@ func (s *Server) greet(conn net.Conn, to uint64, kind uint8) error {
 	if _, err := conn.Write(wire.AppendHello(nil, s.cfg.Cluster, wire.Hello{From: s.cfg.ID, To: to, Kind: kind})); err != nil {
 		return err
 	}
-	frame, _, err := wire.ReadFrame(conn, nil, s.cfg.Cluster, wire.MaxPeerBody)
+	frame, _, err := wire.ReadFrame(conn, nil, s.cfg.Cluster, wire.HelloSize)
 	if err != nil {
 		return err
 	}
@@ -164,7 +166,13 @@ func (s *Server) acceptPeers(ctx context.Context) {
 			}
 			continue
 		}
-		s.wg.Go(func() { s.servePeer(ctx, conn) })
+		select {
+		case s.hellos <- struct{}{}:
+			s.wg.Go(func() { s.servePeer(ctx, conn) })
+		default:
+			s.refused("peer hello", conn, errTooManyHellos)
+			_ = conn.Close()
+		}
 	}
 }
 
@@ -172,6 +180,7 @@ func (s *Server) servePeer(ctx context.Context, conn net.Conn) {
 	done := closeOnStop(ctx, conn)
 	defer done()
 	h, err := s.hello(conn)
+	<-s.hellos
 	if err != nil {
 		s.refused("peer hello", conn, err)
 		return
@@ -198,7 +207,7 @@ func (s *Server) servePeer(ctx context.Context, conn net.Conn) {
 
 func (s *Server) hello(conn net.Conn) (wire.Hello, error) {
 	_ = conn.SetDeadline(time.Now().Add(helloTimeout))
-	frame, _, err := wire.ReadFrame(conn, nil, s.cfg.Cluster, wire.MaxPeerBody)
+	frame, _, err := wire.ReadFrame(conn, nil, s.cfg.Cluster, wire.HelloSize)
 	if err != nil {
 		return wire.Hello{}, err
 	}

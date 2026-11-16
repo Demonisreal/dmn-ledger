@@ -11,8 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
+
+const minSegmentSize = 2 << 20
 
 type config struct {
 	id            uint64
@@ -22,6 +25,7 @@ type config struct {
 	dir           string
 	tick          time.Duration
 	snapshotEvery uint64
+	segmentSize   int64
 	maxSessions   int
 	maxClients    int
 	sweep         bool
@@ -30,14 +34,14 @@ type config struct {
 func parse(environ []string) (config, error) {
 	vars := make(map[string]string)
 	for _, kv := range environ {
-		if name, val, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(name, "LEDGER_") {
-			vars[name] = val
+		if name, given, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(name, "LEDGER_") {
+			vars[name] = given
 		}
 	}
 	if err := takeBug(vars); err != nil {
 		return config{}, err
 	}
-	cfg := config{tick: 10 * time.Millisecond, snapshotEvery: 100000, maxSessions: 1024, maxClients: 128, sweep: true}
+	cfg := config{tick: 10 * time.Millisecond, snapshotEvery: 100000, segmentSize: wal.MaxSegmentSize, maxSessions: 1024, maxClients: 128, sweep: true}
 	steps := []struct {
 		name     string
 		required bool
@@ -63,6 +67,11 @@ func parse(environ []string) (config, error) {
 			return nil
 		}},
 		{"LEDGER_SNAPSHOT_EVERY", false, func(s string) (err error) { cfg.snapshotEvery, err = number(s, 1, 1<<32); return err }},
+		{"LEDGER_SEGMENT_SIZE", false, func(s string) error {
+			n, err := number(s, minSegmentSize, wal.MaxSegmentSize)
+			cfg.segmentSize = int64(n) //nolint:gosec // G115: at most wal.MaxSegmentSize
+			return err
+		}},
 		{"LEDGER_MAX_SESSIONS", false, func(s string) error {
 			n, err := number(s, 1, 1000000)
 			cfg.maxSessions = int(n) //nolint:gosec // G115: at most 1000000
@@ -82,7 +91,7 @@ func parse(environ []string) (config, error) {
 		}},
 	}
 	for _, st := range steps {
-		val, ok := vars[st.name]
+		given, ok := vars[st.name]
 		delete(vars, st.name)
 		if !ok {
 			if st.required {
@@ -90,8 +99,8 @@ func parse(environ []string) (config, error) {
 			}
 			continue
 		}
-		if err := st.set(val); err != nil {
-			return config{}, fmt.Errorf("%s=%q: %w", st.name, val, err)
+		if err := st.set(given); err != nil {
+			return config{}, fmt.Errorf("%s=%q: %w", st.name, given, err)
 		}
 	}
 	if len(vars) > 0 {
@@ -140,7 +149,7 @@ func peerList(s string) ([]netip.AddrPort, error) {
 			return nil, fmt.Errorf("%q: %w", entry, err)
 		}
 		if slices.Contains(peers, ap) {
-			return nil, fmt.Errorf("%s twice", ap)
+			return nil, fmt.Errorf("%s listed twice", ap)
 		}
 		peers = append(peers, ap)
 	}
