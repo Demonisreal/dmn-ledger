@@ -1,9 +1,12 @@
 package check
 
 import (
+	"encoding/binary"
+	"math"
 	"slices"
 	"testing"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/sim"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
@@ -100,6 +103,127 @@ func TestSimulatorReadsNeedTheirTime(t *testing.T) {
 	wantViolation(t, r.Window(calls), "S9", "not linearizable")
 }
 
+func proofs(t *testing.T) []sim.Call {
+	t.Helper()
+	m := state.New(0, 0)
+	for _, call := range booking()[:2] {
+		if _, err := m.Apply(stateOp(call.Op), call.Reply.Time, call.Body, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipt := func(r audit.Receipt, found bool) []byte {
+		if !found {
+			t.Fatal("no receipt in the booked ledger")
+		}
+		return audit.AppendReceipt(nil, r)
+	}
+	var links []byte
+	for _, l := range m.Links(0, math.MaxUint64, nil) {
+		links = audit.AppendLink(links, l)
+	}
+	read := func(op client.Op, body, reply []byte) sim.Call {
+		return sim.Call{Client: 3, Op: op, Body: body, Start: 50, End: 60, Reply: replied(200, reply)}
+	}
+	return []sim.Call{
+		read(client.Head, nil, audit.AppendHead(nil, m.Head())),
+		read(client.Prove, append([]byte{audit.KindAccount}, u128.From64(1).AppendBytes(nil)...), receipt(m.ProveAccount(u128.From64(1)))),
+		read(client.Prove, append([]byte{audit.KindTransfer}, u128.From64(10).AppendBytes(nil)...), receipt(m.ProveTransfer(u128.From64(10)))),
+		read(client.Prove, binary.BigEndian.AppendUint64([]byte{audit.KindBatch}, 200), receipt(m.ProveBatch(200))),
+		read(client.Prove, append([]byte{audit.KindExpiry}, u128.From64(10).AppendBytes(nil)...), nil),
+		read(client.Links, binary.BigEndian.AppendUint64(make([]byte, 8), math.MaxUint64), links),
+	}
+}
+
+func TestReplayerChecksProofs(t *testing.T) {
+	const (
+		head = iota
+		account
+		transfer
+		batch
+		expiry
+		links
+	)
+	cases := []struct {
+		name   string
+		tamper func(reads []sim.Call)
+		check  string
+	}{
+		{"every read as the ledger holds it", func([]sim.Call) {}, ""},
+		{"head with another hash", func(reads []sim.Call) {
+			reads[head].Reply.Body[len(reads[head].Reply.Body)-1]++
+		}, "S13"},
+		{"head of the batch before", func(reads []sim.Call) {
+			_, before, _, _ := audit.Decode(reads[account].Reply.Body)
+			reads[head].Reply.Body = audit.AppendHead(nil, before)
+		}, "S13"},
+		{"receipt with another byte", func(reads []sim.Call) {
+			reads[account].Reply.Body[len(reads[account].Reply.Body)-1]++
+		}, "S13"},
+		{"receipt one byte short", func(reads []sim.Call) {
+			reads[transfer].Reply.Body = reads[transfer].Reply.Body[:len(reads[transfer].Reply.Body)-1]
+		}, "S13"},
+		{"receipt of another account", func(reads []sim.Call) {
+			reads[account].Body = append([]byte{audit.KindAccount}, u128.From64(2).AppendBytes(nil)...)
+		}, "S13"},
+		{"receipt for a transfer nobody booked", func(reads []sim.Call) {
+			reads[transfer].Body = append([]byte{audit.KindTransfer}, u128.From64(11).AppendBytes(nil)...)
+		}, "S13"},
+		{"no receipt for a booked transfer", func(reads []sim.Call) {
+			reads[transfer].Reply.Body = nil
+		}, "S13"},
+		{"receipt of a transfer as its expiry", func(reads []sim.Call) {
+			reads[expiry].Reply.Body = reads[transfer].Reply.Body
+		}, "S13"},
+		{"receipt of a batch at another time", func(reads []sim.Call) {
+			reads[batch].Body = binary.BigEndian.AppendUint64([]byte{audit.KindBatch}, 100)
+		}, "S13"},
+		{"one link short", func(reads []sim.Call) {
+			reads[links].Reply.Body = reads[links].Reply.Body[:audit.LinkSize]
+		}, "S13"},
+		{"one link more", func(reads []sim.Call) {
+			reads[links].Reply.Body = append(reads[links].Reply.Body, reads[links].Reply.Body[:audit.LinkSize]...)
+		}, "S13"},
+		{"proof at a time no write gave", func(reads []sim.Call) {
+			reads[head].Reply.Time = 150
+		}, "S13"},
+		{"head of the ledger before the transfer had begun", func(reads []sim.Call) {
+			reads[head].Start, reads[head].End = 22, 28
+		}, "S13"},
+		{"a wrong head and a wrong lookup", func(reads []sim.Call) {
+			reads[head].Reply.Body[len(reads[head].Reply.Body)-1]++
+			reads[head+1].Op, reads[head+1].Reply.Body = client.LookupAccounts, debtor(0)
+			reads[head+1].Body = u128.From64(1).AppendBytes(nil)
+		}, "S9"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reads := proofs(t)
+			for i := range reads {
+				reads[i].Reply.Body = slices.Clone(reads[i].Reply.Body)
+			}
+			tc.tamper(reads)
+			reason := ""
+			if tc.check != "" {
+				reason = "not linearizable"
+			}
+			wantViolation(t, NewReplayer().Window(append(booking()[:2], reads...)), tc.check, reason)
+		})
+	}
+}
+
+func TestReplayerAcceptsProofsWithoutTime(t *testing.T) {
+	reads := proofs(t)
+	for i := range reads {
+		reads[i].Reply.Time = 0
+	}
+	if err := NewReplayer().Window(append(booking()[:2], reads...)); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReplayer()
+	r.timed = true
+	wantViolation(t, r.Window(append(booking()[:2], reads...)), "S13", "with its proofs")
+}
+
 func TestReplayerCarriesTheLedgerIntoTheNextWindow(t *testing.T) {
 	calls := booking()
 	r := NewReplayer()
@@ -146,13 +270,13 @@ func TestReplayerFindsATimeBeforeAnEarlierWindow(t *testing.T) {
 	}
 }
 
-func TestReplayComparesTheLedgerDigest(t *testing.T) {
+func TestReplayComparesTheHead(t *testing.T) {
 	w, nodes := finished(t)
 	calls := w.c.Calls()
 	for i := len(calls) - 1; i >= 0; i-- {
 		if !calls[i].Op.Lookup() && len(calls[i].Body) > 0 && len(calls[i].Reply.Body) == 0 {
 			calls[i].Body = nil
-			wantViolation(t, w.replay(nodes[0]), "S8", "ledger digest")
+			wantViolation(t, w.replay(nodes[0]), "S12", "the oracle has")
 			return
 		}
 	}
@@ -171,7 +295,7 @@ func lastWindow(t *testing.T, w *watch) int {
 func TestReplayNamesAWrongReplyBeforeAStaleRead(t *testing.T) {
 	w, nodes := finished(t)
 	calls, last := w.c.Calls(), lastWindow(t, w)
-	read := slices.IndexFunc(calls[:last], func(c sim.Call) bool { return c.Op.Lookup() && len(c.Reply.Body) > 0 })
+	read := slices.IndexFunc(calls[:last], func(c sim.Call) bool { return looked(c) && len(c.Reply.Body) > 0 })
 	write := slices.IndexFunc(calls[last:], func(c sim.Call) bool { return !c.Op.Lookup() })
 	if read < 0 || write < 0 {
 		t.Fatal("no read that found something before the last window, or no write in it")

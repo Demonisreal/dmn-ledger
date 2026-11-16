@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
 )
@@ -103,6 +104,38 @@ func TestSnapshotHeadMustMatchRaft(t *testing.T) {
 	}
 }
 
+func TestSnapshotHoldsMaxSessions(t *testing.T) {
+	tn := newTestNet(t, 1, func(cfg *Config) { cfg.SnapshotEvery = 4 })
+	tn.elect(0)
+	c := tn.register(0, 1)
+	for i := uint64(1); tn.nodes[0].snap.Index == 0; i++ {
+		ok(t, c.do(client.CreateAccounts, accounts(i)))
+	}
+	tn.stop(0)
+	tn.cfgs[0].MaxSessions = 17
+	if _, err := tn.probe(0, tn.disks[0]); !errors.Is(err, ErrMaxSessions) {
+		t.Fatalf("start with MaxSessions 17 over a snapshot of 16: %v, want ErrMaxSessions", err)
+	}
+	cfg := tn.config(0)
+	if err := Recount(cfg, audit.Head{}); !errors.Is(err, ErrMaxSessions) {
+		t.Fatalf("recount with MaxSessions 17: %v, want ErrMaxSessions", err)
+	}
+	tn.cfgs[0].MaxSessions = 16
+	tn.open(0)
+	tn.elect(0)
+	ok(t, c.do(client.CreateAccounts, accounts(100)))
+}
+
+func TestInstalledSnapshotHoldsMaxSessions(t *testing.T) {
+	tn, _, e := lagging(t)
+	n := tn.nodes[2]
+	n.cfg.MaxSessions++
+	n.Receive(e.m, bytes.NewReader(e.snap))
+	if _, err := n.Process(); !errors.Is(err, ErrMaxSessions) {
+		t.Fatalf("install of a snapshot with MaxSessions 16 on a node with %d: %v, want ErrMaxSessions", n.cfg.MaxSessions, err)
+	}
+}
+
 func FuzzLoadSnapshot(f *testing.F) {
 	tn := newTestNet(f, 1, func(cfg *Config) { cfg.SnapshotEvery = 1 << 40 })
 	tn.elect(0)
@@ -118,7 +151,7 @@ func FuzzLoadSnapshot(f *testing.F) {
 	f.Add(snap.Bytes())
 	f.Add(snap.Bytes()[:snapHeadLen+sessionLen+3])
 	f.Fuzz(func(t *testing.T, b []byte) {
-		n := &Node{}
+		n := &Node{cfg: tn.cfgs[0]}
 		if err := n.load(bytes.NewReader(b)); err != nil {
 			return
 		}
@@ -129,7 +162,7 @@ func FuzzLoadSnapshot(f *testing.F) {
 		if err := n.writeSnapshot(&again); err != nil {
 			t.Fatal(err)
 		}
-		m := &Node{}
+		m := &Node{cfg: tn.cfgs[0]}
 		if err := m.load(&again); err != nil {
 			t.Fatalf("a written snapshot does not load: %v", err)
 		}

@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"syscall"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
 	"github.com/Demonisreal/dmn-ledger/internal/replica"
@@ -59,6 +60,7 @@ type watch struct {
 	leaders   map[uint64]uint64
 	votes     map[[2]uint64]uint64
 	hashes    map[uint64][sha256.Size]byte
+	heads     map[uint64]audit.Head
 	terms     []uint64
 	commits   map[*replica.Node]uint64
 	committed map[uint64]uint64
@@ -85,6 +87,7 @@ func newWatch(cfg Config) *watch {
 		leaders:   make(map[uint64]uint64),
 		votes:     make(map[[2]uint64]uint64),
 		hashes:    make(map[uint64][sha256.Size]byte),
+		heads:     make(map[uint64]audit.Head),
 		commits:   make(map[*replica.Node]uint64),
 		committed: make(map[uint64]uint64),
 		entries:   make(map[[2]uint64]raft.Entry),
@@ -286,6 +289,11 @@ func (w *watch) check(c *sim.Cluster) error {
 			w.hashes[st.Applied] = st.ApplyHash
 		} else if h != st.ApplyHash {
 			return w.fail("S3", id, "applied %d with hash %x, seen %x", st.Applied, st.ApplyHash[:4], h[:4])
+		}
+		if h, ok := w.heads[st.Applied]; !ok {
+			w.heads[st.Applied] = st.Head
+		} else if h != st.Head {
+			return w.fail("S12", id, "applied %d with head %d %x, seen %d %x", st.Applied, st.Head.Seq, st.Head.Hash[:4], h.Seq, h.Hash[:4])
 		}
 		if st.Term < w.terms[id-1] {
 			return w.fail("S4", id, "term %d after %d", st.Term, w.terms[id-1])

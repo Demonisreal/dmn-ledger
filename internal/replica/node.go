@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
@@ -62,6 +63,7 @@ type Status struct {
 	Repair     bool
 	Time       uint64
 	NextExpiry uint64
+	Head       audit.Head
 }
 
 type proposal struct {
@@ -528,6 +530,7 @@ func (n *Node) Status() Status {
 		Repair:     st.Repair,
 		Time:       n.sm.Last(),
 		NextExpiry: next,
+		Head:       n.sm.Head(),
 	}
 }
 

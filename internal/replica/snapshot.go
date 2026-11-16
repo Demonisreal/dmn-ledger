@@ -19,17 +19,21 @@ import (
 
 const (
 	snapMagic    = "DMNR"
-	snapVersion  = 1
-	snapHeadLen  = len(snapMagic) + 1 + 8 + 8 + sha256.Size + 8
+	snapVersion  = 2
+	snapHeadLen  = len(snapMagic) + 1 + 8 + 8 + sha256.Size + 8 + 8
 	sessionLen   = client.IDSize + 8 + 8 + 8 + 1 + 1 + 8 + 4
 	snapReadSize = 64 << 10
 )
 
-var errBadSnapshot = errors.New("replica: bad snapshot")
+var (
+	errBadSnapshot = errors.New("replica: bad snapshot")
+	ErrMaxSessions = errors.New("replica: MaxSessions differs from the snapshot")
+)
 
 type snapHead struct {
 	index, term uint64
 	hash        [sha256.Size]byte
+	limit       uint64
 	sessions    uint64
 }
 
@@ -41,7 +45,8 @@ func parseHead(b []byte) (snapHead, error) {
 	h := snapHead{
 		index:    binary.BigEndian.Uint64(b),
 		term:     binary.BigEndian.Uint64(b[8:]),
-		sessions: binary.BigEndian.Uint64(b[16+sha256.Size:]),
+		limit:    binary.BigEndian.Uint64(b[16+sha256.Size:]),
+		sessions: binary.BigEndian.Uint64(b[24+sha256.Size:]),
 	}
 	copy(h.hash[:], b[16:])
 	return h, nil
@@ -54,6 +59,7 @@ func (n *Node) writeSnapshot(w io.Writer) error {
 	b = binary.BigEndian.AppendUint64(b, n.applied)
 	b = binary.BigEndian.AppendUint64(b, n.appliedTerm)
 	b = append(b, n.hash[:]...)
+	b = binary.BigEndian.AppendUint64(b, uint64(n.cfg.MaxSessions)) //nolint:gosec // G115: Open refuses a MaxSessions below 1
 	b = binary.BigEndian.AppendUint64(b, uint64(len(n.sessions)))
 	for _, id := range slices.SortedFunc(maps.Keys(n.sessions), u128.Uint128.Cmp) {
 		s := n.sessions[id]
@@ -81,6 +87,9 @@ func (n *Node) load(r io.Reader) error {
 	head, err := parseHead(buf[:])
 	if err != nil {
 		return err
+	}
+	if head.limit != uint64(n.cfg.MaxSessions) { //nolint:gosec // G115: Open refuses a MaxSessions below 1
+		return fmt.Errorf("%w: the snapshot was written with %d, this node has %d", ErrMaxSessions, head.limit, n.cfg.MaxSessions)
 	}
 	sessions := make(map[u128.Uint128]*session)
 	var rec [sessionLen]byte

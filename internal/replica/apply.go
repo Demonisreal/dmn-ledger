@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
@@ -49,6 +50,13 @@ func wellFormed(req client.Request) bool {
 		return replyFits(req.Body, state.AccountSize)
 	case client.LookupTransfers:
 		return replyFits(req.Body, state.TransferSize)
+	case client.Prove:
+		return len(req.Body) == 1+8 && req.Body[0] == audit.KindBatch ||
+			len(req.Body) == 1+client.IDSize && req.Body[0] >= audit.KindAccount && req.Body[0] <= audit.KindExpiry
+	case client.Head:
+		return len(req.Body) == 0
+	case client.Links:
+		return len(req.Body) == 16 && binary.BigEndian.Uint64(req.Body) <= binary.BigEndian.Uint64(req.Body[8:])
 	}
 	return false
 }
@@ -162,15 +170,24 @@ func (n *Node) execute(r client.Reply, ts uint64, recs []byte) client.Reply {
 }
 
 func (n *Node) lookup(req client.Request) client.Reply {
-	ids := client.DecodeIDs(req.Body)
 	var body []byte
-	if req.Op == client.LookupAccounts {
-		for _, a := range n.sm.LookupAccounts(ids, nil) {
+	switch req.Op {
+	case client.LookupAccounts:
+		for _, a := range n.sm.LookupAccounts(client.DecodeIDs(req.Body), nil) {
 			body = state.AppendAccount(body, a)
 		}
-	} else {
-		for _, tr := range n.sm.LookupTransfers(ids, nil) {
+	case client.LookupTransfers:
+		for _, tr := range n.sm.LookupTransfers(client.DecodeIDs(req.Body), nil) {
 			body = state.AppendTransfer(body, tr)
+		}
+	case client.Prove:
+		body = n.prove(req.Body[0], req.Body[1:])
+	case client.Head:
+		body = audit.AppendHead(nil, n.sm.Head())
+	case client.Links:
+		from, to := binary.BigEndian.Uint64(req.Body), binary.BigEndian.Uint64(req.Body[8:])
+		for _, l := range n.sm.Links(from, from+min(to-from, client.MaxLinks), nil) {
+			body = audit.AppendLink(body, l)
 		}
 	}
 	return client.Reply{
@@ -182,4 +199,23 @@ func (n *Node) lookup(req client.Request) client.Reply {
 		Time:   n.sm.Last(),
 		Body:   body,
 	}
+}
+
+func (n *Node) prove(kind byte, key []byte) []byte {
+	var proof audit.Receipt
+	var found bool
+	switch kind {
+	case audit.KindBatch:
+		proof, found = n.sm.ProveBatch(binary.BigEndian.Uint64(key))
+	case audit.KindAccount:
+		proof, found = n.sm.ProveAccount(u128.FromBytes(key))
+	case audit.KindTransfer:
+		proof, found = n.sm.ProveTransfer(u128.FromBytes(key))
+	case audit.KindExpiry:
+		proof, found = n.sm.ProveExpiry(u128.FromBytes(key))
+	}
+	if !found {
+		return nil
+	}
+	return audit.AppendReceipt(nil, proof)
 }

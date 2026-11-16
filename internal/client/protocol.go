@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
@@ -12,6 +13,7 @@ const (
 	MaxBody     = 1 << 20
 	IDSize      = 16
 	FailureSize = 8
+	MaxLinks    = MaxBody / audit.LinkSize
 )
 
 type Op uint8
@@ -22,6 +24,9 @@ const (
 	CreateTransfers
 	LookupAccounts
 	LookupTransfers
+	Prove
+	Head
+	Links
 )
 
 var opNames = [...]string{
@@ -30,6 +35,9 @@ var opNames = [...]string{
 	CreateTransfers: "CreateTransfers",
 	LookupAccounts:  "LookupAccounts",
 	LookupTransfers: "LookupTransfers",
+	Prove:           "Prove",
+	Head:            "Head",
+	Links:           "Links",
 }
 
 func (op Op) String() string {
@@ -40,7 +48,7 @@ func (op Op) String() string {
 }
 
 func (op Op) Lookup() bool {
-	return op == LookupAccounts || op == LookupTransfers
+	return op >= LookupAccounts && op <= Links
 }
 
 type Status uint8

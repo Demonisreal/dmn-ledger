@@ -172,7 +172,7 @@ func TestEvictionEndsTheSession(t *testing.T) {
 
 func TestSubmitRejectsRegister(t *testing.T) {
 	s := registered(t)
-	for _, op := range []Op{0, Register, LookupTransfers + 1} {
+	for _, op := range []Op{0, Register, Links + 1} {
 		if err := s.Submit(op, nil); !errors.Is(err, ErrOp) {
 			t.Fatalf("submit %s: %v", op, err)
 		}

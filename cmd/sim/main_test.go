@@ -74,7 +74,7 @@ func TestHelpExitsZero(t *testing.T) {
 			t.Errorf("help does not name profile %s", p)
 		}
 	}
-	if !strings.Contains(errs.String(), "B1 to B18") {
+	if !strings.Contains(errs.String(), "B1 to B22") {
 		t.Errorf("help does not name the planted bugs: %q", errs.String())
 	}
 	if !strings.Contains(errs.String(), "rot, beyond and evict need 3 or 5") {

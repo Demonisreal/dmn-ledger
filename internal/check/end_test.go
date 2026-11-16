@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/sim"
@@ -100,6 +101,15 @@ func TestCheckComparesTheApplyHash(t *testing.T) {
 	w := checked(t)
 	w.hashes[w.c.Node(1).Status().Applied] = [sha256.Size]byte{1}
 	wantViolation(t, w.check(w.c), "S3", "with hash")
+}
+
+func TestCheckComparesTheHead(t *testing.T) {
+	w := checked(t)
+	st := w.c.Node(1).Status()
+	w.heads[st.Applied] = audit.Head{Seq: st.Head.Seq, Hash: audit.Hash{1}}
+	wantViolation(t, w.check(w.c), "S12", "with head")
+	w.heads[st.Applied] = audit.Head{Seq: st.Head.Seq - 1, Hash: st.Head.Hash}
+	wantViolation(t, w.check(w.c), "S12", "with head")
 }
 
 func TestCheckComparesTheTermOfEveryCommittedIndex(t *testing.T) {

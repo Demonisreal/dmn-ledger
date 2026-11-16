@@ -2,15 +2,18 @@ package sim
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"math/rand/v2"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
@@ -29,6 +32,7 @@ const (
 	thinkTicks    = 20
 	lookupOdds    = 5
 	cutLookups    = 2
+	readKinds     = 16
 	maxSessions   = 64
 	evictSessions = 2
 	drainTime     = second
@@ -370,6 +374,8 @@ type ledgerClient struct {
 	pause   int
 	call    int
 	batch   workload.Batch
+	wrote   uint64
+	held    u128.Uint128
 	err     error
 }
 
@@ -404,12 +410,7 @@ func (p *ledgerClient) submit() {
 		odds = cutLookups
 	}
 	if p.rng.IntN(odds) == 0 {
-		accounts, ids := c.gen.Lookup()
-		op = client.LookupTransfers
-		if accounts {
-			op = client.LookupAccounts
-		}
-		body = client.AppendIDs(nil, ids)
+		op, body = p.read()
 		p.batch = workload.Batch{}
 	} else {
 		p.batch = c.gen.Batch()
@@ -425,6 +426,40 @@ func (p *ledgerClient) submit() {
 	p.call = len(c.calls)
 	c.calls = append(c.calls, Call{Client: p.addr - c.Nodes(), ID: p.id, Session: p.session, Op: op, Body: body, Start: p.now()})
 	p.left--
+}
+
+func (p *ledgerClient) read() (client.Op, []byte) {
+	pick := p.rng.IntN(readKinds)
+	switch {
+	case pick == 0:
+		return client.Links, binary.BigEndian.AppendUint64(make([]byte, 8), math.MaxUint64)
+	case pick <= 2:
+		return client.Head, nil
+	case pick == 3 && p.wrote > 0:
+		return client.Prove, binary.BigEndian.AppendUint64([]byte{audit.KindBatch}, p.wrote)
+	}
+	accounts, ids := p.c.gen.Lookup()
+	if pick > 6 {
+		if accounts {
+			return client.LookupAccounts, client.AppendIDs(nil, ids)
+		}
+		return client.LookupTransfers, client.AppendIDs(nil, ids)
+	}
+	kind := byte(audit.KindAccount)
+	switch {
+	case !accounts && p.rng.IntN(3) == 0:
+		kind = audit.KindExpiry
+	case !accounts:
+		kind = audit.KindTransfer
+	}
+	var id u128.Uint128
+	switch {
+	case kind == audit.KindExpiry && !p.held.IsZero():
+		id = p.held
+	case len(ids) > 0:
+		id = ids[0]
+	}
+	return client.Prove, id.AppendBytes([]byte{kind})
 }
 
 func (p *ledgerClient) Receive(m Msg) {
@@ -448,6 +483,15 @@ func (p *ledgerClient) Receive(m Msg) {
 	p.c.open--
 	if r.Status == client.OK && !call.Op.Lookup() {
 		p.c.gen.Settle(p.batch, client.DecodeFailures(r.Body))
+		p.wrote = r.Time
+		if call.Op == client.CreateTransfers && p.held.IsZero() {
+			for rec := range slices.Chunk(p.batch.Body, state.TransferSize) {
+				if tr := state.DecodeTransfer(rec); tr.Flags&state.Pending != 0 && tr.Timeout > 0 {
+					p.held = tr.ID
+					break
+				}
+			}
+		}
 	}
 	switch {
 	case p.c.churn && (r.Status == client.SessionUnknown || p.rng.IntN(rejoinOdds) == 0):

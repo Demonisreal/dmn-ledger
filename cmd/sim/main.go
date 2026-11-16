@@ -41,7 +41,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.profile, "profile", string(sim.ProfileAll), "fault profile: "+strings.Join(profiles, ", "))
 	fs.Uint64Var(&o.nodes, "nodes", 0, "nodes per cluster: 1, 3 or 5, 0 takes 5 for every fifth seed and 3 otherwise; rot, beyond and evict need 3 or 5")
 	fs.BoolVar(&o.trace, "trace", false, "print the trace of -seed")
-	fs.StringVar(&o.bug, "bug", "", "planted bug B1 to B18, needs a build with -tags simbug")
+	fs.StringVar(&o.bug, "bug", "", "planted bug B1 to B22, needs a build with -tags simbug")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0

@@ -142,9 +142,9 @@ func (w *watch) served(sh *shadow, reads []int, until uint64) ([]int, error) {
 		call := &calls[i]
 		switch {
 		case call.Reply.Time != sh.ledger.Last():
-			return nil, w.fail("S11", 0, "c%d call %d (%s) was read at time %d, no prefix of the log ends with the ledger at that time", call.Client, i, call.Op, call.Reply.Time)
-		case !bytes.Equal(lookup(sh.ledger, call), call.Reply.Body):
-			return nil, w.fail("S11", 0, "c%d call %d (%s at %d) does not show what the log holds at that time", call.Client, i, call.Op, call.Reply.Time)
+			return nil, w.fail(readCheck(call.Op), 0, "c%d call %d (%s) was read at time %d, no prefix of the log ends with the ledger at that time", call.Client, i, call.Op, call.Reply.Time)
+		case !shows(sh.ledger, call):
+			return nil, w.fail(readCheck(call.Op), 0, "c%d call %d (%s at %d) does not show what the log holds at that time", call.Client, i, call.Op, call.Reply.Time)
 		}
 		reads = reads[1:]
 	}
@@ -199,15 +199,18 @@ func (w *watch) stale() error {
 			continue
 		}
 		seen := calls[newest]
-		return w.fail("S11", 0, "c%d call %d (%s) began at %d and shows time %d, c%d call %d (%s) had ended at %d with time %d", call.Client, i, call.Op, call.Start, call.Reply.Time, seen.Client, newest, seen.Op, seen.End, seen.Reply.Time)
+		return w.fail(readCheck(call.Op), 0, "c%d call %d (%s) began at %d and shows time %d, c%d call %d (%s) had ended at %d with time %d", call.Client, i, call.Op, call.Start, call.Reply.Time, seen.Client, newest, seen.Op, seen.End, seen.Reply.Time)
 	}
 	return nil
 }
 
 func (w *watch) agrees(sh *shadow, nodes []*replica.Node) error {
-	want := sh.ledger.Digest()
+	head, want := headOf(sh.ledger), sh.ledger.Digest()
 	for k, n := range nodes {
 		id := uint64(k) + 1
+		if h := n.Status().Head; h != head {
+			return w.fail("S12", id, "head %d %x, the log gives %d %x", h.Seq, h.Hash[:4], head.Seq, head.Hash[:4])
+		}
 		if d := n.LedgerDigest(); d != want {
 			return w.fail("S11", id, "ledger digest %x, the log gives %x", d[:4], want[:4])
 		}

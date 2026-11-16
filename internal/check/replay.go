@@ -3,17 +3,21 @@ package check
 import (
 	"bytes"
 	"cmp"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 
 	"github.com/anishathalye/porcupine"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/oracle"
 	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/sim"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
+	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
 type Replayer struct {
@@ -72,10 +76,14 @@ func (r *Replayer) Window(calls []sim.Call) error {
 	for i := range calls {
 		ops = append(ops, porcupine.Operation{Input: &calls[i], Call: int64(calls[i].Start), Return: int64(calls[i].End)}) //nolint:gosec // G115: virtual time stays far below 2^63
 	}
-	if !porcupine.CheckOperations(model(start, r.timed), ops) {
-		return breach("S9", "window %d with calls %d to %d is not linearizable", k, first, first+len(calls)-1)
+	if porcupine.CheckOperations(model(start, r.timed), ops) {
+		return nil
 	}
-	return nil
+	plain := slices.DeleteFunc(slices.Clone(ops), func(o porcupine.Operation) bool { return trail(o.Input.(*sim.Call).Op) })
+	if len(plain) < len(ops) && porcupine.CheckOperations(model(start, r.timed), plain) {
+		return breach("S13", "window %d with calls %d to %d is not linearizable with its proofs, heads and links", k, first, first+len(calls)-1)
+	}
+	return breach("S9", "window %d with calls %d to %d is not linearizable", k, first, first+len(calls)-1)
 }
 
 func breach(check, format string, args ...any) error {
@@ -111,14 +119,17 @@ func (w *watch) replay(n *replica.Node) error {
 			late = v
 		}
 		if r.spent {
-			return w.fail("S9", 0, "%s", late.Reason)
+			return w.fail(late.Check, 0, "%s", late.Reason)
 		}
+	}
+	if h, want := n.Status().Head, headOf(r.Ledger()); h != want {
+		return w.fail("S12", 1, "head %d %x, the oracle has %d %x", h.Seq, h.Hash[:4], want.Seq, want.Hash[:4])
 	}
 	if d, want := n.LedgerDigest(), r.Ledger().Digest(); d != want {
 		return w.fail("S8", 1, "ledger digest %x, the oracle has %x", d[:4], want[:4])
 	}
 	if late != nil {
-		return w.fail("S9", 0, "%s", late.Reason)
+		return w.fail(late.Check, 0, "%s", late.Reason)
 	}
 	return nil
 }
@@ -129,7 +140,7 @@ func model(start *oracle.Ledger, timed bool) porcupine.Model {
 		Step: func(st, in, _ any) (bool, any) {
 			l, call := st.(*oracle.Ledger), in.(*sim.Call)
 			if call.Op.Lookup() {
-				return (!timed && call.Reply.Time == 0 || call.Reply.Time == l.Last()) && bytes.Equal(lookup(l, call), call.Reply.Body), l
+				return (!timed && call.Reply.Time == 0 || call.Reply.Time == l.Last()) && shows(l, call), l
 			}
 			if call.Reply.Time <= l.Last() {
 				return false, l
@@ -141,6 +152,82 @@ func model(start *oracle.Ledger, timed bool) porcupine.Model {
 		Equal: func(a, b any) bool { return a.(*oracle.Ledger).Last() == b.(*oracle.Ledger).Last() },
 		Hash:  func(st any) uint64 { return st.(*oracle.Ledger).Last() },
 	}
+}
+
+func trail(op client.Op) bool {
+	return op == client.Prove || op == client.Head || op == client.Links
+}
+
+func readCheck(op client.Op) string {
+	if trail(op) {
+		return "S13"
+	}
+	return "S11"
+}
+
+func shows(l *oracle.Ledger, call *sim.Call) bool {
+	if trail(call.Op) {
+		return proven(l, call)
+	}
+	return bytes.Equal(lookup(l, call), call.Reply.Body)
+}
+
+func headOf(l *oracle.Ledger) audit.Head {
+	return audit.Head{Seq: uint64(l.Links()), Hash: l.Head()} //nolint:gosec // G115: a count of links
+}
+
+func proven(l *oracle.Ledger, call *sim.Call) bool {
+	body := call.Reply.Body
+	switch call.Op {
+	case client.Head:
+		return bytes.Equal(body, audit.AppendHead(nil, headOf(l)))
+	case client.Links:
+		from, to := binary.BigEndian.Uint64(call.Body), binary.BigEndian.Uint64(call.Body[8:])
+		end := max(min(from+min(to-from, client.MaxLinks), headOf(l).Seq), from)
+		if uint64(len(body)) != (end-from)*audit.LinkSize {
+			return false
+		}
+		for seq := from + 1; seq <= end; seq++ {
+			if !bytes.Equal(body[:audit.LinkSize], l.Link(int(seq))) { //nolint:gosec // G115: at most the number of links
+				return false
+			}
+			body = body[audit.LinkSize:]
+		}
+		return true
+	}
+	kind, key := call.Body[0], call.Body[1:]
+	var record []byte
+	var seq int
+	switch kind {
+	case audit.KindBatch:
+		at := binary.BigEndian.Uint64(key)
+		seq = sort.Search(l.Links(), func(i int) bool { return audit.DecodeLink(l.Link(i+1)).Time >= at }) + 1
+		if seq > l.Links() || audit.DecodeLink(l.Link(seq)).Time != at {
+			seq = 0
+		}
+	case audit.KindAccount:
+		for _, a := range l.LookupAccounts(client.DecodeIDs(key)) {
+			a.DebitsPending, a.DebitsPosted, a.CreditsPending, a.CreditsPosted = u128.Uint128{}, u128.Uint128{}, u128.Uint128{}, u128.Uint128{}
+			record = state.AppendAccount(nil, a)
+		}
+	case audit.KindTransfer, audit.KindExpiry:
+		for _, tr := range l.LookupTransfers(client.DecodeIDs(key)) {
+			if kind == audit.KindTransfer || l.Expired(tr.ID) {
+				record = state.AppendTransfer(nil, tr)
+			}
+		}
+	}
+	if record == nil && seq == 0 {
+		return len(body) == 0
+	}
+	proof, h, rest, err := audit.Decode(body)
+	switch {
+	case err != nil || len(rest) > 0 || proof.Kind != kind || h.Seq > headOf(l).Seq || h.Hash != l.HeadAt(int(h.Seq)): //nolint:gosec // G115: at most the number of links
+		return false
+	case kind == audit.KindBatch:
+		return h.Seq == uint64(seq)
+	}
+	return bytes.Equal(proof.Record, record)
 }
 
 func lookup(l *oracle.Ledger, call *sim.Call) []byte {

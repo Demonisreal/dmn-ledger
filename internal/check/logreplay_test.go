@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/oracle"
@@ -387,6 +388,10 @@ func asked(call *sim.Call) request {
 	return request{client: call.ID, session: call.Session, number: call.Reply.Number}
 }
 
+func looked(c sim.Call) bool {
+	return c.Op == client.LookupAccounts || c.Op == client.LookupTransfers
+}
+
 func TestReplayLogFindsWhatDiffers(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -423,9 +428,6 @@ func TestReplayLogFindsWhatDiffers(t *testing.T) {
 			spare.number += 1000
 			sh.ran[spare] = sh.ran[asked(call)]
 		}, "the clients sent"},
-		{"execution the nodes do not have", func(_ *sim.Call, sh *shadow) {
-			_, _ = sh.ledger.Apply(state.CreateAccounts, 0, nil)
-		}, "ledger digest"},
 		{"session the log does not leave", func(_ *sim.Call, sh *shadow) {
 			sh.sessions = sh.sessions[1:]
 		}, "sessions, the log leaves"},
@@ -451,6 +453,21 @@ func TestReplayLogFindsWhatDiffers(t *testing.T) {
 			wantViolation(t, err, "S11", tc.reason)
 		})
 	}
+}
+
+func TestReplayLogComparesTheHead(t *testing.T) {
+	w, nodes := replayed(t)
+	sh, err := w.shadow(nodes[0].Status().Applied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.agrees(sh, nodes); err != nil {
+		t.Fatalf("a clean run: %v", err)
+	}
+	if _, err := sh.ledger.Apply(state.CreateAccounts, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	wantViolation(t, w.agrees(sh, nodes), "S12", "the log gives")
 }
 
 func TestReplayLogNeedsEveryCommittedEntry(t *testing.T) {
@@ -500,12 +517,57 @@ func TestReplayLogChecksReads(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w, nodes := replayed(t)
 			calls := w.c.Calls()
-			k := slices.IndexFunc(calls, func(c sim.Call) bool { return c.Op.Lookup() && len(c.Reply.Body) > 0 })
+			k := slices.IndexFunc(calls, func(c sim.Call) bool { return looked(c) && len(c.Reply.Body) > 0 })
 			if k < 0 {
 				t.Fatal("no read that found something")
 			}
 			tc.tamper(&calls[k])
 			wantViolation(t, w.replayLog(nodes), "S11", tc.reason)
+		})
+	}
+}
+
+func TestReplayLogChecksProofs(t *testing.T) {
+	found := func(c sim.Call) bool { return c.Op == client.Prove && len(c.Reply.Body) > 0 }
+	cases := []struct {
+		name   string
+		pick   func(c sim.Call) bool
+		tamper func(read *sim.Call, calls []sim.Call)
+		reason string
+	}{
+		{"receipt with another byte", found, func(read *sim.Call, _ []sim.Call) {
+			read.Reply.Body[len(read.Reply.Body)-1]++
+		}, "does not show"},
+		{"receipt dropped", found, func(read *sim.Call, _ []sim.Call) {
+			read.Reply.Body = nil
+		}, "does not show"},
+		{"receipt for nothing", func(c sim.Call) bool { return c.Op == client.Prove && len(c.Reply.Body) == 0 }, func(read *sim.Call, calls []sim.Call) {
+			read.Reply.Body = calls[slices.IndexFunc(calls, found)].Reply.Body
+		}, "does not show"},
+		{"head one ahead", func(c sim.Call) bool { return c.Op == client.Head }, func(read *sim.Call, _ []sim.Call) {
+			read.Reply.Body[9]++
+		}, "does not show"},
+		{"one link short", func(c sim.Call) bool { return c.Op == client.Links && len(c.Reply.Body) > 0 }, func(read *sim.Call, _ []sim.Call) {
+			read.Reply.Body = read.Reply.Body[:len(read.Reply.Body)-audit.LinkSize]
+		}, "does not show"},
+		{"proof at a time between two batches", found, func(read *sim.Call, _ []sim.Call) {
+			read.Reply.Time = 1
+		}, "no prefix of the log"},
+		{"head of the empty ledger after a write had ended", func(c sim.Call) bool { return c.Op == client.Head && c.Reply.Time > 0 }, func(read *sim.Call, _ []sim.Call) {
+			read.Reply.Time, read.Reply.Body = 0, audit.AppendHead(nil, audit.Head{})
+		}, "had ended"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, nodes := replayed(t)
+			calls := w.c.Calls()
+			k := slices.IndexFunc(calls, tc.pick)
+			if k < 0 {
+				t.Fatal("no such read in the run")
+			}
+			calls[k].Reply.Body = slices.Clone(calls[k].Reply.Body)
+			tc.tamper(&calls[k], calls)
+			wantViolation(t, w.replayLog(nodes), "S13", tc.reason)
 		})
 	}
 }
@@ -578,7 +640,7 @@ func TestReplayLogFindsAStaleRead(t *testing.T) {
 			calls := w.c.Calls()
 			write := slices.IndexFunc(calls, func(c sim.Call) bool { return !c.Op.Lookup() })
 			spare := write + 1 + slices.IndexFunc(calls[write+1:], func(c sim.Call) bool { return !c.Op.Lookup() && c.End > calls[write].End })
-			read := slices.IndexFunc(calls, func(c sim.Call) bool { return c.Op.Lookup() && c.Start > calls[spare].End })
+			read := slices.IndexFunc(calls, func(c sim.Call) bool { return looked(c) && c.Start > calls[spare].End })
 			if write < 0 || spare == write || read < spare {
 				t.Fatal("no read that began after two writes had ended")
 			}
@@ -693,7 +755,7 @@ func TestBeyondChecksTheAnswers(t *testing.T) {
 				case call.Reply.Status != client.OK:
 				case !call.Op.Lookup() && write < 0:
 					write = i
-				case call.Op.Lookup() && len(call.Reply.Body) > 0:
+				case looked(call) && len(call.Reply.Body) > 0:
 					read = i
 				}
 			}

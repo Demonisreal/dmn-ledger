@@ -62,7 +62,7 @@ func (s *Session) Submit(op Op, body []byte) error {
 		return ErrEvicted
 	case s.inflight:
 		return ErrInFlight
-	case op <= Register || op > LookupTransfers:
+	case op <= Register || op > Links:
 		return ErrOp
 	}
 	s.number++
