@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -84,6 +85,11 @@ func TestReportIsDeterministic(t *testing.T) {
 	if i := slices.IndexFunc(runs, func(r *run) bool { return r.f.ID == profiled }); len(runs) != len(testPlan()) || i < 0 || len(runs[i].traces) != 1 {
 		t.Fatalf("%d runs read, the profile not found", len(runs))
 	}
+	for _, r := range runs {
+		if why := refusals(r.f); len(why) > 0 {
+			t.Errorf("%s refused: %q", r.name, why)
+		}
+	}
 	out := render(runs)
 	entries, err := os.ReadDir(planDir)
 	if err != nil {
@@ -159,8 +165,8 @@ func TestMedianAndRange(t *testing.T) {
 	}
 	row := fixedRow(gs[0])
 	want := plainMillis(p50(2)) + " (" + plainMillis(p50(0)) + "–" + plainMillis(p50(1)) + ")"
-	if row[7] != "3 of 4" || row[8] != want {
-		t.Errorf("row shows %q runs and p50 %q, want 3 of 4 and %q", row[7], row[8], want)
+	if row[7] != "3 of 4" || row[9] != want {
+		t.Errorf("row shows %q runs and p50 %q, want 3 of 4 and %q", row[7], row[9], want)
 	}
 }
 
@@ -235,8 +241,38 @@ func TestAtLeast(t *testing.T) {
 	}
 	limited := postgres("m2", "V3", 4, 20000).with(func(p *plan) { p.saturated, p.late, p.booked = true, true, 9000 })
 	g := groups([]*run{{name: "b.json", f: limited.file(t)}})[0]
-	if row := fixedRow(g); !strings.HasPrefix(row[12], "at least ") || row[4] != "saturated at 20,000" {
-		t.Errorf("generator at its limit: held %q, throughput %q", row[4], row[12])
+	if row := fixedRow(g); !strings.HasPrefix(row[13], "at least ") || row[4] != "saturated at 20,000" {
+		t.Errorf("generator at its limit: held %q, throughput %q", row[4], row[13])
+	}
+}
+
+func TestResultsShowWhatIsLeftOut(t *testing.T) {
+	out := string(render(planRuns(t))[Results])
+	m2 := out[strings.Index(out, "## Fixed load (m2)"):]
+	m2 = m2[:strings.Index(m2[3:], "\n## ")+3]
+	for _, want := range []string{
+		"| runs | seconds | p50 ms |",
+		"| throughput/s | target cpu | fsync per transfer, all nodes |",
+		"| three nodes | 32 | uniform-10k | 2,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 5 of 6, worst excluded p99 ",
+		"| 10.0% (10.0%–10.0%) |",
+		"Each node on its own:",
+		"| three nodes | 32 | uniform-10k | 2,000 | slow | 2 |",
+	} {
+		if !strings.Contains(m2, want) {
+			t.Errorf("fixed load lacks %q", want)
+		}
+	}
+	if strings.Contains(m2, "A second counts as fast") {
+		t.Error("the note on fast seconds stands under a table without a fast row")
+	}
+	stages := out[strings.Index(out, "## Stages (m1)"):strings.Index(out, "## Fixed load (m2)")]
+	for _, want := range []string{"A second counts as fast", "| runs | seconds | p50 ms |", "| target cpu | fsync per transfer, all nodes |"} {
+		if !strings.Contains(stages, want) {
+			t.Errorf("stages lack %q", want)
+		}
+	}
+	if runs := out[strings.Index(out, "## Runs"):]; !strings.Contains(runs, "| seconds |") || !strings.Contains(runs, "| 2 of 3, worst excluded p99 ") {
+		t.Error("the table of runs does not say how many window seconds each run counted")
 	}
 }
 
@@ -264,7 +300,7 @@ func checked(t *testing.T, plans []plan, edit func([]*run), tamper func(fstest.M
 	if edit != nil {
 		edit(runs)
 	}
-	written := fstest.MapFS{}
+	written := fstest.MapFS{PlanFile: {Data: planOf(t, plans)}}
 	for n, b := range render(runs) {
 		written[n] = &fstest.MapFile{Data: b}
 	}
@@ -272,6 +308,31 @@ func checked(t *testing.T, plans []plan, edit func([]*run), tamper func(fstest.M
 		tamper(written)
 	}
 	return check(runs, written)
+}
+
+func planOf(t *testing.T, plans []plan) []byte {
+	var p Planned
+	for _, pl := range plans {
+		e := Expect{Measurement: pl.m, Kind: pl.kind, Nodes: pl.nodes, Variant: pl.variant, Lanes: pl.lanes, Workload: pl.workload,
+			Rate: pl.rate, Passes: pl.pass, Env: pl.env, Tags: pl.tags}
+		if pl.m == "m1" {
+			e.Rate = 0
+		}
+		i := slices.IndexFunc(p.Expect, func(x Expect) bool {
+			x.Passes = e.Passes
+			return reflect.DeepEqual(x, e)
+		})
+		if i < 0 {
+			p.Expect = append(p.Expect, e)
+			continue
+		}
+		p.Expect[i].Passes = max(p.Expect[i].Passes, pl.pass)
+	}
+	var buf bytes.Buffer
+	if err := WritePlan(&buf, p); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func failed(vs []Verdict) []string {
@@ -311,6 +372,30 @@ func TestCheckRefuses(t *testing.T) {
 			w[Results] = &fstest.MapFile{Data: []byte(text)}
 		}, WhyStale + ": line"},
 		{"missing", good, nil, func(w fstest.MapFS) { delete(w, Results) }, WhyMissing},
+		{"not verified", good, func(rs []*run) { rs[0].f.Books.Verified = false }, nil, "valid but not verified"},
+		{"term", good, func(rs []*run) { rs[1].f.Seconds[2].Parts[0].Term = 3 }, nil, "valid with a new term in the window"},
+		{"term in the first second of the drain", good, func(rs []*run) {
+			f := rs[1].f
+			f.Seconds = append(f.Seconds, f.Seconds[len(f.Seconds)-1])
+			f.Seconds[len(f.Seconds)-1].Phase = "drain"
+			f.Seconds[len(f.Seconds)-1].Parts = []raw.Part{{Name: "n1", Term: 3}}
+		}, nil, "valid with a new term in the window"},
+		{"existed", good, func(rs []*run) { rs[1].f.Books.Existed = 4 }, nil, "4 transfers existed already"},
+		{"stalls allowed", good, func(rs []*run) { rs[0].f.AllowStalls = true }, nil, "stalls allowed outside m4 and m7"},
+		{"stalled second in a valid run", good, func(rs []*run) { rs[0].f.Seconds[2].Valid, rs[0].f.Seconds[2].Why = false, []string{raw.WhyStale} }, nil, "second 2 stalled and the run is valid"},
+		{"no plan", good, nil, func(w fstest.MapFS) { delete(w, PlanFile) }, PlanFile + ": " + WhyMissing},
+		{"pass missing", good, func(rs []*run) { rs[1].f.Pass = 3 }, nil, "m2 one node, 32 lanes, uniform-10k at 2,000/s: missing: no run in pass 2"},
+		{"measurement missing", good, nil, func(w fstest.MapFS) {
+			w[PlanFile] = &fstest.MapFile{Data: planOf(t, append(slices.Clone(good), ledger("m2", 3, 32, "uniform-10k", 2000)))}
+		}, "m2 three nodes, 32 lanes, uniform-10k at 2,000/s: missing: no run in pass 1"},
+		{"not planned", append(slices.Clone(good), ledger("m2", 3, 32, "uniform-10k", 2000)), nil, func(w fstest.MapFS) {
+			w[PlanFile] = &fstest.MapFile{Data: planOf(t, good)}
+		}, "m2 three nodes, 32 lanes, uniform-10k at 2,000/s: not in plan.json"},
+		{"band p50", good, func(rs []*run) { rs[0].f.Bands.Slow.P50 -= time.Millisecond }, nil, WhyBand + ": slow p50"},
+		{"band p99", good, func(rs []*run) { rs[0].f.Bands.Slow.P99 /= 2 }, nil, WhyBand + ": slow p99"},
+		{"band throughput", good, func(rs []*run) { rs[1].f.Bands.Slow.Throughput *= 1.05 }, nil, WhyBand + ": slow throughput"},
+		{"band fsync", good, func(rs []*run) { rs[1].f.Bands.Slow.Syncs *= 0.9 }, nil, WhyBand + ": slow fsync per transfer"},
+		{"band histogram", good, func(rs []*run) { rs[0].f.Bands.Slow.Histogram.Buckets = rs[0].f.Bands.Slow.Histogram.Buckets[1:] }, nil, WhyBand + ": slow histogram"},
 	} {
 		f := failed(checked(t, c.plans, c.edit, c.tamper))
 		if !slices.ContainsFunc(f, func(s string) bool { return strings.Contains(s, c.want) }) {
@@ -326,6 +411,9 @@ func TestCheckRefuses(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "raw", p.id()+".json"), encode(t, p.file(t)), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, PlanFile), planOf(t, good), 0o644); err != nil { //nolint:gosec // G703: a folder of the test
+		t.Fatal(err)
 	}
 	if _, err := Check(dir); err == nil {
 		t.Fatal("no RESULTS.md, and Check passed")

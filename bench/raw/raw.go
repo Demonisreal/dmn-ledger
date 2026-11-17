@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/Demonisreal/dmn-ledger/bench/control"
+	"github.com/Demonisreal/dmn-ledger/bench/load"
 )
 
-const Schema = 1
+const Schema = 2
 
 var ErrSchema = errors.New("raw: unknown schema")
 
@@ -59,6 +60,7 @@ type Head struct {
 	Load        Load               `json:"load"`
 	Probe       control.Probe      `json:"probe"`
 	Thresholds  control.Thresholds `json:"thresholds"`
+	AllowStalls bool               `json:"allow_stalls"`
 }
 
 type CPU struct {
@@ -75,6 +77,7 @@ type Part struct {
 	SyncTime time.Duration     `json:"sync_ns"`
 	Requests uint64            `json:"requests"`
 	Counters map[string]uint64 `json:"counters"`
+	Stale    bool              `json:"stale"`
 }
 
 type Second struct {
@@ -143,22 +146,26 @@ type Verdict struct {
 	Throughput     float64       `json:"throughput"`
 	LateP99        time.Duration `json:"late_p99_ns"`
 	GeneratorShare float64       `json:"generator_share"`
+	TargetShare    float64       `json:"target_share"`
+	Excluded       int           `json:"excluded_seconds"`
+	ExcludedP99    time.Duration `json:"excluded_p99_ns"`
 	Reasons        []string      `json:"reasons"`
 	Problems       []string      `json:"problems"`
 }
 
 type Books struct {
-	Confirmed      uint64 `json:"confirmed"`
-	Existed        uint64 `json:"existed"`
-	Posted         uint64 `json:"posted"`
-	Pending        uint64 `json:"pending"`
-	Sampled        int    `json:"sampled"`
-	Verified       bool   `json:"verified"`
-	Found          int    `json:"found"`
-	DebitsPosted   uint64 `json:"debits_posted"`
-	CreditsPosted  uint64 `json:"credits_posted"`
-	DebitsPending  uint64 `json:"debits_pending"`
-	CreditsPending uint64 `json:"credits_pending"`
+	Confirmed      uint64      `json:"confirmed"`
+	Existed        uint64      `json:"existed"`
+	Posted         uint64      `json:"posted"`
+	Pending        uint64      `json:"pending"`
+	Unsure         load.Unsure `json:"unsure"`
+	Sampled        int         `json:"sampled"`
+	Verified       bool        `json:"verified"`
+	Found          int         `json:"found"`
+	DebitsPosted   uint64      `json:"debits_posted"`
+	CreditsPosted  uint64      `json:"credits_posted"`
+	DebitsPending  uint64      `json:"debits_pending"`
+	CreditsPending uint64      `json:"credits_pending"`
 }
 
 type File struct {

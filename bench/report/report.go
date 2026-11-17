@@ -218,6 +218,7 @@ func bandOf(f *raw.File, speed control.Speed) raw.Band {
 type fig struct {
 	p50, p99, p999, flushes, flush     float64
 	throughput, syncs, perRequest      float64
+	targetShare                        float64
 	retries, reserveP50, reserveP99    float64
 	saturated, generator, reserveKnown bool
 }
@@ -238,7 +239,7 @@ func figOf(f *raw.File, speed control.Speed) fig {
 	b := bandOf(f, speed)
 	x := fig{
 		p50: nanos(b.P50), p99: nanos(b.P99), p999: nanos(b.P999), flushes: b.P50Flushes, flush: float64(b.Flush),
-		throughput: b.Throughput, syncs: b.Syncs, perRequest: b.PerRequest,
+		throughput: b.Throughput, syncs: b.Syncs, perRequest: b.PerRequest, targetShare: f.Verdict.TargetShare,
 		reserveP50: nanos(b.ReserveP50), reserveP99: nanos(b.ReserveP99), reserveKnown: b.Reserve != nil,
 		saturated: f.Verdict.Saturated, generator: f.Verdict.Limit == raw.LimitGenerator,
 	}

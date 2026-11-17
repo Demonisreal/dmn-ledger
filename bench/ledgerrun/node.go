@@ -3,6 +3,7 @@ package ledgerrun
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,13 +21,17 @@ import (
 var statsFields = []string{"up", "rounds", "wait", "process", "slowest", "logsync", "logsync_ns", "metasync", "metasync_ns", "othersync", "othersync_ns", "written"}
 
 type node struct {
-	id     int
-	addr   string
-	log    string
-	cmd    *exec.Cmd
-	stats  *statsLog
-	exited chan struct{}
-	err    error
+	id      int
+	addr    string
+	log     string
+	env     []string
+	cores   string
+	cmd     *exec.Cmd
+	stats   *statsLog
+	exited  chan struct{}
+	stopped bool
+	status  ledger.NodeStatus
+	err     error
 }
 
 type statsLog struct {
@@ -41,17 +46,17 @@ func (n *node) name() string {
 	return "n" + strconv.Itoa(n.id)
 }
 
-func (n *node) start(bin string, env []string, cores string) error {
+func (n *node) start(bin string) error {
 	logf, err := os.OpenFile(filepath.Clean(n.log), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
 	cmd := exec.Command(bin) //nolint:gosec // G204: the ledgerd that Build made
-	if cores != "" {
-		cmd = exec.Command("taskset", "-c", cores, bin) //nolint:gosec // G204: the ledgerd that Build made, on the cores of its node
+	if n.cores != "" {
+		cmd = exec.Command("taskset", "-c", n.cores, bin) //nolint:gosec // G204: the ledgerd that Build made, on the cores of its node
 	}
 	n.stats = &statsLog{file: logf, fresh: make(chan struct{})}
-	cmd.Env = env
+	cmd.Env = n.env
 	cmd.Stderr = n.stats
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if err := cmd.Start(); err != nil {
@@ -89,6 +94,29 @@ func (n *node) stop() error {
 	return fmt.Errorf("%w: %s still ran %v after SIGTERM and was killed", ErrNode, n.name(), stopWithin)
 }
 
+func (n *node) ready(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, readyWithin)
+	defer cancel()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		asked, done := context.WithTimeout(ctx, sampleWithin)
+		st, err := ledger.Status(asked, cluster, n.addr)
+		done()
+		if err == nil && st.Leader != 0 {
+			n.status = st
+			return nil
+		}
+		select {
+		case <-n.exited:
+			return n.failure("ended while starting")
+		case <-ctx.Done():
+			return fmt.Errorf("%w that %s knows of: %w", ErrNoLeader, n.name(), errors.Join(context.Cause(ctx), err))
+		case <-tick.C:
+		}
+	}
+}
+
 func (n *node) failure(what string) error {
 	return fmt.Errorf("%w: %s %s (%v), its log ends with:\n%s", ErrNode, n.name(), what, n.err, tail(n.log, 10))
 }
@@ -98,10 +126,15 @@ func (n *node) sample(ctx context.Context) (load.Part, error) {
 	if err := n.cmd.Process.Signal(syscall.SIGUSR1); err != nil {
 		return load.Part{}, fmt.Errorf("%w: %s: %w", ErrNode, n.name(), err)
 	}
-	st, err := ledger.Status(ctx, cluster, n.addr)
-	if err != nil {
-		return load.Part{}, fmt.Errorf("%w: status of %s: %w", ErrNode, n.name(), err)
+	type answer struct {
+		st  ledger.NodeStatus
+		err error
 	}
+	asked := make(chan answer, 1)
+	go func() {
+		st, err := ledger.Status(ctx, cluster, n.addr)
+		asked <- answer{st, err}
+	}()
 	select {
 	case <-fresh:
 	case <-n.exited:
@@ -113,6 +146,11 @@ func (n *node) sample(ctx context.Context) (load.Part, error) {
 	if err != nil {
 		return load.Part{}, fmt.Errorf("%s: %w", n.name(), err)
 	}
+	a := <-asked
+	if a.err == nil {
+		n.status = a.st
+	}
+	st := n.status
 	fields["applied"] = st.Applied
 	p := load.Part{
 		Name:     n.name(),
@@ -121,6 +159,7 @@ func (n *node) sample(ctx context.Context) (load.Part, error) {
 		Syncs:    fields["logsync"] + fields["metasync"] + fields["othersync"],
 		SyncTime: time.Duration(fields["logsync_ns"] + fields["metasync_ns"] + fields["othersync_ns"]), //nolint:gosec // G115: nanoseconds since the node started
 		Counters: fields,
+		Stale:    a.err != nil,
 	}
 	if st.Role == ledger.Leader {
 		p.Requests = st.Applied

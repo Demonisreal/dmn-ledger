@@ -30,6 +30,7 @@ type Part struct {
 	SyncTime time.Duration
 	Requests uint64
 	Counters map[string]uint64
+	Stale    bool
 }
 
 type Books struct {
@@ -37,7 +38,61 @@ type Books struct {
 	Existed   uint64
 	Posted    uint64
 	Pending   uint64
+	Unsure    Unsure
 	Sample    []ledger.Uint128
+}
+
+type Doubt struct {
+	Calls  uint64 `json:"calls"`
+	Amount uint64 `json:"amount"`
+}
+
+type Unsure struct {
+	Single  Doubt `json:"single"`
+	Reserve Doubt `json:"reserve"`
+	Post    Doubt `json:"post"`
+	Void    Doubt `json:"void"`
+}
+
+func (u Unsure) Calls() uint64 {
+	return u.Single.Calls + u.Reserve.Calls + u.Post.Calls + u.Void.Calls
+}
+
+func (u *Unsure) add(op Op) {
+	d := &u.Single
+	switch op.Kind {
+	case Reserve:
+		d = &u.Reserve
+	case Post:
+		d = &u.Post
+	case Void:
+		d = &u.Void
+	}
+	d.Calls++
+	d.Amount += op.Amount
+}
+
+func (b *Books) Count(op Op, out Outcome, err error) {
+	if err != nil {
+		b.Unsure.add(op)
+		return
+	}
+	b.Confirmed++
+	if out.Existed {
+		b.Existed++
+		return
+	}
+	switch op.Kind {
+	case Single:
+		b.Posted += op.Amount
+	case Reserve:
+		b.Pending += op.Amount
+	case Post:
+		b.Pending -= op.Amount
+		b.Posted += op.Amount
+	case Void:
+		b.Pending -= op.Amount
+	}
 }
 
 type Tally struct {

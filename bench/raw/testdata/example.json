@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "id": "m2-l1-twophase-20-1",
   "measurement": "m2",
   "pass": 1,
@@ -94,6 +94,7 @@
     "slow_ns": 1000000,
     "min_flushes": 20
   },
+  "allow_stalls": false,
   "before": [
     {
       "name": "n1",
@@ -106,7 +107,8 @@
         "logsync": 0,
         "metasync": 0,
         "rounds": 0
-      }
+      },
+      "stale": false
     }
   ],
   "seconds": [
@@ -154,7 +156,8 @@
             "logsync": 5,
             "metasync": 5,
             "rounds": 10
-          }
+          },
+          "stale": false
         }
       ]
     },
@@ -202,7 +205,8 @@
             "logsync": 10,
             "metasync": 10,
             "rounds": 20
-          }
+          },
+          "stale": false
         }
       ]
     },
@@ -248,7 +252,8 @@
             "logsync": 15,
             "metasync": 15,
             "rounds": 30
-          }
+          },
+          "stale": false
         }
       ]
     },
@@ -294,7 +299,8 @@
             "logsync": 20,
             "metasync": 20,
             "rounds": 40
-          }
+          },
+          "stale": false
         }
       ]
     }
@@ -372,6 +378,9 @@
     "throughput": 40,
     "late_p99_ns": 1000,
     "generator_share": 0.0025,
+    "target_share": 0.02,
+    "excluded_seconds": 1,
+    "excluded_p99_ns": 6016000,
     "reasons": null,
     "problems": null
   },
@@ -380,6 +389,24 @@
     "existed": 0,
     "posted": 3513,
     "pending": 0,
+    "unsure": {
+      "single": {
+        "calls": 0,
+        "amount": 0
+      },
+      "reserve": {
+        "calls": 0,
+        "amount": 0
+      },
+      "post": {
+        "calls": 0,
+        "amount": 0
+      },
+      "void": {
+        "calls": 0,
+        "amount": 0
+      }
+    },
     "sampled": 80,
     "verified": true,
     "found": 80,

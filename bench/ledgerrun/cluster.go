@@ -62,6 +62,8 @@ type Cluster struct {
 	w        load.Workload
 	budget   uint64
 	written  atomic.Uint64
+	mu       sync.Mutex
+	books    load.Books
 }
 
 func Start(ctx context.Context, cfg Config) (*Cluster, error) {
@@ -137,11 +139,11 @@ func (c *Cluster) launch(ctx context.Context) error {
 			env = append(env, name+"="+given)
 		}
 		slices.Sort(env)
-		cores := ""
+		n.env = env
 		if c.cfg.Pin {
-			cores = cpus(i)
+			n.cores = cpus(i)
 		}
-		if err := n.start(c.cfg.Bin, env, cores); err != nil {
+		if err := n.start(c.cfg.Bin); err != nil {
 			return fmt.Errorf("start %s: %w", n.name(), err)
 		}
 		c.nodes = append(c.nodes, n)
@@ -171,12 +173,16 @@ func (c *Cluster) ready(ctx context.Context) error {
 	defer cancel()
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
+	nodes := c.running()
 	for {
 		sts, err := c.statuses(ctx)
 		if err == nil && agreed(sts) {
+			for i, n := range nodes {
+				n.status = sts[i]
+			}
 			return nil
 		}
-		for _, n := range c.nodes {
+		for _, n := range nodes {
 			select {
 			case <-n.exited:
 				return n.failure("ended while starting")
@@ -185,7 +191,7 @@ func (c *Cluster) ready(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%w that all %d nodes agree on: %w", ErrNoLeader, len(c.nodes), errors.Join(context.Cause(ctx), err))
+			return fmt.Errorf("%w that all %d nodes agree on: %w", ErrNoLeader, len(nodes), errors.Join(context.Cause(ctx), err))
 		case <-tick.C:
 		}
 	}
@@ -207,10 +213,11 @@ func agreed(sts []ledger.NodeStatus) bool {
 func (c *Cluster) statuses(ctx context.Context) ([]ledger.NodeStatus, error) {
 	ctx, cancel := context.WithTimeout(ctx, sampleWithin)
 	defer cancel()
-	sts := make([]ledger.NodeStatus, len(c.nodes))
-	errs := make([]error, len(c.nodes))
+	nodes := c.running()
+	sts := make([]ledger.NodeStatus, len(nodes))
+	errs := make([]error, len(nodes))
 	var wg sync.WaitGroup
-	for i, n := range c.nodes {
+	for i, n := range nodes {
 		wg.Go(func() { sts[i], errs[i] = ledger.Status(ctx, cluster, n.addr) })
 	}
 	wg.Wait()
@@ -219,6 +226,9 @@ func (c *Cluster) statuses(ctx context.Context) ([]ledger.NodeStatus, error) {
 
 func (c *Cluster) Setup(ctx context.Context, w load.Workload) error {
 	c.w = w
+	c.mu.Lock()
+	c.books = load.Books{}
+	c.mu.Unlock()
 	addrs := make([]string, len(c.nodes))
 	for i, n := range c.nodes {
 		addrs[i] = n.addr
@@ -279,16 +289,19 @@ func refused(res ledger.Result, err error) error {
 func (c *Cluster) Do(ctx context.Context, lane int, op load.Op) (load.Outcome, error) {
 	c.written.Add(1)
 	res, err := c.sessions[lane].CreateTransfers(ctx, []ledger.Transfer{transfer(op)})
-	if err != nil {
-		return load.Outcome{}, err
+	var out load.Outcome
+	switch {
+	case err != nil:
+	case len(res.Failures) == 0:
+	case res.Failures[0].Reason == ledger.Exists:
+		out.Existed = true
+	default:
+		return out, fmt.Errorf("%w: %s %v: %s", ErrRefused, op.Kind, op.ID, res.Failures[0].Reason)
 	}
-	if len(res.Failures) == 0 {
-		return load.Outcome{}, nil
-	}
-	if res.Failures[0].Reason == ledger.Exists {
-		return load.Outcome{Existed: true}, nil
-	}
-	return load.Outcome{}, fmt.Errorf("%w: %s %v: %s", ErrRefused, op.Kind, op.ID, res.Failures[0].Reason)
+	c.mu.Lock()
+	c.books.Count(op, out, err)
+	c.mu.Unlock()
+	return out, err
 }
 
 func transfer(op load.Op) ledger.Transfer {
@@ -315,23 +328,76 @@ func transfer(op load.Op) ledger.Transfer {
 func (c *Cluster) Sample(ctx context.Context) (load.Inside, error) {
 	ctx, cancel := context.WithTimeout(ctx, sampleWithin)
 	defer cancel()
-	inside := make(load.Inside, len(c.nodes))
-	errs := make([]error, len(c.nodes))
+	nodes := c.running()
+	parts := make([]load.Part, len(nodes))
+	errs := make([]error, len(nodes))
 	var wg sync.WaitGroup
-	for i, n := range c.nodes {
-		wg.Go(func() { inside[i], errs[i] = n.sample(ctx) })
+	for i, n := range nodes {
+		wg.Go(func() { parts[i], errs[i] = n.sample(ctx) })
 	}
 	wg.Wait()
-	if err := errors.Join(errs...); err != nil {
-		return nil, err
+	var inside load.Inside
+	for i := range nodes {
+		if errs[i] == nil {
+			inside = append(inside, parts[i])
+		}
 	}
-	return inside, nil
+	return inside, errors.Join(errs...)
+}
+
+func (c *Cluster) running() []*node {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.DeleteFunc(slices.Clone(c.nodes), func(n *node) bool { return n.stopped })
+}
+
+func (c *Cluster) halted(n *node) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return n.stopped
+}
+
+func (c *Cluster) mark(n *node, stopped bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n.stopped = stopped
+}
+
+func (c *Cluster) node(id int) (*node, error) {
+	if id < 1 || id > len(c.nodes) {
+		return nil, fmt.Errorf("ledgerrun: no node %d of %d", id, len(c.nodes))
+	}
+	return c.nodes[id-1], nil
+}
+
+func (c *Cluster) Stop(id int) error {
+	n, err := c.node(id)
+	if err != nil || c.halted(n) {
+		return err
+	}
+	c.mark(n, true)
+	return n.stop()
+}
+
+func (c *Cluster) Restart(ctx context.Context, id int) error {
+	n, err := c.node(id)
+	if err != nil || !c.halted(n) {
+		return err
+	}
+	if err := n.start(c.cfg.Bin); err != nil {
+		return fmt.Errorf("start %s: %w", n.name(), err)
+	}
+	if err := n.ready(ctx); err != nil {
+		return err
+	}
+	c.mark(n, false)
+	return nil
 }
 
 func (c *Cluster) Pids() []int {
-	pids := make([]int, len(c.nodes))
-	for i, n := range c.nodes {
-		pids[i] = n.cmd.Process.Pid
+	var pids []int
+	for _, n := range c.running() {
+		pids = append(pids, n.cmd.Process.Pid)
 	}
 	return pids
 }
@@ -366,9 +432,10 @@ func (c *Cluster) hangUp() {
 }
 
 func (c *Cluster) halt() error {
-	errs := make([]error, len(c.nodes))
+	nodes := c.running()
+	errs := make([]error, len(nodes))
 	var wg sync.WaitGroup
-	for i, n := range c.nodes {
+	for i, n := range nodes {
 		wg.Go(func() { errs[i] = n.stop() })
 	}
 	wg.Wait()

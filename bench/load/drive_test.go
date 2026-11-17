@@ -3,6 +3,7 @@ package load
 import (
 	"context"
 	"errors"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
@@ -252,10 +253,42 @@ func TestOpenCallsAreCapped(t *testing.T) {
 		rec := &recorder{inner: answering(func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })}
 		run := drive(t, rec, Plan{Rate: 1000, Lanes: 4, Warmup: time.Second, Window: 4 * time.Second, Drain: time.Second, OpenLimit: 500})
 		if !run.Capped || !run.Saturated || len(rec.at) != 500 || rec.most != 500 {
-			t.Fatalf("capped %v, saturated %v, %d calls, %d at once, want a stop at 500 open", run.Capped, run.Saturated, len(rec.at), rec.most)
+			t.Fatalf("capped %v, saturated %v, %d calls, %d at once, want no call past 500 open", run.Capped, run.Saturated, len(rec.at), rec.most)
 		}
-		if run.Window != 0 || run.Seconds[0].Latency.Unfinished() != 500 {
-			t.Errorf("window %ds, %d unfinished in the first second", run.Window, run.Seconds[0].Latency.Unfinished())
+		if run.Window != 4 {
+			t.Fatalf("window %ds, want all 4: the cap holds new calls back, it does not end the stage", run.Window)
+		}
+		for i, sec := range run.Seconds[:5] {
+			if sec.Due != 1000 || sec.Latency.Finished() != 0 || sec.Latency.Unfinished() != 1000 {
+				t.Errorf("second %d: %d due, %d answered, %d unfinished, want 1000 due and unfinished: a skipped arrival counts as never answered", i, sec.Due, sec.Latency.Finished(), sec.Latency.Unfinished())
+			}
+		}
+		if started := merge(run, Warmup, true).Finished() + merge(run, Window, true).Finished(); started != 500 {
+			t.Errorf("dispatcher delay of %d calls, want only the 500 started", started)
+		}
+	})
+	synctest.Test(t, func(t *testing.T) {
+		one := make(chan struct{}, 1)
+		server := answering(func(ctx context.Context) error {
+			select {
+			case one <- struct{}{}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			defer func() { <-one }()
+			return sleep(ctx, 2*time.Millisecond)
+		})
+		run := drive(t, server, Plan{Rate: 1000, Lanes: 4, Warmup: time.Second, Window: 4 * time.Second, Drain: time.Second, OpenLimit: 300})
+		if !run.Capped || !run.Saturated || run.Window != 4 || run.OpenAtEnd > 300 {
+			t.Fatalf("capped %v, saturated %v, window %ds, %d open at the end, want a full window under the cap", run.Capped, run.Saturated, run.Window, run.OpenAtEnd)
+		}
+		for i, sec := range run.Seconds[1:5] {
+			if sec.Booked < 499 || sec.Booked > 501 {
+				t.Errorf("window second %d: %d booked, want 500 under overload", i, sec.Booked)
+			}
+			if n := sec.Latency.Finished() + sec.Latency.Unfinished(); n != sec.Due || sec.Due != 1000 || sec.Latency.Unfinished() < 450 {
+				t.Errorf("window second %d: %d due, %d latencies, %d unfinished, want every arrival counted and about 500 skipped", i, sec.Due, n, sec.Latency.Unfinished())
+			}
 		}
 	})
 }
@@ -312,6 +345,9 @@ func TestFailuresAreCounted(t *testing.T) {
 		if failed != 20 || run.Books.Confirmed != 180 || len(run.Problems) != 1 || run.Problems[0] != "node gone" {
 			t.Fatalf("%d failed, %d confirmed, problems %q", failed, run.Books.Confirmed, run.Problems)
 		}
+		if u := run.Books.Unsure; u.Single.Calls != 20 || u.Calls() != 20 || u.Single.Amount < 20 || u.Single.Amount > 2000 {
+			t.Errorf("unsure %+v, want the 20 failed calls with their amounts", u)
+		}
 		if got := merge(run, Window, false).Unfinished(); got != 20 {
 			t.Errorf("%d failed arrivals without latency, want 20 counted as unfinished", got)
 		}
@@ -342,6 +378,69 @@ func TestBooks(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestCutCallsAreUnsure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		w, _ := Named("twophase")
+		target := answering(func(ctx context.Context) error {
+			if time.Since(start) < 1500*time.Millisecond {
+				return nil
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		run, err := Drive(context.Background(), target, NewStream(w, 5), Plan{Rate: 100, Lanes: 2, Window: 2 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := NewStream(w, 5)
+		var want Books
+		for i := range 200 {
+			a := s.next(time.Duration(i) * 10 * time.Millisecond)
+			if i < 150 {
+				want.Count(a.First, Outcome{}, nil)
+				want.Count(a.Then, Outcome{}, nil)
+				continue
+			}
+			want.Count(a.First, Outcome{}, context.Canceled)
+		}
+		b := run.Books
+		if b.Confirmed != want.Confirmed || b.Posted != want.Posted || b.Pending != want.Pending || b.Unsure != want.Unsure || b.Unsure.Reserve.Calls != 50 {
+			t.Fatalf("books %d confirmed, %d posted, %d pending, unsure %+v, want %d, %d, %d and %+v: a call the end of the run cut off counts as unsure",
+				b.Confirmed, b.Posted, b.Pending, b.Unsure, want.Confirmed, want.Posted, want.Pending, want.Unsure)
+		}
+	})
+}
+
+func TestBooksCount(t *testing.T) {
+	var b Books
+	failed := errors.New("outcome unknown")
+	for _, c := range []struct {
+		op  Op
+		out Outcome
+		err error
+	}{
+		{Op{Kind: Single, Amount: 3}, Outcome{}, nil},
+		{Op{Kind: Single, Amount: 4}, Outcome{Existed: true}, nil},
+		{Op{Kind: Reserve, Amount: 10}, Outcome{}, nil},
+		{Op{Kind: Reserve, Amount: 20}, Outcome{}, nil},
+		{Op{Kind: Post, Amount: 10}, Outcome{}, nil},
+		{Op{Kind: Void, Amount: 20}, Outcome{}, failed},
+		{Op{Kind: Reserve, Amount: 30}, Outcome{}, nil},
+		{Op{Kind: Void, Amount: 30}, Outcome{}, nil},
+		{Op{Kind: Single, Amount: 5}, Outcome{}, failed},
+		{Op{Kind: Reserve, Amount: 6}, Outcome{}, failed},
+		{Op{Kind: Post, Amount: 20}, Outcome{}, failed},
+	} {
+		b.Count(c.op, c.out, c.err)
+	}
+	want := Books{Confirmed: 7, Existed: 1, Posted: 13, Pending: 20,
+		Unsure: Unsure{Single: Doubt{1, 5}, Reserve: Doubt{1, 6}, Post: Doubt{1, 20}, Void: Doubt{1, 20}}}
+	if !reflect.DeepEqual(b, want) || b.Unsure.Calls() != 4 {
+		t.Fatalf("books %+v, want %+v", b, want)
+	}
 }
 
 func TestDriveStopsWithItsContext(t *testing.T) {

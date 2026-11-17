@@ -174,6 +174,16 @@ func roleSyncs(f *raw.File, speed control.Speed) (leader, follower float64, ok b
 	return leader, follower, true
 }
 
+func (g *group) roleSyncs() (int, spread, spread) {
+	var leaders, followers []float64
+	for _, r := range g.counted {
+		if l, f, ok := roleSyncs(r.f, g.speed); ok {
+			leaders, followers = append(leaders, l), append(followers, f)
+		}
+	}
+	return len(leaders), median(leaders), median(followers)
+}
+
 func writeStages(b *strings.Builder, gs []*group, out map[string][]byte) {
 	cs := chains(gs)
 	b.WriteString("## Stages (m1)\n\n")
@@ -258,22 +268,16 @@ func writeStages(b *strings.Builder, gs []*group, out map[string][]byte) {
 	for _, c := range cs {
 		g := c.first()
 		fmt.Fprintf(b, "### %s, %d lanes, %s\n\n", name(g.target), g.target.Lanes, g.workload)
-		t := table{head: []string{"rate", "held", "speed", "flush ms", "runs", "p50 ms", "p50 flushes", "p99 ms", "p99.9 ms",
-			"throughput/s", "fsync per transfer", "transfers per request", "retries per transfer", "agreement"}}
+		t := table{head: []string{"rate", "held", "speed", "flush ms", "runs", "seconds", "p50 ms", "p50 flushes", "p99 ms", "p99.9 ms",
+			"throughput/s", "target cpu", "fsync per transfer, all nodes", "transfers per request", "retries per transfer", "agreement"}}
 		perNode := table{head: []string{"rate", "speed", "runs", "fsync per transfer, leader", "fsync per transfer, one follower"}}
 		var runs []*run
 		for _, s := range c.stages {
 			row := fixedRow(s)
 			t.add(append([]string{grouped(float64(s.rate))}, row[4:]...)...)
 			runs = append(runs, s.runs...)
-			var leaders, followers []float64
-			for _, r := range s.counted {
-				if l, f, ok := roleSyncs(r.f, s.speed); ok {
-					leaders, followers = append(leaders, l), append(followers, f)
-				}
-			}
-			if len(leaders) > 0 {
-				perNode.add(grouped(float64(s.rate)), row[5], strconv.Itoa(len(leaders)), median(leaders).show(fixed(3)), median(followers).show(fixed(3)))
+			if n, leader, follower := s.roleSyncs(); n > 0 {
+				perNode.add(grouped(float64(s.rate)), row[5], strconv.Itoa(n), leader.show(fixed(3)), follower.show(fixed(3)))
 			}
 		}
 		t.write(b)

@@ -30,6 +30,8 @@ func TestStagesAreCutToTheBudget(t *testing.T) {
 		{"a window that may grow counts at its longest", stage(64_000, 5*s, 15*s, 30*s), uniform, 2_000_000 - 10_000, stage(64_000, 7*s, 24*s, 24*s)},
 		{"a window that may grow and still fits", stage(32_000, 5*s, 15*s, 30*s), uniform, 2_000_000 - 10_000, stage(32_000, 5*s, 15*s, 30*s)},
 		{"exactly the room", stage(1000, 1*s, 9*s, 0), uniform, 10_000, stage(1000, 1*s, 9*s, 0)},
+		{"three nodes cut 512 000/s and still warm up", stage(512_000, 5*s, 15*s, 0), uniform, 2_000_000 - 10_000, stage(512_000, 1*s, 2*s, 2*s)},
+		{"two seconds are one to warm up and one to measure", stage(1000, 5*s, 15*s, 0), uniform, 2_500, stage(1000, 1*s, 1*s, 1*s)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := fit(tc.in, tc.w, tc.room)
@@ -46,5 +48,8 @@ func TestStagesAreCutToTheBudget(t *testing.T) {
 	}
 	if _, err := fit(stage(512_000, 5*s, 15*s, 0), twophase, 1_000_000); !errors.Is(err, ErrBudget) {
 		t.Fatalf("a stage without room for one second: got %v, want ErrBudget", err)
+	}
+	if _, err := fit(stage(1000, 5*s, 15*s, 0), uniform, 1_999); !errors.Is(err, ErrBudget) {
+		t.Fatalf("a stage with room for one second and none to warm up: got %v, want ErrBudget", err)
 	}
 }

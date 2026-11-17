@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Demonisreal/dmn-ledger/bench/control"
 	"github.com/Demonisreal/dmn-ledger/bench/load"
@@ -20,7 +21,11 @@ const intro = "# Benchmark results\n\n" +
 	"disk speed of its row. A row shows the slow disk speed when any of its valid runs reached it, otherwise the fast " +
 	"one, marked as such. Within a run only the valid seconds of its disk speed count. Latency is counted from the " +
 	"moment a transfer was scheduled, not from the moment it was sent. \"flushes\" is a latency divided by the mean " +
-	"flush time of the disk in the same run. p99.9 is listed for completeness and is not compared.\n\n"
+	"flush time of the disk in the same run. p99.9 is listed for completeness and is not compared. \"seconds\" counts the " +
+	"window seconds of the counted runs that entered the figures, out of all their window seconds, with the highest p99 " +
+	"of a second that was left out. \"target cpu\" is the CPU time of the target processes divided by the hardware " +
+	"threads they were given, the mean over the window. \"fsync per transfer, all nodes\" adds up the fsyncs of every " +
+	"node of a cluster and divides them by the confirmed transfers.\n\n"
 
 type section struct{ m, title, text string }
 
@@ -135,6 +140,11 @@ func writeContext(b *strings.Builder, runs []*run, gs []*group) {
 	}
 	fmt.Fprintf(b, "Commit %s; run on %s; machine: %s; disk speed: %s.\n\n",
 		strings.Join(commits, ", "), strings.Join(dates, ", "), strings.Join(machines, "; "), strings.Join(speeds, "; "))
+	if slices.ContainsFunc(gs, func(g *group) bool { return g.speed == control.Fast }) {
+		b.WriteString("A second counts as fast by the mean time of its flushes, and fast flushes come about seven times as " +
+			"often as slow ones: a fast second can have spent up to about two thirds of its time in slow flushes, a slow " +
+			"second at most about a tenth in fast ones.\n\n")
+	}
 }
 
 func (g *group) held() string {
@@ -159,6 +169,35 @@ func (g *group) atLeast() bool {
 	return slices.ContainsFunc(g.counted, func(r *run) bool { return r.f.Verdict.Limit == raw.LimitGenerator })
 }
 
+func secondsCell(counted, all int, worst float64, horizon time.Duration) string {
+	cell := fmt.Sprintf("%d of %d", counted, all)
+	if all > counted {
+		cell += ", worst excluded p99 " + millis(horizon)(worst) + " ms"
+	}
+	return cell
+}
+
+func (g *group) seconds() string {
+	if len(g.counted) == 0 {
+		return "n/a"
+	}
+	var counted, all int
+	var worst float64
+	for _, r := range g.counted {
+		n := bandOf(r.f, g.speed).Seconds
+		counted += n
+		all += n + r.f.Verdict.Excluded
+		if r.f.Verdict.Excluded > 0 {
+			worst = max(worst, nanos(r.f.Verdict.ExcludedP99))
+		}
+	}
+	return secondsCell(counted, all, worst, g.horizon())
+}
+
+func share(x float64) string {
+	return percent(x) + "%"
+}
+
 func speedCell(s control.Speed) string {
 	if s == control.Fast {
 		return "fast (no slow run)"
@@ -177,11 +216,13 @@ func fixedRow(g *group) []string {
 		name(g.target), strconv.Itoa(g.target.Lanes), g.workload, grouped(float64(g.rate)), g.held(), speedCell(g.speed),
 		g.spread(func(x fig) float64 { return x.flush }).show(millis(0)),
 		fmt.Sprintf("%d of %d", len(g.counted), len(g.runs)),
+		g.seconds(),
 		g.spread(func(x fig) float64 { return x.p50 }).show(ms),
 		g.spread(func(x fig) float64 { return x.flushes }).show(fixed(1)),
 		g.spread(func(x fig) float64 { return x.p99 }).show(ms),
 		g.spread(func(x fig) float64 { return x.p999 }).show(ms),
 		tp,
+		g.spread(func(x fig) float64 { return x.targetShare }).show(share),
 		g.spread(func(x fig) float64 { return x.syncs }).show(fixed(3)),
 		g.spread(func(x fig) float64 { return x.perRequest }).show(fixed(1)),
 		g.spread(func(x fig) float64 { return x.retries }).show(fixed(3)),
@@ -189,16 +230,21 @@ func fixedRow(g *group) []string {
 	}
 }
 
-var fixedHead = []string{"target", "lanes", "load", "rate", "held", "speed", "flush ms", "runs", "p50 ms", "p50 flushes",
-	"p99 ms", "p99.9 ms", "throughput/s", "fsync per transfer", "transfers per request", "retries per transfer", "agreement"}
+var fixedHead = []string{"target", "lanes", "load", "rate", "held", "speed", "flush ms", "runs", "seconds", "p50 ms", "p50 flushes",
+	"p99 ms", "p99.9 ms", "throughput/s", "target cpu", "fsync per transfer, all nodes", "transfers per request", "retries per transfer", "agreement"}
 
 func writeFixed(b *strings.Builder, gs []*group) {
 	t := table{head: fixedHead}
+	perNode := table{head: []string{"target", "lanes", "load", "rate", "speed", "runs", "fsync per transfer, leader", "fsync per transfer, one follower"}}
 	var runs []*run
 	for _, g := range gs {
-		t.add(fixedRow(g)...)
+		row := fixedRow(g)
 		if e := env(g.target); e != "" {
-			t.rows[len(t.rows)-1][0] += ", " + e
+			row[0] += ", " + e
+		}
+		t.add(row...)
+		if n, leader, follower := g.roleSyncs(); n > 0 {
+			perNode.add(row[0], row[1], row[2], row[3], row[5], strconv.Itoa(n), leader.show(fixed(3)), follower.show(fixed(3)))
 		}
 		runs = append(runs, g.runs...)
 	}
@@ -206,6 +252,10 @@ func writeFixed(b *strings.Builder, gs []*group) {
 		return
 	}
 	t.write(b)
+	if len(perNode.rows) > 0 {
+		b.WriteString("Each node on its own:\n\n")
+		perNode.write(b)
+	}
 	writeContext(b, runs, gs)
 }
 
@@ -469,7 +519,7 @@ func writeRuns(b *strings.Builder, runs []*run) {
 			counted[r] = true
 		}
 	}
-	t := table{head: []string{"file", "measurement", "target", "lanes", "load", "rate", "pass", "started", "speed", "valid", "counted", "saturated", "reasons"}}
+	t := table{head: []string{"file", "measurement", "target", "lanes", "load", "rate", "pass", "started", "speed", "valid", "counted", "seconds", "saturated", "reasons"}}
 	for _, r := range runs {
 		f := r.f
 		count := "yes"
@@ -484,8 +534,13 @@ func writeRuns(b *strings.Builder, runs []*run) {
 			sat = "yes, limit " + f.Verdict.Limit
 		}
 		why := strings.Join(append(slices.Clone(f.Verdict.Reasons), f.Verdict.Problems...), "; ")
+		in := 0
+		if v := f.Verdict.Speed; v == control.Slow || v == control.Fast {
+			in = bandOf(f, v).Seconds
+		}
+		secs := secondsCell(in, in+f.Verdict.Excluded, nanos(f.Verdict.ExcludedP99), f.Verdict.Horizon)
 		t.add(r.name, f.Measurement, name(f.Target), strconv.Itoa(f.Target.Lanes), f.Load.Workload, grouped(float64(f.Load.Rate)),
-			strconv.Itoa(f.Pass), f.Started.UTC().Format("2006-01-02 15:04"), f.Verdict.Speed.String(), yesNo(f.Verdict.Valid), count, sat, why)
+			strconv.Itoa(f.Pass), f.Started.UTC().Format("2006-01-02 15:04"), f.Verdict.Speed.String(), yesNo(f.Verdict.Valid), count, secs, sat, why)
 	}
 	b.WriteString("## Runs\n\n")
 	b.WriteString("Every raw file, valid or not. Only the runs marked as counted enter the figures above.\n\n")

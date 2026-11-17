@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Demonisreal/dmn-ledger/bench/control"
 	"github.com/Demonisreal/dmn-ledger/bench/load"
@@ -26,6 +28,11 @@ const (
 	WhyOneRun  = "only one valid run"
 	WhyStale   = "does not match the raw files"
 	WhyMissing = "missing"
+
+	WhyUnverified    = "valid but not verified"
+	WhyTermChanged   = "valid with a new term in the window"
+	WhyStallsAllowed = "stalls allowed outside m4 and m7"
+	WhyBand          = "bands do not follow from their seconds"
 )
 
 type Verdict struct {
@@ -78,6 +85,7 @@ func check(in []*run, written fs.FS) []Verdict {
 		}
 		verdicts = append(verdicts, v)
 	}
+	verdicts = append(verdicts, complete(gs, written)...)
 	out := render(runs)
 	for _, name := range slices.Sorted(maps.Keys(out)) {
 		v := Verdict{Subject: name, Passed: true}
@@ -145,6 +153,22 @@ func refusals(f *raw.File) []string {
 	if wrong := recount(f); len(wrong) > 0 {
 		why = append(why, WhySeconds+": "+strings.Join(wrong, "; "))
 	}
+	excused := f.Measurement == "m4" || f.Measurement == "m7"
+	if f.Verdict.Valid && !f.Books.Verified {
+		why = append(why, WhyUnverified)
+	}
+	if f.Verdict.Valid && f.Target.Kind == "ledger" && !excused && f.TermChanged() {
+		why = append(why, WhyTermChanged)
+	}
+	if f.AllowStalls && !excused {
+		why = append(why, WhyStallsAllowed)
+	}
+	if f.Books.Existed > 0 {
+		why = append(why, fmt.Sprintf("%d transfers existed already", f.Books.Existed))
+	}
+	if wrong := rebuild(f); len(wrong) > 0 {
+		why = append(why, WhyBand+": "+strings.Join(wrong, "; "))
+	}
 	return why
 }
 
@@ -158,9 +182,13 @@ func recount(f *raw.File) []string {
 	inBand := map[control.Speed]int{}
 	for i, m := range f.Thresholds.Judge(ctl) {
 		s := f.Seconds[i]
-		valid := m.Valid && !slices.Contains(s.Why, raw.WhyNoSample) && !slices.Contains(s.Why, control.WhyUnread)
+		unseen := slices.Contains(s.Why, raw.WhyNoSample) || slices.Contains(s.Why, raw.WhyStale)
+		valid := m.Valid && !unseen && !slices.Contains(s.Why, control.WhyUnread)
 		if s.Speed != m.Speed || s.Valid != valid {
 			wrong = append(wrong, fmt.Sprintf("second %d is %v and valid %v, its flushes say %v and %v", i, s.Speed, s.Valid, m.Speed, valid))
+		}
+		if s.Phase == load.Window.String() && f.Verdict.Valid && !f.AllowStalls && (unseen || m.Speed == control.None) {
+			wrong = append(wrong, fmt.Sprintf("second %d stalled and the run is valid", i))
 		}
 		if s.Phase == load.Window.String() {
 			window = append(window, control.Mark{Speed: m.Speed, Valid: valid})
@@ -182,6 +210,94 @@ func recount(f *raw.File) []string {
 		wrong = append(wrong, fmt.Sprintf("valid %v with reasons %q", f.Verdict.Valid, f.Verdict.Reasons))
 	}
 	return wrong
+}
+
+func rebuild(f *raw.File) []string {
+	var wrong []string
+	for _, c := range []struct {
+		name  string
+		speed control.Speed
+		band  raw.Band
+	}{{"slow", control.Slow, f.Bands.Slow}, {"fast", control.Fast, f.Bands.Fast}} {
+		var n int
+		var booked, latencies, syncs uint64
+		prev := f.Before
+		for _, s := range f.Seconds {
+			moved := syncsSince(s.Parts, prev)
+			prev = s.Parts
+			if s.Phase != load.Window.String() || !s.Valid || s.Speed != c.speed {
+				continue
+			}
+			n++
+			booked += s.Booked
+			latencies += s.Count
+			syncs += moved
+		}
+		b := c.band
+		held := b.Histogram.Never
+		for _, bucket := range b.Histogram.Buckets {
+			held += uint64(bucket[1]) //nolint:gosec // G115: a count of arrivals
+		}
+		if held != latencies {
+			wrong = append(wrong, fmt.Sprintf("%s histogram holds %d latencies, its seconds %d", c.name, held, latencies))
+		}
+		for _, q := range []struct {
+			name string
+			at   float64
+			got  time.Duration
+		}{{"p50", 0.5, b.P50}, {"p99", 0.99, b.P99}} {
+			if want := quantile(b.Histogram, q.at); want != q.got {
+				wrong = append(wrong, fmt.Sprintf("%s %s %v, its histogram gives %v", c.name, q.name, q.got, want))
+			}
+		}
+		var throughput, perTransfer float64
+		if n > 0 {
+			throughput = float64(booked) / float64(n)
+			if booked > 0 {
+				perTransfer = float64(syncs) / float64(booked)
+			}
+		}
+		if !near(throughput, b.Throughput) {
+			wrong = append(wrong, fmt.Sprintf("%s throughput %.1f, its seconds give %.1f", c.name, b.Throughput, throughput))
+		}
+		if !near(perTransfer, b.Syncs) {
+			wrong = append(wrong, fmt.Sprintf("%s fsync per transfer %.4f, its seconds give %.4f", c.name, b.Syncs, perTransfer))
+		}
+	}
+	return wrong
+}
+
+func syncsSince(now, prev []raw.Part) uint64 {
+	var n uint64
+	for _, p := range now {
+		if i := slices.IndexFunc(prev, func(q raw.Part) bool { return q.Name == p.Name }); i >= 0 {
+			n += p.Syncs - prev[i].Syncs
+		}
+	}
+	return n
+}
+
+func quantile(h raw.Histogram, q float64) time.Duration {
+	var done uint64
+	for _, bucket := range h.Buckets {
+		done += uint64(bucket[1]) //nolint:gosec // G115: a count of arrivals
+	}
+	total := done + h.Never
+	if total == 0 {
+		return 0
+	}
+	rank := min(max(uint64(math.Ceil(q*float64(total))), 1), total)
+	var cum uint64
+	for _, bucket := range h.Buckets {
+		if cum += uint64(bucket[1]); cum >= rank { //nolint:gosec // G115: a count of arrivals
+			return time.Duration(bucket[0])
+		}
+	}
+	return load.Never
+}
+
+func near(a, b float64) bool {
+	return math.Abs(a-b) <= 1e-9*max(math.Abs(a), math.Abs(b))
 }
 
 func (g *group) required() bool {

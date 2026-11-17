@@ -23,10 +23,10 @@ func fit(p load.Plan, w load.Workload, room uint64) (load.Plan, error) {
 	}
 	each := perSecond(p, w)
 	secs := room / each
-	if secs < 1 {
+	if secs < 2 {
 		return p, fmt.Errorf("%w: %d transfers a second, room for %d", ErrBudget, each, room)
 	}
-	warm := secs / 4
+	warm := max(secs/4, 1)
 	p.Warmup = time.Duration(warm) * time.Second      //nolint:gosec // G115: seconds of a stage
 	p.Window = time.Duration(secs-warm) * time.Second //nolint:gosec // G115: seconds of a stage
 	p.MaxWindow = p.Window

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -124,8 +125,10 @@ func TestRawRoundTrip(t *testing.T) {
 		t.Fatalf("round trip changed the file; empty after reading: %q", lost)
 	}
 
-	if _, err := Read(strings.NewReader(strings.Replace(buf.String(), `"schema": 1`, `"schema": 2`, 1))); !errors.Is(err, ErrSchema) {
-		t.Errorf("schema 2: %v", err)
+	for _, old := range []string{`"schema": 1`, `"schema": 3`} {
+		if _, err := Read(strings.NewReader(strings.Replace(buf.String(), `"schema": 2`, old, 1))); !errors.Is(err, ErrSchema) {
+			t.Errorf("%s: %v", old, err)
+		}
 	}
 	if _, err := Read(strings.NewReader(strings.Replace(buf.String(), `"pass":`, `"passes": 1, "pass":`, 1))); err == nil {
 		t.Error("unknown field read without complaint")
@@ -182,6 +185,14 @@ func TestInvalidSecondsStayOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if f.Verdict.Valid || !slices.Contains(f.Verdict.Reasons, WhyStalled) {
+		t.Fatalf("a window second without a sample left the run valid: %+v", f.Verdict)
+	}
+	h := head(2)
+	h.AllowStalls = true
+	if f, err = Assemble(h, b.run, b.ctl); err != nil {
+		t.Fatal(err)
+	}
 	valid := []bool{true, true, false, false, false, true, false, false, true, true}
 	for i, s := range f.Seconds {
 		if s.Valid != valid[i] {
@@ -207,6 +218,60 @@ func TestInvalidSecondsStayOut(t *testing.T) {
 	if f.Seconds[2].P99 < 4*time.Second || f.Seconds[2].Count != 4 {
 		t.Errorf("an invalid second keeps its own numbers: p99 %v, count %d", f.Seconds[2].P99, f.Seconds[2].Count)
 	}
+	if f.Verdict.Excluded != 5 || f.Verdict.ExcludedP99 != f.Seconds[2].P99 {
+		t.Errorf("verdict: %d seconds excluded with p99 up to %v, want 5 of 8 and the p99 %v of second 2", f.Verdict.Excluded, f.Verdict.ExcludedP99, f.Seconds[2].P99)
+	}
+}
+
+func TestStallsMakeTheRunInvalid(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		spoil func(b *built)
+		why   string
+	}{
+		{"no sample", func(b *built) { b.run.Seconds[3].Sampled = false }, WhyNoSample},
+		{"too few flushes", func(b *built) { b.ctl[3].Flushes, b.ctl[3].FlushTime = 5, 5*ms(1.4) }, control.WhyFewFlushes},
+		{"stale status", func(b *built) { b.run.Seconds[3].Inside[0].Stale = true }, WhyStale},
+		{"no sample in the last second of the warmup", func(b *built) { b.run.Seconds[0].Sampled = false }, WhyNoSample},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := newBuilt()
+			b.add(load.Warmup, 100, 10, ms(1.4), ms(10))
+			for i := range 6 {
+				b.add(load.Window, 100, uint64(20+10*i), ms(1.4), ms(10), ms(11))
+			}
+			b.add(load.Drain, 0, 90, ms(1.4))
+			c.spoil(b)
+			f, err := Assemble(head(2), b.run, b.ctl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var why []string
+			for _, s := range f.Seconds {
+				why = append(why, s.Why...)
+			}
+			if !slices.Contains(why, c.why) {
+				t.Fatalf("seconds give %q, want %q", why, c.why)
+			}
+			if f.Verdict.Valid || !slices.Contains(f.Verdict.Reasons, WhyStalled) {
+				t.Fatalf("a stalled target left the run valid: %+v", f.Verdict)
+			}
+			h := head(2)
+			h.AllowStalls = true
+			if f, _ = Assemble(h, b.run, b.ctl); !f.Verdict.Valid || f.Verdict.Excluded == 0 || !f.AllowStalls {
+				t.Fatalf("stalls allowed: valid %v %q, %d seconds excluded", f.Verdict.Valid, f.Verdict.Reasons, f.Verdict.Excluded)
+			}
+		})
+	}
+	b := newBuilt()
+	for i := range 4 {
+		b.add(load.Window, 100, uint64(10+10*i), ms(1.4), ms(10)).Throttled = uint64(i % 2)
+	}
+	b.add(load.Drain, 0, 50, ms(1.4))
+	b.run.Seconds[4].Inside[0].Stale = true
+	if f, _ := Assemble(head(1), b.run, b.ctl); !f.Verdict.Valid || f.Seconds[4].Valid || !slices.Contains(f.Seconds[4].Why, WhyStale) {
+		t.Fatalf("throttled seconds and a stale status in the drain: valid %v %q, drain %v %q", f.Verdict.Valid, f.Verdict.Reasons, f.Seconds[4].Valid, f.Seconds[4].Why)
+	}
 }
 
 func TestRestless(t *testing.T) {
@@ -223,8 +288,8 @@ func TestRestless(t *testing.T) {
 		t.Fatalf("two valid fast seconds where three are needed: %+v", f.Verdict)
 	}
 	b.run.Capped, b.run.Saturated = true, true
-	if f, _ = Assemble(head(3), b.run, b.ctl); !f.Verdict.Valid || f.Verdict.Limit != LimitTarget {
-		t.Fatalf("a capped stage is saturated, not restless: %+v", f.Verdict)
+	if f, _ = Assemble(head(3), b.run, b.ctl); f.Verdict.Valid || f.Verdict.Limit != LimitTarget || !slices.Contains(f.Verdict.Reasons, WhyRestless) {
+		t.Fatalf("a capped stage has a window like any other and is restless without enough seconds: %+v", f.Verdict)
 	}
 	if f, _ = Assemble(head(2), b.run, b.ctl); f.Verdict.Speed != control.Fast || f.Bands.Fast.Seconds != 2 || f.Bands.Slow.Seconds != 1 {
 		t.Fatalf("speed %v with %d fast and %d slow seconds", f.Verdict.Speed, f.Bands.Fast.Seconds, f.Bands.Slow.Seconds)
@@ -274,6 +339,36 @@ func TestGeneratorLimitIsReported(t *testing.T) {
 	}
 }
 
+func TestTargetShare(t *testing.T) {
+	for _, c := range []struct {
+		cores   string
+		threads int
+		cpu     float64
+		want    float64
+	}{
+		{"0,1 2,3 4,5", 16, 1.5, 0.25},
+		{"0,1", 16, 0.5, 0.25},
+		{"0-5", 16, 3, 0.5},
+		{"", 16, 4, 0.25},
+	} {
+		b := newBuilt()
+		b.add(load.Warmup, 100, 10, ms(1.4), ms(10)).Target = 9
+		for range 3 {
+			b.add(load.Window, 100, 10, ms(1.4), ms(10)).Target = c.cpu
+		}
+		b.add(load.Drain, 0, 10, ms(1.4)).Target = 9
+		h := head(2)
+		h.Target.Cores, h.Machine.Threads = c.cores, c.threads
+		f, err := Assemble(h, b.run, b.ctl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := f.Verdict.TargetShare; got < c.want-1e-9 || got > c.want+1e-9 {
+			t.Errorf("cores %q, %.1f cores busy in each window second: target share %.3f, want %.3f", c.cores, c.cpu, got, c.want)
+		}
+	}
+}
+
 func TestFailuresMakeARunInvalid(t *testing.T) {
 	b := newBuilt()
 	for range 3 {
@@ -297,11 +392,17 @@ func TestTermAndVerify(t *testing.T) {
 	b.add(load.Window, 100, 20, ms(1.4), ms(10))
 	b.add(load.Window, 100, 30, ms(1.4), ms(10))
 	b.add(load.Drain, 100, 40, ms(1.4))
-	b.run.Seconds[3].Inside[0].Term = 3
+	b.add(load.Drain, 100, 40, ms(1.4))
+	b.run.Seconds[4].Inside[0].Term = 3
 	f, _ := Assemble(head(2), b.run, b.ctl)
 	if f.TermChanged() {
-		t.Fatal("a new term in the drain counted")
+		t.Fatal("a new term in the second second of the drain counted")
 	}
+	b.run.Seconds[3].Inside[0].Term = 3
+	if f, _ = Assemble(head(2), b.run, b.ctl); !f.TermChanged() {
+		t.Fatal("a new term in the first second of the drain not seen: a leader that hung at the end of the window shows it only there")
+	}
+	b.run.Seconds[3].Inside[0].Term, b.run.Seconds[4].Inside[0].Term = 2, 2
 	b.run.Seconds[0].Inside[0].Term = 1
 	if f, _ = Assemble(head(2), b.run, b.ctl); !f.TermChanged() {
 		t.Fatal("a new term between warmup and window not seen")

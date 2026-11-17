@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Demonisreal/dmn-ledger/bench/control"
@@ -19,6 +21,8 @@ const (
 	WhyGenerator = "generator at its limit"
 	WhyTerm      = "term changed"
 	WhyVerify    = "verify failed"
+	WhyStale     = "stale status"
+	WhyStalled   = "target stalled"
 
 	LimitTarget    = "target"
 	LimitGenerator = "generator"
@@ -49,6 +53,9 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 		c, m := ctl[i], marks[i]
 		if !sec.Sampled || i > 0 && !run.Seconds[i-1].Sampled {
 			m.Valid, m.Why = false, append(m.Why, WhyNoSample)
+		}
+		if stale(sec.Inside) || i > 0 && stale(run.Seconds[i-1].Inside) {
+			m.Valid, m.Why = false, append(m.Why, WhyStale)
 		}
 		f.Seconds[i] = Second{
 			Phase:      sec.Phase.String(),
@@ -82,15 +89,20 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 	var window []control.Mark
 	late := new(load.Histogram)
 	var booked uint64
-	var generator float64
+	var generator, target float64
+	stalled := false
 	for i, sec := range run.Seconds {
 		if sec.Phase != load.Window {
 			continue
 		}
 		window = append(window, control.Mark{Speed: f.Seconds[i].Speed, Valid: f.Seconds[i].Valid})
+		stalled = stalled || slices.ContainsFunc(f.Seconds[i].Why, func(why string) bool {
+			return why == WhyNoSample || why == WhyStale || why == control.WhyFewFlushes
+		})
 		late.Merge(sec.Late)
 		booked += sec.Booked
 		generator += ctl[i].Generator
+		target += ctl[i].Target
 	}
 	f.Bands.Slow = band(run, f.Seconds, deltas, control.Slow)
 	f.Bands.Fast = band(run, f.Seconds, deltas, control.Fast)
@@ -100,9 +112,20 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 	v.Saturated, v.Capped = run.Saturated, run.Capped
 	v.OpenAtEnd, v.Horizon = run.OpenAtEnd, run.Horizon
 	v.LateP99 = late.Quantile(0.99)
+	for i, sec := range f.Seconds {
+		if run.Seconds[i].Phase == load.Window && (!sec.Valid || sec.Speed != v.Speed) {
+			v.Excluded++
+			v.ExcludedP99 = max(v.ExcludedP99, sec.P99)
+		}
+	}
 	if n := len(window); n > 0 {
 		v.Throughput = float64(booked) / float64(n)
 		v.GeneratorShare = generator / float64(n*max(h.Machine.GoMaxProcs, 1))
+		cores := cpuCount(h.Target.Cores)
+		if cores == 0 {
+			cores = h.Machine.Threads
+		}
+		v.TargetShare = target / float64(n*max(cores, 1))
 	}
 	limited := v.LateP99 > LateLimit || v.GeneratorShare > CPULimit
 	switch {
@@ -113,8 +136,11 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 	case limited:
 		v.Reasons = append(v.Reasons, WhyGenerator)
 	}
-	if v.Speed == control.Restless && !v.Capped {
+	if v.Speed == control.Restless {
 		v.Reasons = append(v.Reasons, WhyRestless)
+	}
+	if stalled && !h.AllowStalls {
+		v.Reasons = append(v.Reasons, WhyStalled)
 	}
 	var failed uint64
 	for _, sec := range run.Seconds {
@@ -131,6 +157,7 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 		Existed:   run.Books.Existed,
 		Posted:    run.Books.Posted,
 		Pending:   run.Books.Pending,
+		Unsure:    run.Books.Unsure,
 		Sampled:   len(run.Books.Sample),
 	}
 	return f, nil
@@ -207,6 +234,26 @@ func parts(in load.Inside) []Part {
 	return out
 }
 
+func cpuCount(list string) int {
+	n := 0
+	for _, span := range strings.FieldsFunc(list, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if lo, hi, ok := strings.Cut(span, "-"); ok {
+			a, errA := strconv.Atoi(lo)
+			b, errB := strconv.Atoi(hi)
+			if errA == nil && errB == nil && b >= a {
+				n += b - a + 1
+				continue
+			}
+		}
+		n++
+	}
+	return n
+}
+
+func stale(in load.Inside) bool {
+	return slices.ContainsFunc(in, func(p load.Part) bool { return p.Stale })
+}
+
 func since(now, prev load.Inside) delta {
 	d := delta{parts: make(map[string]uint64, len(now))}
 	for _, p := range now {
@@ -240,8 +287,9 @@ func (f *File) Verified(t load.Tally, err error) {
 
 func (f *File) TermChanged() bool {
 	terms := make(map[string]uint64)
+	window := func(i int) bool { return i >= 0 && i < len(f.Seconds) && f.Seconds[i].Phase == load.Window.String() }
 	for i, s := range f.Seconds {
-		if s.Phase != load.Window.String() && (i+1 >= len(f.Seconds) || f.Seconds[i+1].Phase != load.Window.String()) {
+		if !window(i) && !window(i+1) && !window(i-1) {
 			continue
 		}
 		for _, p := range s.Parts {

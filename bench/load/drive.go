@@ -108,6 +108,7 @@ type driver struct {
 	mu       sync.Mutex
 	sample   []ledger.Uint128
 	problems []string
+	unsure   Unsure
 }
 
 func (p Plan) check() error {
@@ -195,6 +196,7 @@ func Drive(ctx context.Context, t Target, s *Stream, p Plan) (*Run, error) {
 		Existed:   d.existed.Load(),
 		Posted:    uint64(d.posted.Load()),  //nolint:gosec // G115: a sum of positive amounts
 		Pending:   uint64(d.pending.Load()), //nolint:gosec // G115: every release follows its reserve
+		Unsure:    d.unsure,
 		Sample:    d.sample,
 	}
 	run.Problems = d.problems
@@ -223,7 +225,7 @@ func (d *driver) tick(ctx context.Context, run *Run, warm, win, longest, drain i
 		}
 		if end < 0 {
 			n := sec + 1 - warm
-			if d.capped.Load() || n >= longest || n >= win && enough {
+			if n >= longest || n >= win && enough {
 				end = sec + 1
 				d.until.Store(min(d.until.Load(), int64(time.Duration(end)*time.Second)))
 				run.Capped = d.capped.Load()
@@ -261,14 +263,19 @@ func (d *driver) dispatch(ctx context.Context, s *Stream) {
 				return
 			}
 		}
-		if d.open.Load() >= int64(d.plan.OpenLimit) {
-			d.capped.Store(true)
-			d.until.Store(int64(due))
-			return
-		}
 		a := s.next(due)
 		last = due
-		d.slots[due/time.Second].due.Add(1)
+		sl := &d.slots[due/time.Second]
+		sl.due.Add(1)
+		if d.open.Load() >= int64(d.plan.OpenLimit) {
+			d.capped.Store(true)
+			sl.latency.AddNever()
+			if sl.reserve != nil {
+				sl.reserve.AddNever()
+			}
+			sl.done.Add(1)
+			continue
+		}
 		d.open.Add(1)
 		d.calls.Add(1)
 		go d.call(ctx, int(i%int64(d.plan.Lanes)), int(i), due, a)
@@ -341,6 +348,9 @@ func (d *driver) do(ctx context.Context, lane int, op Op, sl *slot) bool {
 			sl.failed.Add(1)
 			d.problem(err)
 		}
+		d.mu.Lock()
+		d.unsure.add(op)
+		d.mu.Unlock()
 		return false
 	}
 	at := min(int(time.Since(d.start)/time.Second), len(d.slots)-1)
@@ -349,6 +359,7 @@ func (d *driver) do(ctx context.Context, lane int, op Op, sl *slot) bool {
 	d.confirmed.Add(1)
 	if out.Existed {
 		d.existed.Add(1)
+		return true
 	}
 	amount := int64(op.Amount) //nolint:gosec // G115: an amount from 1 to 100
 	switch op.Kind {

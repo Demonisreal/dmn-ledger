@@ -129,3 +129,48 @@ func TestVerifyFindsAMissingTransfer(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyAllowsUnansweredCalls(t *testing.T) {
+	w := load.Workload{Name: "test", Accounts: 100}
+	transfer := func(id, amount uint64) ledger.Transfer {
+		return ledger.Transfer{ID: ledger.From64(id), DebitAccountID: ledger.From64(1 + id%50), CreditAccountID: ledger.From64(51 + id%50), Amount: ledger.From64(amount)}
+	}
+	reserve := func(f *fakeBooks, id, amount uint64) {
+		tr := transfer(id, amount)
+		f.accounts[tr.DebitAccountID.Lo].DebitsPending.Lo += amount
+		f.accounts[tr.CreditAccountID.Lo].CreditsPending.Lo += amount
+		f.transfers[tr.ID] = tr
+	}
+	for _, tc := range []struct {
+		name   string
+		unsure load.Unsure
+		landed func(f *fakeBooks)
+		ok     bool
+	}{
+		{"nothing unsure, nothing more", load.Unsure{}, func(*fakeBooks) {}, true},
+		{"nothing unsure, one more transfer", load.Unsure{}, func(f *fakeBooks) { f.post(transfer(90, 5)) }, false},
+		{"unsure transfers that did not land", load.Unsure{Single: load.Doubt{Calls: 2, Amount: 7}}, func(*fakeBooks) {}, true},
+		{"an unsure transfer landed", load.Unsure{Single: load.Doubt{Calls: 2, Amount: 7}}, func(f *fakeBooks) { f.post(transfer(90, 5)) }, true},
+		{"both landed", load.Unsure{Single: load.Doubt{Calls: 2, Amount: 7}}, func(f *fakeBooks) { f.post(transfer(90, 5)); f.post(transfer(91, 2)) }, true},
+		{"more landed than was unsure", load.Unsure{Single: load.Doubt{Calls: 2, Amount: 7}}, func(f *fakeBooks) { f.post(transfer(90, 8)) }, false},
+		{"an unsure reserve landed", load.Unsure{Reserve: load.Doubt{Calls: 1, Amount: 9}}, func(f *fakeBooks) { reserve(f, 92, 9) }, true},
+		{"a reserve landed that nobody sent", load.Unsure{Single: load.Doubt{Calls: 1, Amount: 9}}, func(f *fakeBooks) { reserve(f, 92, 9) }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeBooks(w)
+			want := load.Books{Unsure: tc.unsure}
+			for i := range 10 {
+				tr := transfer(uint64(i+1), uint64(1+i))
+				f.post(tr)
+				want.Confirmed++
+				want.Posted += tr.Amount.Lo
+				want.Sample = append(want.Sample, tr.ID)
+			}
+			tc.landed(f)
+			_, err := count(context.Background(), f, w, want)
+			if tc.ok && err != nil || !tc.ok && !errors.Is(err, ErrBooks) {
+				t.Fatalf("got %v, want ok %v", err, tc.ok)
+			}
+		})
+	}
+}
