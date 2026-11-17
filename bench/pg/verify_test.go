@@ -40,3 +40,32 @@ func TestVerifyComparesEverything(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyAllowsUnansweredCalls(t *testing.T) {
+	w := load.Workload{Name: "test", Accounts: 25_000}
+	want := load.Books{Confirmed: 40, Posted: 1234, Pending: 56}
+	want.Unsure.Single = load.Doubt{Calls: 2, Amount: 9}
+	want.Unsure.Reserve = load.Doubt{Calls: 1, Amount: 4}
+	want.Unsure.Void = load.Doubt{Calls: 1, Amount: 6}
+	posted := want.Posted + w.Endowment()
+	for _, tc := range []struct {
+		name            string
+		posted, pending uint64
+		holds           bool
+	}{
+		{"none of them landed", posted, 56, true},
+		{"all of them landed", posted + 9, 56 + 4, true},
+		{"the void landed", posted, 56 - 6, true},
+		{"more landed than was sent", posted + 10, 56, false},
+		{"a confirmed amount is gone", posted - 1, 56, false},
+		{"more reserved than was sent", posted, 56 + 5, false},
+		{"more released than was sent", posted, 56 - 7, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tally := load.Tally{DebitsPosted: tc.posted, CreditsPosted: tc.posted, DebitsPending: tc.pending, CreditsPending: tc.pending}
+			if err := compare(tally, w.Bank(), w, want); (err == nil) != tc.holds {
+				t.Fatalf("got %v, holds %v", err, tc.holds)
+			}
+		})
+	}
+}

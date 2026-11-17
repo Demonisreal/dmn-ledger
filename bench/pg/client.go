@@ -69,6 +69,8 @@ type Client struct {
 	stop     context.CancelFunc
 	loops    sync.WaitGroup
 	requests atomic.Uint64
+	mu       sync.Mutex
+	books    load.Books
 }
 
 func Dial(ctx context.Context, srv *Server, cfg Config) (*Client, error) {
@@ -124,6 +126,9 @@ func (c *Client) Setup(ctx context.Context, w load.Workload) error {
 		return fmt.Errorf("%w: %v", ErrTwoPhase, c.cfg.Variant)
 	}
 	c.w = w
+	c.mu.Lock()
+	c.books = load.Books{}
+	c.mu.Unlock()
 	tpl := "tpl_" + strings.ReplaceAll(w.Name, "-", "_")
 	var exists bool
 	if err := c.admin.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)", tpl).Scan(&exists); err != nil {
@@ -232,10 +237,25 @@ func (c *Client) open(ctx context.Context) error {
 }
 
 func (c *Client) Do(ctx context.Context, lane int, op load.Op) (load.Outcome, error) {
+	out, err := c.book(ctx, lane, op)
+	if rolledBack(err) {
+		return out, err
+	}
+	c.mu.Lock()
+	c.books.Count(op, out, err)
+	c.mu.Unlock()
+	return out, err
+}
+
+func (c *Client) book(ctx context.Context, lane int, op load.Op) (load.Outcome, error) {
 	if c.bundlers != nil {
 		return c.bundlers[lane].do(ctx, op)
 	}
 	return c.one(ctx, op, c.cfg.Variant == V2)
+}
+
+func rolledBack(err error) bool {
+	return errors.Is(err, ErrRefused) || errors.Is(err, ErrGaveUp)
 }
 
 func (c *Client) one(ctx context.Context, op load.Op, plain bool) (load.Outcome, error) {

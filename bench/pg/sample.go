@@ -59,19 +59,30 @@ func (c *Client) Verify(ctx context.Context, want load.Books) (load.Tally, error
 			return t, fmt.Errorf("look up transfers: %w", err)
 		}
 	}
-	return t, compare(t, accounts, c.w, want)
+	c.mu.Lock()
+	books := c.books
+	c.mu.Unlock()
+	books.Sample = want.Sample
+	return t, compare(t, accounts, c.w, books)
 }
 
 func compare(t load.Tally, accounts uint64, w load.Workload, want load.Books) error {
-	switch posted := want.Posted + w.Endowment(); {
+	u := want.Unsure
+	posted, maybePosted := want.Posted+w.Endowment(), u.Single.Amount+u.Post.Amount
+	pending, released := want.Pending+u.Reserve.Amount, u.Post.Amount+u.Void.Amount
+	unsure := ""
+	if u.Calls() > 0 {
+		unsure = fmt.Sprintf(", %d calls unanswered", u.Calls())
+	}
+	switch {
 	case accounts != w.Bank():
 		return fmt.Errorf("%w: found %d of %d accounts", ErrBooks, accounts, w.Bank())
 	case t.DebitsPosted != t.CreditsPosted:
 		return fmt.Errorf("%w: %d debits posted, %d credits posted", ErrBooks, t.DebitsPosted, t.CreditsPosted)
-	case t.DebitsPosted != posted:
-		return fmt.Errorf("%w: %d posted, want %d confirmed and %d endowment", ErrBooks, t.DebitsPosted, want.Posted, w.Endowment())
-	case t.DebitsPending != t.CreditsPending || t.DebitsPending != want.Pending:
-		return fmt.Errorf("%w: %d debits pending, %d credits pending, want %d", ErrBooks, t.DebitsPending, t.CreditsPending, want.Pending)
+	case t.DebitsPosted < posted || t.DebitsPosted > posted+maybePosted:
+		return fmt.Errorf("%w: %d posted, want %d confirmed and %d endowment%s", ErrBooks, t.DebitsPosted, want.Posted, w.Endowment(), unsure)
+	case t.DebitsPending != t.CreditsPending || t.DebitsPending > pending || t.DebitsPending < want.Pending-released:
+		return fmt.Errorf("%w: %d debits pending, %d credits pending, want %d%s", ErrBooks, t.DebitsPending, t.CreditsPending, want.Pending, unsure)
 	case t.Found != len(want.Sample):
 		return fmt.Errorf("%w: found %d of %d sampled transfers", ErrBooks, t.Found, len(want.Sample))
 	}
