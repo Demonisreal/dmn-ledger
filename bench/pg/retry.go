@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -19,18 +20,31 @@ var (
 const (
 	maxTries = 20
 	maxPause = 50 * time.Millisecond
+
+	serializationFailure = "40001"
+	deadlockDetected     = "40P01"
 )
 
-func retry(ctx context.Context, try func() error) (int, error) {
+type retried struct {
+	deadlocks, serializations atomic.Uint64
+}
+
+func (r *retried) retry(ctx context.Context, try func() error) (int, error) {
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
 	for n := 0; ; n++ {
 		err := try()
-		if !retryable(err) {
+		var pe *pgconn.PgError
+		if !errors.As(err, &pe) || pe.Code != serializationFailure && pe.Code != deadlockDetected {
 			return n, err
 		}
 		if n+1 == maxTries {
 			return n, fmt.Errorf("%w after %d tries: %w", ErrGaveUp, maxTries, err)
+		}
+		if pe.Code == deadlockDetected {
+			r.deadlocks.Add(1)
+		} else {
+			r.serializations.Add(1)
 		}
 		timer.Reset(backoff(n))
 		select {
@@ -44,11 +58,6 @@ func retry(ctx context.Context, try func() error) (int, error) {
 func backoff(n int) time.Duration {
 	bound := min(time.Millisecond<<min(n, 6), maxPause)
 	return time.Duration(rand.Int64N(int64(bound) + 1)) //nolint:gosec // G404: jitter for a retry, not a secret
-}
-
-func retryable(err error) bool {
-	var pe *pgconn.PgError
-	return errors.As(err, &pe) && (pe.Code == "40001" || pe.Code == "40P01")
 }
 
 func refused(err error) bool {

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,7 +25,10 @@ var (
 	ErrBooks      = errors.New("pg: books do not add up")
 )
 
-const runDB = "bench"
+const (
+	runDB       = "bench"
+	singleConns = 32
+)
 
 //go:embed schema.sql
 var schema string
@@ -55,6 +59,13 @@ type Config struct {
 	Lanes   int
 }
 
+func (cfg Config) conns() int {
+	if cfg.Variant.batched() {
+		return cfg.Lanes
+	}
+	return singleConns
+}
+
 type Client struct {
 	srv      *Server
 	cfg      Config
@@ -69,6 +80,7 @@ type Client struct {
 	stop     context.CancelFunc
 	loops    sync.WaitGroup
 	requests atomic.Uint64
+	retried  retried
 	mu       sync.Mutex
 	books    load.Books
 }
@@ -86,6 +98,7 @@ func Dial(ctx context.Context, srv *Server, cfg Config) (*Client, error) {
 		_ = admin.Close(ctx)
 		return nil, err
 	}
+	c.settings["connections"] = strconv.Itoa(cfg.conns())
 	return c, nil
 }
 
@@ -199,19 +212,19 @@ func (c *Client) open(ctx context.Context) error {
 		isolation = "serializable"
 	}
 	cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = isolation
-	cfg.MaxConns = int32(c.cfg.Lanes) //nolint:gosec // G115: a handful of lanes
+	cfg.MaxConns = int32(c.cfg.conns()) //nolint:gosec // G115: a handful of lanes or 32
 	cfg.MinConns = cfg.MaxConns
 	cfg.AfterConnect = durable
 	if c.pool, err = pgxpool.NewWithConfig(ctx, cfg); err != nil {
 		return err
 	}
-	conns := make([]*pgxpool.Conn, 0, c.cfg.Lanes)
+	conns := make([]*pgxpool.Conn, 0, cfg.MaxConns)
 	defer func() {
 		for _, conn := range conns {
 			conn.Release()
 		}
 	}()
-	for range c.cfg.Lanes {
+	for range cfg.MaxConns {
 		conn, err := c.pool.Acquire(ctx)
 		if err != nil {
 			return err
@@ -251,27 +264,23 @@ func (c *Client) book(ctx context.Context, lane int, op load.Op) (load.Outcome, 
 	if c.bundlers != nil {
 		return c.bundlers[lane].do(ctx, op)
 	}
-	return c.one(ctx, op, c.cfg.Variant == V2)
+	return c.one(ctx, op)
 }
 
 func rolledBack(err error) bool {
 	return errors.Is(err, ErrRefused) || errors.Is(err, ErrGaveUp)
 }
 
-func (c *Client) one(ctx context.Context, op load.Op, plain bool) (load.Outcome, error) {
+func (c *Client) one(ctx context.Context, op load.Op) (load.Outcome, error) {
 	sql, args := "SELECT post_locked($1, $2, $3, $4, $5, $6)", []any{key(op.ID), op.Debit, op.Credit, op.Amount, int32(load.Ledger), int16(load.Code)}
 	switch op.Kind {
-	case load.Single:
-		if plain {
-			sql = "SELECT post_plain($1, $2, $3, $4, $5, $6)"
-		}
 	case load.Reserve:
 		sql = "SELECT reserve_locked($1, $2, $3, $4, $5, $6)"
 	case load.Post, load.Void:
 		sql, args = "SELECT settle_locked($1, $2, $3)", []any{key(op.ID), key(op.Pending), op.Kind == load.Post}
 	}
 	var fresh bool
-	retries, err := retry(ctx, func() error {
+	retries, err := c.retried.retry(ctx, func() error {
 		return c.pool.QueryRow(ctx, sql, args...).Scan(&fresh)
 	})
 	switch {
@@ -287,7 +296,7 @@ func (c *Client) one(ctx context.Context, op load.Op, plain bool) (load.Outcome,
 func (c *Client) batch(ctx context.Context, ops []load.Op) []answer {
 	sql, args := c.batchCall(ops)
 	var fresh map[[16]byte]bool
-	retries, err := retry(ctx, func() error {
+	retries, err := c.retried.retry(ctx, func() error {
 		rows, err := c.pool.Query(ctx, sql, args...)
 		if err != nil {
 			return err
@@ -306,7 +315,7 @@ func (c *Client) batch(ctx context.Context, ops []load.Op) []answer {
 	switch {
 	case refused(err):
 		for i, op := range ops {
-			answers[i].out, answers[i].err = c.one(ctx, op, false)
+			answers[i].out, answers[i].err = c.one(ctx, op)
 			answers[i].out.Retries += retries
 		}
 	case err != nil:
@@ -333,11 +342,7 @@ func (c *Client) batchCall(ops []load.Op) (string, []any) {
 		tids[i], drs[i], crs[i], amts[i] = key(op.ID), op.Debit, op.Credit, op.Amount
 	}
 	if !twoPhase(ops[0]) {
-		sql := "SELECT post_batch_locked($1, $2, $3, $4, $5, $6)"
-		if c.cfg.Variant == V4 {
-			sql = "SELECT post_batch_plain($1, $2, $3, $4, $5, $6)"
-		}
-		return sql, []any{tids, drs, crs, amts, int32(load.Ledger), int16(load.Code)}
+		return "SELECT post_batch_locked($1, $2, $3, $4, $5, $6)", []any{tids, drs, crs, amts, int32(load.Ledger), int16(load.Code)}
 	}
 	pids := make([]pgtype.UUID, len(ops))
 	posts := make([]bool, len(ops))

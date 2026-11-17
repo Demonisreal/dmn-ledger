@@ -8,36 +8,56 @@ import (
 	"github.com/Demonisreal/dmn-ledger/bench/load"
 )
 
-const sampleSQL = `SELECT
-    (SELECT coalesce(sum(fsyncs), 0)::bigint FROM pg_stat_io WHERE object = 'wal'),
-    (SELECT coalesce(sum(fsync_time), 0) FROM pg_stat_io WHERE object = 'wal'),
-    (SELECT coalesce(sum(writes), 0)::bigint FROM pg_stat_io WHERE object = 'wal'),
-    w.wal_records, w.wal_fpi, w.wal_bytes::bigint, c.num_done,
-    (SELECT coalesce(sum(autovacuum_count), 0)::bigint FROM pg_stat_user_tables),
-    (SELECT coalesce(sum(autoanalyze_count), 0)::bigint FROM pg_stat_user_tables)
-FROM pg_stat_wal w, pg_stat_checkpointer c`
+const sampleSQL = `WITH io AS (
+    SELECT coalesce(sum(fsyncs) FILTER (WHERE context = 'normal'), 0)::bigint AS syncs,
+           coalesce(sum(fsync_time) FILTER (WHERE context = 'normal'), 0) AS sync_ms,
+           coalesce(sum(writes) FILTER (WHERE context = 'normal'), 0)::bigint AS writes,
+           coalesce(sum(fsyncs) FILTER (WHERE context = 'init'), 0)::bigint AS init_syncs
+    FROM pg_stat_io WHERE object = 'wal'
+), tables AS (
+    SELECT coalesce(sum(autovacuum_count), 0)::bigint AS vacuums,
+           coalesce(sum(autoanalyze_count), 0)::bigint AS analyzes,
+           coalesce(sum(n_tup_ins) FILTER (WHERE relname = 'transfers'), 0)::bigint AS inserted,
+           coalesce(sum(n_tup_upd) FILTER (WHERE relname = 'accounts'), 0)::bigint AS account_updates,
+           coalesce(sum(n_tup_hot_upd) FILTER (WHERE relname = 'accounts'), 0)::bigint AS account_hot_updates,
+           coalesce(sum(n_tup_upd) FILTER (WHERE relname = 'transfers'), 0)::bigint AS transfer_updates,
+           coalesce(sum(n_tup_hot_upd) FILTER (WHERE relname = 'transfers'), 0)::bigint AS transfer_hot_updates
+    FROM pg_stat_user_tables
+)
+SELECT io.syncs, io.sync_ms, io.writes, io.init_syncs, w.wal_records, w.wal_fpi, w.wal_bytes::bigint, c.num_done,
+       t.vacuums, t.analyzes, t.inserted, t.account_updates, t.account_hot_updates, t.transfer_updates, t.transfer_hot_updates,
+       d.deadlocks
+FROM io, tables t, pg_stat_wal w, pg_stat_checkpointer c, pg_stat_database d
+WHERE d.datname = current_database()`
+
+var sampled = []string{
+	"wal_writes", "wal_init_syncs", "wal_records", "wal_fpi", "wal_bytes", "checkpoints", "autovacuum", "autoanalyze",
+	"inserted", "accounts_updates", "accounts_hot_updates", "transfers_updates", "transfers_hot_updates", "deadlocks",
+}
 
 func (c *Client) Sample(ctx context.Context) (load.Inside, error) {
-	var syncs, writes, records, fpi, bytes, checkpoints, vacuums, analyzes uint64
+	var syncs uint64
 	var syncMs float64
-	err := c.probe.QueryRow(ctx, sampleSQL).Scan(&syncs, &syncMs, &writes, &records, &fpi, &bytes, &checkpoints, &vacuums, &analyzes)
-	if err != nil {
+	counts := make([]uint64, len(sampled))
+	dest := []any{&syncs, &syncMs}
+	for i := range counts {
+		dest = append(dest, &counts[i])
+	}
+	if err := c.probe.QueryRow(ctx, sampleSQL).Scan(dest...); err != nil {
 		return nil, err
 	}
+	counters := make(map[string]uint64, len(sampled)+2)
+	for i, name := range sampled {
+		counters[name] = counts[i]
+	}
+	counters["deadlock_retries"] = c.retried.deadlocks.Load()
+	counters["serialization_retries"] = c.retried.serializations.Load()
 	return load.Inside{{
 		Name:     "postgres",
 		Syncs:    syncs,
 		SyncTime: time.Duration(syncMs * float64(time.Millisecond)),
 		Requests: c.requests.Load(),
-		Counters: map[string]uint64{
-			"wal_writes":  writes,
-			"wal_records": records,
-			"wal_fpi":     fpi,
-			"wal_bytes":   bytes,
-			"checkpoints": checkpoints,
-			"autovacuum":  vacuums,
-			"autoanalyze": analyzes,
-		},
+		Counters: counters,
 	}}, nil
 }
 

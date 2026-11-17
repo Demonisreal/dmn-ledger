@@ -33,6 +33,7 @@ const (
 
 	ext4        = 0xef53
 	readyWithin = 60 * time.Second
+	volume      = "/var/lib/postgresql"
 )
 
 //go:embed image.txt
@@ -94,7 +95,7 @@ func Start(ctx context.Context, dir string) (*Server, error) {
 	args := []string{"run", "-d", "--name", Name, "--network", "host",
 		"--cpuset-cpus", Cores, "--memory", "3g", "--memory-swap", "3g", "--shm-size", "256m",
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		"-v", data + ":/var/lib/postgresql",
+		"-v", data + ":" + volume,
 		"-e", "POSTGRES_PASSWORD_FILE=/run/secrets/pw", "-v", secret + ":/run/secrets/pw:ro",
 		Image()}
 	for _, kv := range settings {
@@ -150,6 +151,14 @@ func (s *Server) Dir() string {
 
 func (s *Server) Cgroup() string {
 	return s.cgroup
+}
+
+func (s *Server) TestFsync(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "exec", Name, "pg_test_fsync", "-s", "1", "-f", volume+"/fsync.test").CombinedOutput() //nolint:gosec // G204: pg_test_fsync inside our own container
+	if err != nil {
+		return "", fmt.Errorf("pg: pg_test_fsync: %w\n%s", err, out)
+	}
+	return string(out), nil
 }
 
 func (s *Server) Stop() error {

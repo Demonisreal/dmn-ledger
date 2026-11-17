@@ -44,54 +44,11 @@ BEGIN
     RETURN true;
 END $$;
 
-CREATE FUNCTION post_plain(tid uuid, dr bigint, cr bigint, amt bigint, ldg integer, cd smallint)
-RETURNS boolean LANGUAGE plpgsql AS $$
-BEGIN
-    INSERT INTO transfers (id, debit_account_id, credit_account_id, amount, ledger, code)
-    VALUES (tid, dr, cr, amt, ldg, cd)
-    ON CONFLICT (id) DO NOTHING;
-    IF NOT FOUND THEN
-        RETURN false;
-    END IF;
-    UPDATE accounts SET debits_posted = debits_posted + amt WHERE id = dr;
-    UPDATE accounts SET credits_posted = credits_posted + amt WHERE id = cr;
-    RETURN true;
-END $$;
-
 CREATE FUNCTION post_batch_locked(tids uuid[], drs bigint[], crs bigint[], amts bigint[],
                                   ldg integer, cd smallint)
 RETURNS SETOF uuid LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM 1 FROM accounts WHERE id = ANY (drs || crs) ORDER BY id FOR NO KEY UPDATE;
-    RETURN QUERY
-    WITH fresh AS (
-        INSERT INTO transfers (id, debit_account_id, credit_account_id, amount, ledger, code)
-        SELECT t.id, t.dr, t.cr, t.amt, ldg, cd
-        FROM unnest(tids, drs, crs, amts) AS t (id, dr, cr, amt)
-        ON CONFLICT (id) DO NOTHING
-        RETURNING id, debit_account_id, credit_account_id, amount
-    ), moved AS (
-        SELECT account, sum(debit)::bigint AS debit, sum(credit)::bigint AS credit
-        FROM (
-            SELECT debit_account_id AS account, amount AS debit, 0::bigint AS credit FROM fresh
-            UNION ALL
-            SELECT credit_account_id, 0::bigint, amount FROM fresh
-        ) AS sides
-        GROUP BY account
-    ), booked AS (
-        UPDATE accounts a
-        SET debits_posted = a.debits_posted + m.debit,
-            credits_posted = a.credits_posted + m.credit
-        FROM moved m
-        WHERE a.id = m.account
-    )
-    SELECT id FROM fresh;
-END $$;
-
-CREATE FUNCTION post_batch_plain(tids uuid[], drs bigint[], crs bigint[], amts bigint[],
-                                 ldg integer, cd smallint)
-RETURNS SETOF uuid LANGUAGE plpgsql AS $$
-BEGIN
     RETURN QUERY
     WITH fresh AS (
         INSERT INTO transfers (id, debit_account_id, credit_account_id, amount, ledger, code)
@@ -137,7 +94,7 @@ RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
     p transfers%ROWTYPE;
 BEGIN
-    SELECT * INTO p FROM transfers WHERE id = pid FOR UPDATE;
+    SELECT * INTO p FROM transfers WHERE id = pid FOR NO KEY UPDATE;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'pending transfer % not found', pid USING ERRCODE = 'no_data_found';
     END IF;
@@ -167,7 +124,7 @@ CREATE FUNCTION twophase_batch_locked(tids uuid[], pids uuid[], drs bigint[], cr
                                       posts boolean[], ldg integer, cd smallint)
 RETURNS SETOF uuid LANGUAGE plpgsql AS $$
 BEGIN
-    PERFORM 1 FROM transfers WHERE id = ANY (pids) ORDER BY id FOR UPDATE;
+    PERFORM 1 FROM transfers WHERE id = ANY (pids) ORDER BY id FOR NO KEY UPDATE;
     PERFORM 1 FROM accounts WHERE id = ANY (drs || crs) ORDER BY id FOR NO KEY UPDATE;
     IF EXISTS (
         SELECT 1
@@ -188,13 +145,15 @@ BEGIN
     WITH fresh AS (
         INSERT INTO transfers (id, debit_account_id, credit_account_id, amount, pending_id, ledger, code, state)
         SELECT b.id, b.dr, b.cr, coalesce(p.amount, b.amt), b.pid, ldg, cd, CASE WHEN b.pid IS NULL THEN 1 ELSE 0 END
-        FROM unnest(tids, pids, drs, crs, amts) AS b (id, pid, dr, cr, amt)
+        FROM unnest(tids, pids, drs, crs, amts) WITH ORDINALITY AS b (id, pid, dr, cr, amt, ord)
         LEFT JOIN transfers p ON p.id = b.pid
+        ORDER BY b.ord
         ON CONFLICT (id) DO NOTHING
         RETURNING id, pending_id, debit_account_id, credit_account_id, amount
     ), moves AS (
         SELECT DISTINCT ON (b.id) b.id, b.post
-        FROM unnest(tids, posts) AS b (id, post)
+        FROM unnest(tids, posts) WITH ORDINALITY AS b (id, post, ord)
+        ORDER BY b.id, b.ord
     ), steps AS (
         SELECT f.id, f.pending_id, f.debit_account_id, f.credit_account_id, f.amount,
                f.pending_id IS NOT NULL AND m.post AS post

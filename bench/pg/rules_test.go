@@ -5,11 +5,13 @@ package pg
 import (
 	"cmp"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +20,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/bench/load"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var srv *Server
@@ -97,6 +100,33 @@ func booksBalance(t *testing.T, c *Client) {
 	}
 }
 
+func sample(t *testing.T, c *Client) load.Part {
+	t.Helper()
+	in, err := c.Sample(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return in[0]
+}
+
+func drained(t *testing.T, c *Client) load.Part {
+	t.Helper()
+	c.pool.Close()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		var n int
+		if err := c.probe.QueryRow(t.Context(), "SELECT numbackends FROM pg_stat_database WHERE datname = current_database()").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d sessions still on the database after the pool closed", n)
+		}
+	}
+	return sample(t, c)
+}
+
 func transfers(t *testing.T, c *Client) uint64 {
 	t.Helper()
 	var n uint64
@@ -117,11 +147,7 @@ func TestPostgresRules(t *testing.T) {
 }
 
 func manyLanes(t *testing.T, v Variant) {
-	const lanes, callers = 32, 256
-	n := 20_000
-	if v == V2 {
-		n = 2_000
-	}
+	const lanes, callers, n = 32, 256, 20_000
 	c := dial(t, v, lanes, rules)
 	ctx := bounded(t)
 	rng := rand.New(rand.NewPCG(uint64(v), 9))
@@ -146,6 +172,9 @@ func manyLanes(t *testing.T, v Variant) {
 		})
 	}
 	wg.Wait()
+	if r := sample(t, c).Counters["deadlock_retries"]; r != 0 {
+		t.Fatalf("%v: %d retries after a deadlock; accounts are locked in id order", v, r)
+	}
 
 	var want load.Books
 	retries, gaveUp := 0, 0
@@ -177,6 +206,9 @@ func manyLanes(t *testing.T, v Variant) {
 	booksBalance(t, c)
 	if _, err := c.Verify(t.Context(), want); err != nil {
 		t.Fatal(err)
+	}
+	if d := drained(t, c).Counters["deadlocks"]; d != 0 {
+		t.Fatalf("%v: Postgres counted %d deadlocks; accounts are locked in id order", v, d)
 	}
 }
 
@@ -422,38 +454,245 @@ func TestVerifyFindsAMissingTransfer(t *testing.T) {
 func TestSampleCountsWALSyncs(t *testing.T) {
 	const n = 200
 	c := dial(t, V1, 1, rules)
-	before, err := c.Sample(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := sample(t, c)
 	for i := range uint64(n) {
 		op := load.Op{Kind: load.Single, ID: ledger.Uint128{Hi: 2, Lo: i}, Debit: 1 + i%16, Credit: 1 + (i+1)%16, Amount: 1}
 		if _, err := c.Do(t.Context(), 0, op); err != nil {
 			t.Fatal(err)
 		}
 	}
-	var after load.Inside
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
-		if after, err = c.Sample(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		if after[0].Syncs-before[0].Syncs >= n {
-			break
-		}
-	}
-	syncs, took := after[0].Syncs-before[0].Syncs, after[0].SyncTime-before[0].SyncTime
-	t.Logf("%d transfers one after another: %d WAL syncs in %v, %d requests", n, syncs, took, after[0].Requests-before[0].Requests)
+	after := drained(t, c)
+	syncs, took := after.Syncs-before.Syncs, after.SyncTime-before.SyncTime
+	t.Logf("%d transfers one after another: %d WAL syncs in %v, %d requests", n, syncs, took, after.Requests-before.Requests)
 	if syncs < n || syncs > 2*n || took <= 0 {
 		t.Fatalf("%d transfers one after another made %d WAL syncs taking %v, want one each", n, syncs, took)
 	}
-	if got := after[0].Requests - before[0].Requests; got != n {
+	if got := after.Requests - before.Requests; got != n {
 		t.Fatalf("%d requests counted, want %d", got, n)
 	}
-	for _, name := range []string{"checkpoints", "wal_bytes", "wal_fpi", "autovacuum"} {
-		if _, ok := after[0].Counters[name]; !ok {
-			t.Fatalf("no counter %s in %v", name, after[0].Counters)
+	for _, name := range sampled {
+		if _, ok := after.Counters[name]; !ok {
+			t.Fatalf("no counter %s in %v", name, after.Counters)
 		}
 	}
+	grew := func(name string) uint64 { return after.Counters[name] - before.Counters[name] }
+	t.Logf("inserted %d, accounts updated %d (%d HOT), transfers updated %d", grew("inserted"), grew("accounts_updates"), grew("accounts_hot_updates"), grew("transfers_updates"))
+	if grew("inserted") != n || grew("accounts_updates") != 2*n || grew("transfers_updates") != 0 || grew("accounts_hot_updates") > grew("accounts_updates") {
+		t.Fatalf("%d transfers counted as %d inserted, %d account updates (%d HOT), %d transfer updates; want %d, %d, at most all, 0",
+			n, grew("inserted"), grew("accounts_updates"), grew("accounts_hot_updates"), grew("transfers_updates"), n, 2*n)
+	}
+}
+
+func TestSampleKeepsSegmentInitApart(t *testing.T) {
+	const switches = 16
+	c := dial(t, V1, 1, rules)
+	before := sample(t, c)
+	for range switches {
+		for _, sql := range []string{"SELECT pg_current_xact_id()", "SELECT pg_switch_wal()"} {
+			if _, err := c.pool.Exec(t.Context(), sql); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	after := drained(t, c)
+	created := after.Counters["wal_init_syncs"] - before.Counters["wal_init_syncs"]
+	t.Logf("%d segment switches: %d syncs of new segments, %d on the commit path", switches, created, after.Syncs-before.Syncs)
+	if created == 0 {
+		t.Fatalf("%d segment switches synced no new segment", switches)
+	}
+	const io = "SELECT sum(fsyncs) FILTER (WHERE context = 'normal')::bigint, sum(fsyncs) FILTER (WHERE context = 'init')::bigint FROM pg_stat_io WHERE object = 'wal'"
+	for range 20 {
+		var normal, segs, normalAgain, segsAgain uint64
+		if err := c.probe.QueryRow(t.Context(), io).Scan(&normal, &segs); err != nil {
+			t.Fatal(err)
+		}
+		got := sample(t, c)
+		if err := c.probe.QueryRow(t.Context(), io).Scan(&normalAgain, &segsAgain); err != nil {
+			t.Fatal(err)
+		}
+		if normal != normalAgain || segs != segsAgain {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		if got.Syncs != normal || got.Counters["wal_init_syncs"] != segs {
+			t.Fatalf("sampled %d syncs and %d syncs of new segments, pg_stat_io holds %d in context normal and %d in init", got.Syncs, got.Counters["wal_init_syncs"], normal, segs)
+		}
+		return
+	}
+	t.Fatal("pg_stat_io never held still")
+}
+
+func TestSampleCountsDeadlocks(t *testing.T) {
+	c := dial(t, V1, 1, rules)
+	ctx := bounded(t)
+	before := sample(t, c)
+	txs := make([]pgx.Tx, 2)
+	for k := range txs {
+		tx, err := c.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+		if _, err := tx.Exec(ctx, "UPDATE accounts SET code = code WHERE id = $1", k+1); err != nil {
+			t.Fatal(err)
+		}
+		txs[k] = tx
+	}
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for k, tx := range txs {
+		wg.Go(func() { _, errs[k] = tx.Exec(ctx, "UPDATE accounts SET code = code WHERE id = $1", 2-k) })
+	}
+	wg.Wait()
+	failed := 0
+	for _, err := range errs {
+		var pe *pgconn.PgError
+		if errors.As(err, &pe) && pe.Code == deadlockDetected {
+			failed++
+		}
+	}
+	if failed != 1 {
+		t.Fatalf("crossed updates gave %v, want one deadlock", errs)
+	}
+	for _, tx := range txs {
+		_ = tx.Rollback(ctx)
+	}
+	after := drained(t, c)
+	if got := after.Counters["deadlocks"] - before.Counters["deadlocks"]; got != 1 {
+		t.Fatalf("one deadlock sampled as %d", got)
+	}
+}
+
+func TestSingleTransfersShareAPoolOf32(t *testing.T) {
+	for _, tc := range []struct {
+		v            Variant
+		lanes, conns int
+	}{{V1, 4, 32}, {V2, 4, 32}, {V1, 64, 32}, {V3, 4, 4}, {V4, 4, 4}} {
+		t.Run(fmt.Sprintf("%v %d lanes", tc.v, tc.lanes), func(t *testing.T) {
+			c := dial(t, tc.v, tc.lanes, rules)
+			if got := c.pool.Stat().TotalConns(); int(got) != tc.conns {
+				t.Fatalf("%d connections open, want %d", got, tc.conns)
+			}
+			if got := c.Describe().Settings["connections"]; got != strconv.Itoa(tc.conns) {
+				t.Fatalf("described with %q connections, want %d", got, tc.conns)
+			}
+		})
+	}
+}
+
+func TestSettleLeavesKeyShareFree(t *testing.T) {
+	for _, v := range []Variant{V1, V3} {
+		t.Run(v.String(), func(t *testing.T) {
+			c := dial(t, v, 4, twoRules)
+			ctx := bounded(t)
+			reserve := load.Op{Kind: load.Reserve, ID: ledger.Uint128{Hi: 4, Lo: 1}, Debit: 1, Credit: 2, Amount: 3}
+			if _, err := c.Do(ctx, 0, reserve); err != nil {
+				t.Fatal(err)
+			}
+			post := load.Op{Kind: load.Post, ID: ledger.Uint128{Hi: 4, Lo: 2}, Debit: 1, Credit: 2, Amount: 3, Pending: reserve.ID}
+			sql, args := "SELECT settle_locked($1, $2, $3)", []any{key(post.ID), key(post.Pending), true}
+			if v.batched() {
+				sql, args = c.batchCall([]load.Op{post})
+			}
+			tx, err := c.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+			if _, err := tx.Exec(ctx, sql, args...); err != nil {
+				t.Fatal(err)
+			}
+			var one int
+			if err := c.pool.QueryRow(ctx, "SELECT 1 FROM transfers WHERE id = $1 FOR NO KEY UPDATE NOWAIT", key(reserve.ID)).Scan(&one); err == nil {
+				t.Fatal("a second settle could lock the reservation while the first is open")
+			}
+			if err := c.pool.QueryRow(ctx, "SELECT 1 FROM transfers WHERE id = $1 FOR KEY SHARE NOWAIT", key(reserve.ID)).Scan(&one); err != nil {
+				t.Fatalf("a key share lock on the reservation has to wait for the settle: %v", err)
+			}
+		})
+	}
+}
+
+func TestBatchSettlesWithTheFirstOfTwins(t *testing.T) {
+	const n = 40
+	c := dial(t, V3, 1, twoRules)
+	ctx := bounded(t)
+	reserves := make([]load.Op, n)
+	ids := make([][16]byte, n)
+	for i := range reserves {
+		k := uint64(i)
+		reserves[i] = load.Op{Kind: load.Reserve, ID: ledger.Uint128{Hi: 5, Lo: k}, Debit: 1 + k%8, Credit: 9 + k%8, Amount: k + 1}
+		ids[i] = key(reserves[i].ID)
+	}
+	for i, a := range c.batch(ctx, reserves) {
+		if a.err != nil || a.out.Existed {
+			t.Fatalf("reserve %d: %+v, %v", i, a.out, a.err)
+		}
+	}
+	rng := rand.New(rand.NewPCG(4, 4))
+	var settles []load.Op
+	for i, r := range reserves {
+		for _, kind := range []load.Kind{load.Post, load.Void} {
+			settles = append(settles, load.Op{Kind: kind, ID: ledger.Uint128{Hi: 6, Lo: uint64(i)}, Debit: r.Debit, Credit: r.Credit, Amount: r.Amount, Pending: r.ID})
+		}
+	}
+	rng.Shuffle(len(settles), func(i, j int) { settles[i], settles[j] = settles[j], settles[i] })
+	first := map[ledger.Uint128]load.Kind{}
+	var posted uint64
+	for _, op := range settles {
+		if _, seen := first[op.Pending]; !seen {
+			first[op.Pending] = op.Kind
+			if op.Kind == load.Post {
+				posted += op.Amount
+			}
+		}
+	}
+	answered := map[ledger.Uint128]bool{}
+	for i, a := range c.batch(ctx, settles) {
+		if a.err != nil || a.out.Existed != answered[settles[i].ID] {
+			t.Fatalf("settle %d (%v of %v): %+v, %v", i, settles[i].Kind, settles[i].Pending, a.out, a.err)
+		}
+		answered[settles[i].ID] = true
+	}
+	rows, err := c.pool.Query(ctx, "SELECT id, state FROM transfers WHERE id = ANY ($1)", ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id [16]byte
+	var state int16
+	wrong := 0
+	_, err = pgx.ForEachRow(rows, []any{&id, &state}, func() error {
+		r := ledger.Uint128{Hi: binary.BigEndian.Uint64(id[:8]), Lo: binary.BigEndian.Uint64(id[8:])}
+		if want := map[load.Kind]int16{load.Post: 2, load.Void: 3}[first[r]]; state != want {
+			wrong++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var debits, pending uint64
+	if err := c.pool.QueryRow(ctx, "SELECT sum(debits_posted)::bigint, sum(debits_pending + credits_pending)::bigint FROM accounts WHERE id <= 16").Scan(&debits, &pending); err != nil {
+		t.Fatal(err)
+	}
+	if wrong != 0 || debits != posted || pending != 0 {
+		t.Fatalf("%d of %d reservations closed against the first settle in the batch, %d posted, want %d, %d still pending", n-wrong, n, debits, posted, pending)
+	}
+	booksBalance(t, c)
+}
+
+func TestFsyncIsMeasured(t *testing.T) {
+	out, err := srv.TestFsync(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.Lines(out) {
+		if strings.Contains(line, "fdatasync") && strings.Contains(line, "ops/sec") {
+			t.Logf("%s", strings.TrimSpace(line))
+			return
+		}
+	}
+	t.Fatalf("no line for fdatasync in\n%s", out)
 }
 
 func TestConfigurationIsApplied(t *testing.T) {
