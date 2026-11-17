@@ -41,8 +41,8 @@ Commit testdata; run on 2000-01-01; machine: test CPU, 16 threads, 16.0 GiB RAM,
 
 | rate | held | speed | flush ms | runs | seconds | p50 ms | p50 flushes | p99 ms | p99.9 ms | throughput/s | target cpu | fsync per transfer, all nodes | transfers per request | retries per transfer | agreement |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 6 of 6 | 6.02 (6.02–6.02) | 4.3 (4.3–4.3) | 18.4 (18.4–18.4) | 18.4 (18.4–18.4) | 1,000 (1,000–1,000) | 10.0% (10.0%–10.0%) | 0.400 (0.400–0.400) | 1.3 (1.3–1.3) | 0.000 (0.000–0.000) | agreed |
-| 2,000 | saturated at 2,000 | slow | 1.40 (1.40–1.40) | 2 of 2 | 6 of 6 | 6.02 (6.02–6.02) | 4.3 (4.3–4.3) | 18.4 (18.4–18.4) | 18.4 (18.4–18.4) | at least 1,500 (1,500–1,500) | 10.0% (10.0%–10.0%) | 0.267 (0.267–0.267) | 1.3 (1.3–1.3) | 0.000 (0.000–0.000) | at least: the generator was the limit |
+| 1,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 6 of 6 | 6.02 (6.02–6.02) | 4.3 (4.3–4.3) | 18.4 (18.4–18.4) | 18.4 (18.4–18.4) | 1,000 (1,000–1,000) | 10.0% (10.0%–10.0%) | 0.400 (0.400–0.400) | 4.0 (4.0–4.0) | 0.000 (0.000–0.000) | agreed |
+| 2,000 | saturated at 2,000 | slow | 1.40 (1.40–1.40) | 2 of 2 | 6 of 6 | 6.02 (6.02–6.02) | 4.3 (4.3–4.3) | 18.4 (18.4–18.4) | 18.4 (18.4–18.4) | at least 1,500 (1,500–1,500) | 10.0% (10.0%–10.0%) | 0.267 (0.267–0.267) | 4.0 (4.0–4.0) | 0.000 (0.000–0.000) | at least: the generator was the limit |
 
 Each node on its own:
 
@@ -72,8 +72,8 @@ How long does a transfer wait at a fixed, moderate load, and what do a million a
 | target | lanes | load | rate | held | speed | flush ms | runs | seconds | p50 ms | p50 flushes | p99 ms | p99.9 ms | throughput/s | target cpu | fsync per transfer, all nodes | transfers per request | retries per transfer | agreement |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | one node | 32 | uniform-10k | 2,000 | held | slow | 1.40 (1.40–1.40) | 2 of 4 | 6 of 6 | 3.07 (3.01–3.14) | 2.2 (2.1–2.2) | 9.34 (9.22–9.47) | 9.34 (9.22–9.47) | 2,000 (2,000–2,000) | 10.0% (10.0%–10.0%) | 0.050 (0.050–0.050) | 4.0 (4.0–4.0) | 0.000 (0.000–0.000) | agreed |
-| three nodes | 32 | uniform-10k | 2,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 5 of 6, worst excluded p99 18.4 ms | 7.36 (6.02–8.70) | 5.3 (4.3–6.2) | 22.0 (18.4–25.6) | 22.0 (18.4–25.6) | 2,000 (2,000–2,000) | 10.0% (10.0%–10.0%) | 0.200 (0.200–0.200) | 1.3 (1.3–1.3) | 0.001 (0.000–0.002) | missed: p50 6.016ms against 8.704ms |
-| three nodes | 32 | twophase | 2,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 6 of 6 | 9.34 (9.22–9.47) | 6.7 (6.6–6.8) | 27.9 (27.1–28.7) | 27.9 (27.1–28.7) | 2,000 (2,000–2,000) | 10.0% (10.0%–10.0%) | 0.200 (0.200–0.200) | 1.3 (1.3–1.3) | 0.000 (0.000–0.000) | agreed |
+| three nodes | 32 | uniform-10k | 2,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 5 of 6, worst excluded p99 18.4 ms | 7.36 (6.02–8.70) | 5.3 (4.3–6.2) | 22.0 (18.4–25.6) | 22.0 (18.4–25.6) | 2,000 (2,000–2,000) | 10.0% (10.0%–10.0%) | 0.200 (0.200–0.200) | 4.0 (4.0–4.0) | 0.001 (0.000–0.002) | missed: p50 6.016ms against 8.704ms |
+| three nodes | 32 | twophase | 2,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 6 of 6 | 9.34 (9.22–9.47) | 6.7 (6.6–6.8) | 27.9 (27.1–28.7) | 27.9 (27.1–28.7) | 2,000 (2,000–2,000) | 10.0% (10.0%–10.0%) | 0.200 (0.200–0.200) | 4.0 (4.0–4.0) | 0.000 (0.000–0.000) | agreed |
 | Postgres, one transaction per transfer, read committed | 32 | uniform-10k | 2,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 6 of 6 | 1.22 (1.22–1.22) | 0.9 (0.9–0.9) | 3.65 (3.65–3.65) | 3.65 (3.65–3.65) | 2,000 (2,000–2,000) | 10.0% (10.0%–10.0%) | 0.100 (0.100–0.100) | 4.0 (4.0–4.0) | 0.001 (0.001–0.001) | agreed |
 | Postgres, batched, read committed | 4 | uniform-10k | 20,000 | saturated at 20,000 | slow | 1.40 (1.40–1.40) | 2 of 2 | 6 of 6 | 713 (705–721) | 509.1 (503.2–514.9) | 2,163 (2,163–2,163) | 2,163 (2,163–2,163) | 14,300 (14,000–14,600) | 10.0% (10.0%–10.0%) | 0.014 (0.014–0.014) | 4.0 (4.0–4.0) | 0.000 (0.000–0.000) | agreed |
 
@@ -145,7 +145,7 @@ Three nodes with one follower stopped after the setup, next to the healthy runs 
 
 | target | lanes | load | rate | held | speed | flush ms | runs | seconds | p50 ms | p50 flushes | p99 ms | p99.9 ms | throughput/s | target cpu | fsync per transfer, all nodes | transfers per request | retries per transfer | agreement |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| three nodes | 32 | uniform-10k | 2,000 | held | slow | 1.40 | 1 of 1 | 3 of 3 | 7.04 | 5.0 | 21.5 | 21.5 | 2,000 | 10.0% | 0.200 | 1.3 | 0.000 | undecided: no pair on an equally fast disk in 1 runs |
+| three nodes | 32 | uniform-10k | 2,000 | held | slow | 1.40 | 1 of 1 | 3 of 3 | 7.04 | 5.0 | 21.5 | 21.5 | 2,000 | 10.0% | 0.200 | 4.0 | 0.000 | undecided: no pair on an equally fast disk in 1 runs |
 
 Each node on its own:
 
@@ -159,7 +159,7 @@ The healthy runs of m2 with the same load:
 
 | target | lanes | load | rate | held | speed | flush ms | runs | seconds | p50 ms | p50 flushes | p99 ms | p99.9 ms | throughput/s | target cpu | fsync per transfer, all nodes | transfers per request | retries per transfer | agreement |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| three nodes | 32 | uniform-10k | 2,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 5 of 6, worst excluded p99 18.4 ms | 7.36 (6.02–8.70) | 5.3 (4.3–6.2) | 22.0 (18.4–25.6) | 22.0 (18.4–25.6) | 2,000 (2,000–2,000) | 10.0% (10.0%–10.0%) | 0.200 (0.200–0.200) | 1.3 (1.3–1.3) | 0.001 (0.000–0.002) | missed: p50 6.016ms against 8.704ms |
+| three nodes | 32 | uniform-10k | 2,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 5 of 6, worst excluded p99 18.4 ms | 7.36 (6.02–8.70) | 5.3 (4.3–6.2) | 22.0 (18.4–25.6) | 22.0 (18.4–25.6) | 2,000 (2,000–2,000) | 10.0% (10.0%–10.0%) | 0.200 (0.200–0.200) | 4.0 (4.0–4.0) | 0.001 (0.000–0.002) | missed: p50 6.016ms against 8.704ms |
 
 Each node on its own:
 

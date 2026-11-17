@@ -30,14 +30,18 @@ var (
 	ErrStats      = errors.New("ledgerrun: bad stats line")
 	ErrBooks      = errors.New("ledgerrun: books do not add up")
 	ErrBudget     = errors.New("ledgerrun: stage does not fit the budget")
+	ErrBehind     = errors.New("ledgerrun: a node fell behind")
+	ErrDiverged   = errors.New("ledgerrun: nodes disagree at the same index")
 )
 
 const (
 	cluster      = 1
 	chunk        = 10_000
 	endowed      = 1 << 63
+	filler       = 1 << 62
 	ext4         = 0xef53
 	readyWithin  = 10 * time.Second
+	levelWithin  = 5 * time.Second
 	stopWithin   = 10 * time.Second
 	sampleWithin = 500 * time.Millisecond
 )
@@ -62,6 +66,7 @@ type Cluster struct {
 	w        load.Workload
 	budget   uint64
 	written  atomic.Uint64
+	filled   uint64
 	mu       sync.Mutex
 	books    load.Books
 }
@@ -126,11 +131,12 @@ func (c *Cluster) launch(ctx context.Context) error {
 	for i := range c.cfg.Nodes {
 		n := &node{id: i + 1, addr: clients[i]}
 		n.log = filepath.Join(c.run, n.name()+".log")
+		n.dir = filepath.Join(c.run, n.name())
 		env := []string{
 			"LEDGER_ID=" + strconv.Itoa(n.id),
 			"LEDGER_PEERS=" + strings.Join(peers, ","),
 			"LEDGER_CLIENT_ADDR=" + n.addr,
-			"LEDGER_DIR=" + filepath.Join(c.run, n.name()),
+			"LEDGER_DIR=" + n.dir,
 		}
 		if c.cfg.Profiles != "" {
 			env = append(env, "LEDGER_PROFILE="+filepath.Join(c.cfg.Profiles, n.name()+".prof"))
@@ -274,6 +280,32 @@ func (c *Cluster) Setup(ctx context.Context, w load.Workload) error {
 			return fmt.Errorf("endow accounts: %w", err)
 		}
 		transfers = transfers[:0]
+	}
+	return nil
+}
+
+func (c *Cluster) Fill(ctx context.Context, n uint64) error {
+	accounts := uint64(c.w.Accounts) //nolint:gosec // G115: a count of accounts, never negative
+	transfers := make([]ledger.Transfer, 0, chunk)
+	ops := make([]load.Op, 0, chunk)
+	for left := n; left > 0; left -= uint64(len(transfers)) {
+		transfers, ops = transfers[:0], ops[:0]
+		for range min(left, chunk) {
+			c.filled++
+			op := load.Op{Kind: load.Single, ID: ledger.Uint128{Hi: filler, Lo: c.filled}, Debit: 1 + c.filled%accounts, Credit: 1 + (c.filled+1)%accounts, Amount: 1}
+			ops = append(ops, op)
+			transfers = append(transfers, transfer(op))
+		}
+		c.written.Add(uint64(len(transfers)))
+		res, err := c.sessions[0].CreateTransfers(ctx, transfers)
+		c.mu.Lock()
+		for _, op := range ops {
+			c.books.Count(op, load.Outcome{}, err)
+		}
+		c.mu.Unlock()
+		if err := refused(res, err); err != nil {
+			return fmt.Errorf("fill the ledger: %w", err)
+		}
 	}
 	return nil
 }

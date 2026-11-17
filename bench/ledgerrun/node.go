@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ var statsFields = []string{"up", "rounds", "wait", "process", "slowest", "logsyn
 type node struct {
 	id      int
 	addr    string
+	dir     string
 	log     string
 	env     []string
 	cores   string
@@ -58,7 +60,7 @@ func (n *node) start(bin string) error {
 	n.stats = &statsLog{file: logf, fresh: make(chan struct{})}
 	cmd.Env = n.env
 	cmd.Stderr = n.stats
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		_ = logf.Close()
 		return err
@@ -152,6 +154,12 @@ func (n *node) sample(ctx context.Context) (load.Part, error) {
 	}
 	st := n.status
 	fields["applied"] = st.Applied
+	if kb, err := peakRSS(n.cmd.Process.Pid); err == nil {
+		fields["peak_rss"] = kb << 10
+	}
+	if size := newestSnapshot(filepath.Join(n.dir, "snap")); size > 0 {
+		fields["snapshot_bytes"] = size
+	}
 	p := load.Part{
 		Name:     n.name(),
 		Role:     st.Role.String(),
@@ -219,6 +227,40 @@ func parseStats(line string) (map[string]uint64, error) {
 		}
 	}
 	return fields, nil
+}
+
+func peakRSS(pid int) (uint64, error) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0, err
+	}
+	for line := range strings.Lines(string(b)) {
+		if rest, ok := strings.CutPrefix(line, "VmHWM:"); ok {
+			return strconv.ParseUint(strings.TrimSuffix(strings.TrimSpace(rest), " kB"), 10, 64)
+		}
+	}
+	return 0, fmt.Errorf("ledgerrun: no VmHWM for process %d", pid)
+}
+
+func newestSnapshot(dir string) uint64 {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "snap-") && strings.HasSuffix(e.Name(), ".snap") {
+			names = append(names, e.Name())
+		}
+	}
+	if len(names) == 0 {
+		return 0
+	}
+	fi, err := os.Stat(filepath.Join(dir, slices.Max(names)))
+	if err != nil {
+		return 0
+	}
+	return uint64(fi.Size()) //nolint:gosec // G115: the size of a file
 }
 
 func tail(path string, lines int) string {

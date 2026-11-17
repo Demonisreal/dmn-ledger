@@ -2,7 +2,10 @@ package ledgerrun
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/Demonisreal/dmn-ledger/bench/load"
 	"github.com/Demonisreal/dmn-ledger/ledger"
@@ -74,4 +77,45 @@ func count(ctx context.Context, books lookups, w load.Workload, want load.Books)
 		return t, fmt.Errorf("%w: found %d of %d sampled transfers", ErrBooks, t.Found, len(want.Sample))
 	}
 	return t, nil
+}
+
+func (c *Cluster) Converge(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, levelWithin)
+	defer cancel()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	nodes := c.running()
+	names := make([]string, len(nodes))
+	for i, n := range nodes {
+		names[i] = n.name()
+	}
+	for {
+		sts, err := c.statuses(ctx)
+		if err == nil {
+			if err := apart(names, sts); !errors.Is(err, ErrBehind) {
+				return err
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(apart(names, sts), err)
+		case <-tick.C:
+		}
+	}
+}
+
+func apart(names []string, sts []ledger.NodeStatus) error {
+	var at []string
+	for i, st := range sts {
+		at = append(at, fmt.Sprintf("%s at %d", names[i], st.Applied))
+	}
+	for i, st := range sts {
+		if st.Applied != sts[0].Applied {
+			return fmt.Errorf("%w: %s", ErrBehind, strings.Join(at, ", "))
+		}
+		if st.ApplyHash != sts[0].ApplyHash || st.HeadSeq != sts[0].HeadSeq || st.Head != sts[0].Head {
+			return fmt.Errorf("%w: %s and %s at %d", ErrDiverged, names[0], names[i], st.Applied)
+		}
+	}
+	return nil
 }

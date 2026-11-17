@@ -263,9 +263,19 @@ func since(now, prev load.Inside) delta {
 		}
 		d.parts[p.Name] = p.Syncs - prev[i].Syncs
 		d.syncs += p.Syncs - prev[i].Syncs
-		d.requests += p.Requests - prev[i].Requests
+	}
+	if was, is := applied(prev), applied(now); is > was {
+		d.requests = is - was
 	}
 	return d
+}
+
+func applied(in load.Inside) uint64 {
+	var most uint64
+	for _, p := range in {
+		most = max(most, p.Requests, p.Counters["applied"])
+	}
+	return most
 }
 
 func (f *File) Refuse(reason string) {

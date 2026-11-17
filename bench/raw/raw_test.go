@@ -223,6 +223,34 @@ func TestInvalidSecondsStayOut(t *testing.T) {
 	}
 }
 
+func TestRequestsFollowTheLeader(t *testing.T) {
+	b := newBuilt()
+	b.run.Before = load.Inside{
+		{Name: "n1", Role: "leader", Term: 2, Requests: 1000, Counters: map[string]uint64{"applied": 1000}},
+		{Name: "n2", Role: "follower", Term: 2, Counters: map[string]uint64{"applied": 1000}},
+	}
+	cluster := func(n1, n2 load.Part) {
+		b.add(load.Window, 100, 0, ms(1.4), ms(10))
+		b.run.Seconds[len(b.run.Seconds)-1].Inside = load.Inside{n1, n2}
+	}
+	part := func(name, role string, term, requests, applied uint64) load.Part {
+		return load.Part{Name: name, Role: role, Term: term, Requests: requests, Counters: map[string]uint64{"applied": applied}}
+	}
+	cluster(part("n1", "leader", 2, 1100, 1100), part("n2", "follower", 2, 0, 1100))
+	cluster(part("n1", "candidate", 3, 0, 1150), part("n2", "follower", 3, 0, 1150))
+	cluster(part("n1", "follower", 4, 0, 1250), part("n2", "leader", 4, 1250, 1250))
+	b.ctl[len(b.ctl)-1].Throttled = 1
+	cluster(part("n1", "follower", 4, 0, 1340), part("n2", "leader", 4, 1350, 1350))
+	f, err := Assemble(head(3), b.run, b.ctl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slow := f.Bands.Slow; slow.Seconds != 3 || slow.PerRequest != 300.0/250 {
+		t.Fatalf("slow band: %d seconds, %.4f transfers per request; the leader applied 100, 50 and 100 entries in the counted seconds, so 300 transfers took 250 requests",
+			slow.Seconds, slow.PerRequest)
+	}
+}
+
 func TestStallsMakeTheRunInvalid(t *testing.T) {
 	for _, c := range []struct {
 		name  string
