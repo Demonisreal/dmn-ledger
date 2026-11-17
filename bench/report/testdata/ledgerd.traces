@@ -1,0 +1,229 @@
+File: ledgerd
+Build ID: 8ae87cb070fbc925362e06b01cd848722086c3b8
+Type: cpu
+Time: 2026-11-16 10:41:06 CET
+Duration: 6.95s, Total samples = 58ms ( 0.83%)
+-----------+-------------------------------------------------------
+       6ms   internal/runtime/syscall/linux.Syscall6
+             internal/runtime/syscall/linux.EpollWait
+             runtime.netpoll
+             runtime.findRunnable
+             runtime.schedule
+             runtime.park_m
+             runtime.mcall
+-----------+-------------------------------------------------------
+       6ms   internal/runtime/syscall/linux.Syscall6
+             syscall.RawSyscall6
+             syscall.Syscall
+             syscall.Close
+             internal/poll.(*SysFile).destroy (inline)
+             internal/poll.(*FD).destroy
+             internal/poll.(*FD).decref
+             internal/poll.(*FD).Close
+             net.(*netFD).Close
+             net.(*conn).Close
+             github.com/Demonisreal/dmn-ledger/internal/server.closeOnStop.func2
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).serveClient
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).acceptClients.func1
+             sync.(*WaitGroup).Go.func1
+-----------+-------------------------------------------------------
+       6ms   internal/runtime/syscall/linux.Syscall6
+             syscall.RawSyscall6
+             syscall.Syscall
+             syscall.Fsync
+             internal/poll.(*FD).Fsync.func1 (inline)
+             internal/poll.ignoringEINTR (inline)
+             internal/poll.(*FD).Fsync
+             os.(*File).Sync
+             main.(*syncs).timed
+             main.(*countedFile).Sync
+             github.com/Demonisreal/dmn-ledger/internal/wal.(*WAL).Sync
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).persist
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).round
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).process
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).Process
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).loop
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run
+             main.serve.func1
+-----------+-------------------------------------------------------
+       2ms   runtime.futex
+             runtime.futexsleep
+             runtime.notesleep
+             runtime.mPark (inline)
+             runtime.stopm
+             runtime.findRunnable
+             runtime.schedule
+             runtime.park_m
+             runtime.mcall
+-----------+-------------------------------------------------------
+       2ms   runtime.mallocgcSmallScanNoHeaderSC1
+             net.newTCPConn
+             net.(*TCPListener).accept
+             net.(*TCPListener).Accept
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).acceptClients
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run.func2
+             sync.(*WaitGroup).Go.func1
+-----------+-------------------------------------------------------
+       2ms   runtime.mallocgcSmallNoScanSC6
+             runtime.mallocgc
+             runtime.makeslice
+             github.com/Demonisreal/dmn-ledger/internal/wal.(*WAL).Entries
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).applyTo
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).round
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).process
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).Process
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).loop
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run
+             main.serve.func1
+-----------+-------------------------------------------------------
+       2ms   internal/runtime/syscall/linux.Syscall6
+             syscall.RawSyscall6
+             syscall.Syscall6
+             syscall.pwrite
+             syscall.Pwrite (inline)
+             internal/poll.(*FD).Pwrite
+             os.(*File).pwrite (inline)
+             os.(*File).WriteAt
+             main.(*countedFile).WriteAt
+             github.com/Demonisreal/dmn-ledger/internal/wal.(*MetaFile).put
+             github.com/Demonisreal/dmn-ledger/internal/wal.(*MetaFile).Seal
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).persist
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).round
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).process
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).Process
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).loop
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run
+             main.serve.func1
+-----------+-------------------------------------------------------
+       2ms   runtime.futex
+             runtime.futexsleep
+             runtime.notesleep
+             runtime.mPark (inline)
+             runtime.stopm
+             runtime.findRunnable
+             runtime.schedule
+             runtime.goexit0
+             runtime.mcall
+-----------+-------------------------------------------------------
+       2ms   internal/runtime/syscall/linux.Syscall6
+             syscall.RawSyscall6
+             syscall.Syscall
+             syscall.Fsync
+             internal/poll.(*FD).Fsync.func1 (inline)
+             internal/poll.ignoringEINTR (inline)
+             internal/poll.(*FD).Fsync
+             os.(*File).Sync
+             main.(*syncs).timed
+             main.(*countedFile).Sync
+             github.com/Demonisreal/dmn-ledger/internal/wal.(*MetaFile).put
+             github.com/Demonisreal/dmn-ledger/internal/wal.(*MetaFile).Seal
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).persist
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).round
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).process
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).Process
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).loop
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run
+             main.serve.func1
+-----------+-------------------------------------------------------
+       2ms   github.com/Demonisreal/dmn-ledger/internal/server.(*Server).answer
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).loop
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run
+             main.serve.func1
+-----------+-------------------------------------------------------
+       2ms   runtime.futex
+             runtime.futexwakeup
+             runtime.notewakeup
+             runtime.startm
+             runtime.wakep
+             runtime.resetspinning
+             runtime.schedule
+             runtime.park_m
+             runtime.mcall
+-----------+-------------------------------------------------------
+       2ms   runtime.releaseSudog
+             runtime.selectgo
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).loop
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run
+             main.serve.func1
+-----------+-------------------------------------------------------
+       4ms   internal/runtime/syscall/linux.Syscall6
+             internal/runtime/syscall/linux.EpollWait
+             runtime.netpoll
+             runtime.findRunnable
+             runtime.schedule
+             runtime.goexit0
+             runtime.mcall
+-----------+-------------------------------------------------------
+       2ms   runtime.findRunnable
+             runtime.schedule
+             runtime.park_m
+             runtime.mcall
+-----------+-------------------------------------------------------
+       2ms   runtime.findRunnable
+             runtime.schedule
+             runtime.goexit0
+             runtime.mcall
+-----------+-------------------------------------------------------
+       2ms   runtime.(*timers).check
+             runtime.findRunnable
+             runtime.schedule
+             runtime.park_m
+             runtime.mcall
+-----------+-------------------------------------------------------
+       2ms   internal/runtime/syscall/linux.Syscall6
+             syscall.RawSyscall6
+             syscall.Syscall
+             syscall.write
+             syscall.Write (inline)
+             internal/poll.ignoringEINTRIO (inline)
+             internal/poll.(*FD).Write
+             net.(*netFD).Write
+             net.(*conn).Write
+             github.com/Demonisreal/dmn-ledger/internal/server.(*clientConn).write
+             sync.(*WaitGroup).Go.func1
+-----------+-------------------------------------------------------
+       2ms   runtime.lock2
+             runtime.lockWithRank (inline)
+             runtime.lock (inline)
+             runtime.sellock
+             runtime.selectgo
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).loop
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run
+             main.serve.func1
+-----------+-------------------------------------------------------
+       2ms   main.(*syncs).timed
+             main.(*countedFile).Sync
+             github.com/Demonisreal/dmn-ledger/internal/wal.(*WAL).Sync
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).persist
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).round
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).process
+             github.com/Demonisreal/dmn-ledger/internal/replica.(*Node).Process
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).loop
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run
+             main.serve.func1
+-----------+-------------------------------------------------------
+       2ms   runtime.stopm
+             runtime.findRunnable
+             runtime.schedule
+             runtime.goexit0
+             runtime.mcall
+-----------+-------------------------------------------------------
+       2ms   internal/runtime/syscall/linux.Syscall6
+             syscall.RawSyscall6
+             syscall.Syscall6
+             syscall.accept4
+             syscall.Accept4
+             internal/poll.accept
+             internal/poll.(*FD).Accept
+             net.(*netFD).accept
+             net.(*TCPListener).accept
+             net.(*TCPListener).Accept
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).acceptClients
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run.func2
+             sync.(*WaitGroup).Go.func1
+-----------+-------------------------------------------------------
+       2ms   runtime.selectgo
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).loop
+             github.com/Demonisreal/dmn-ledger/internal/server.(*Server).Run
+             main.serve.func1
+-----------+-------------------------------------------------------
