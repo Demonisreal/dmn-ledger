@@ -31,8 +31,9 @@ raw file per run to OUT/raw together with plan.json, plan.txt, machine.txt and p
 holds the data of the nodes and of Postgres; it must be on ext4, and DIR/run and DIR/pg must be
 empty. Runs whose raw file is there already are skipped, so a plan that stopped goes on where it
 stopped. The plan refuses to start without a memory limit on its own cgroup: start it through
-scripts/bench.sh. -smoke runs the same plan with windows of 3 s, two stages and one pass, and
-judges nothing. -only keeps the runs whose id matches.
+scripts/bench.sh. -smoke runs the same plan with one pass and judges nothing: the stages of m1
+with 2 s to warm up, a window of 6 s and 3 s to drain, up to the first saturated stage, the other
+runs with windows of 3 s; it takes about 20 minutes. -only keeps the runs whose id matches.
 
 report writes RESULTS.md and the curves from DIR/raw. check compares them with the raw files and
 judges every measurement; it exits with 1 when a verdict fails.`
@@ -46,7 +47,7 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := stopping()
 	defer stop()
 	context.AfterFunc(ctx, stop)
 	switch args[0] {
@@ -71,6 +72,10 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	return 2
 }
 
+func stopping() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+}
+
 func selftest(ctx context.Context, stdout, stderr io.Writer) int {
 	st, err := load.RunSelftest(ctx)
 	fmt.Fprintf(stdout, "null target at %d/s: p50 %v, p99 %v, dispatcher late at p99 %v\n", load.FloorRate, st.FloorP50, st.FloorP99, st.FloorLate)
@@ -89,7 +94,7 @@ func plan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	dir := fs.String("dir", "", "bench directory for the data of the nodes, of Postgres and the binaries")
 	out := fs.String("out", "", "folder for the raw files and the texts of the plan")
 	repo := fs.String("repo", "..", "root of the dmn-ledger repository")
-	smoke := fs.Bool("smoke", false, "windows of 3 s, two stages, one pass, no verdict")
+	smoke := fs.Bool("smoke", false, "one pass, short windows, every stage of m1 up to the first saturated one, no verdict")
 	only := fs.String("only", "", "run only the items with a run id that matches this regular expression")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -101,7 +106,7 @@ func plan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	b := &bench{shape: shape{smoke: *smoke}, log: stdout, root: os.DirFS("/"), files: make(map[string]*raw.File)}
+	b := &bench{shape: shape{smoke: *smoke}, log: stdout, root: os.DirFS("/"), files: make(map[string]*raw.File), earlier: make(map[string]bool)}
 	var err error
 	for _, p := range []struct {
 		to   *string

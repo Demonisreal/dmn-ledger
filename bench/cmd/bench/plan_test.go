@@ -29,7 +29,7 @@ func TestScheduleRunsOnce(t *testing.T) {
 		stages int
 	}{
 		{false, map[string]int{"m1": 16, "m2": 48, "m3": 4, "m4": 10, "m5": 8, "m7": 4}, 10},
-		{true, map[string]int{"m1": 8, "m2": 24, "m3": 4, "m4": 5, "m5": 8, "m7": 2}, 2},
+		{true, map[string]int{"m1": 8, "m2": 24, "m3": 4, "m4": 5, "m5": 8, "m7": 2}, 10},
 	} {
 		items := shape{smoke: c.smoke}.schedule()
 		got := make(map[string]int)
@@ -67,8 +67,37 @@ func TestStagesDouble(t *testing.T) {
 	if got := (shape{}).stages(); got[0] != 1_000 || got[len(got)-1] != topStage || len(got) != 10 {
 		t.Errorf("stages %v", got)
 	}
-	if got := (shape{smoke: true}).stages(); !slices.Equal(got, []int{1_000, 2_000}) {
-		t.Errorf("smoke stages %v", got)
+	if got := (shape{smoke: true}).stages(); !slices.Equal(got, (shape{}).stages()) {
+		t.Errorf("smoke stages %v, want the whole raster up to the first saturated stage", got)
+	}
+	want := timing{warm: 2 * time.Second, window: 6 * time.Second, longest: 6 * time.Second, drain: 3 * time.Second, need: 3}
+	if got := (shape{smoke: true}).stage(); got != want {
+		t.Errorf("smoke stage %+v, want %+v", got, want)
+	}
+}
+
+func TestMachineTextHoldsTheHeat(t *testing.T) {
+	out := t.TempDir()
+	b := &bench{out: out}
+	for at, h := range map[string]control.Heat{
+		"20261118T190000Z": {Preference: "performance", Profile: "performance", MaxPerf: "100", PackageTemp: 52, Packages: []control.PackageHeat{{ID: "0", Throttles: 62114, ThrottledMs: 273576}}},
+		"20261118T233000Z": {Preference: "performance", Profile: "performance", MaxPerf: "100", PackageTemp: 71, Packages: []control.PackageHeat{{ID: "0", Throttles: 99000, ThrottledMs: 390000}}},
+	} {
+		if err := writeJSON(filepath.Join(out, "heat-"+at+".json"), h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	text, err := b.machineText()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"heat heat-20261118T190000Z.json: energy_performance_preference performance, platform_profile performance, intel_pstate max_perf_pct 100, x86_pkg_temp 52.0 °C; package 0: package_throttle_count 62114, package_throttle_total_time_ms 273576",
+		"heat heat-20261118T233000Z.json: energy_performance_preference performance, platform_profile performance, intel_pstate max_perf_pct 100, x86_pkg_temp 71.0 °C; package 0: package_throttle_count 99000, package_throttle_total_time_ms 390000",
+	} {
+		if !strings.Contains(string(text), want) {
+			t.Errorf("machine.txt lacks %q:\n%s", want, text)
+		}
 	}
 }
 

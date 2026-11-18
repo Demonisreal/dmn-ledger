@@ -27,13 +27,13 @@ func summary(f *raw.File) string {
 		parts = append(parts, "saturated, limit "+v.Limit)
 	}
 	in := 0
-	switch v.Speed {
-	case control.Slow:
-		in = f.Bands.Slow.Seconds
-	case control.Fast:
-		in = f.Bands.Fast.Seconds
+	if v.Speed.Rank() > 0 {
+		in = bandOf(f).Seconds
 	}
 	counted := fmt.Sprintf("%d of %d window seconds counted", in, in+v.Excluded)
+	if v.Throttled > 0 {
+		counted += fmt.Sprintf(", thermal limit in %d", v.Throttled)
+	}
 	if left := leftOut(f); left != "" {
 		counted += " (left out: " + left + ")"
 	}
@@ -42,13 +42,13 @@ func summary(f *raw.File) string {
 		parts = append(parts, fmt.Sprintf("peak rss of a node %d MiB", rss>>20))
 	}
 	if f.Target.Kind == "postgres" {
-		var failed uint64
+		var shed uint64
 		for _, s := range f.Seconds {
 			if s.Phase == load.Window.String() {
-				failed += s.Failed
+				shed += s.Shed
 			}
 		}
-		parts = append(parts, fmt.Sprintf("deadlocks in the window %d, transfers given up in the window %d", grew(f, "deadlocks"), failed))
+		parts = append(parts, fmt.Sprintf("deadlocks in the window %d, transfers given up in the window %d", grew(f, "deadlocks"), shed))
 	}
 	if f.Measurement == "m4" {
 		changed := "no"
@@ -123,6 +123,12 @@ func (b *bench) planText() []byte {
 		}
 		fmt.Fprintf(&s, "  %s  %s\n", l.id, l.text)
 	}
+	if len(b.blocks) > 0 {
+		s.WriteString("\nInvalid runs per measurement at the end, the last attempt of each run; bench check judges the plan:\n")
+		for _, l := range b.blocks {
+			fmt.Fprintf(&s, "  %s\n", l)
+		}
+	}
 	if b.stopped != "" {
 		fmt.Fprintf(&s, "\n%s\n", b.stopped)
 	}
@@ -165,6 +171,25 @@ func (b *bench) machineText() ([]byte, error) {
 			fmt.Fprintf(&s, "  %s: fsync on a growing file %v over %d s, fdatasync on a preallocated file %v over %d s, ratio %.2f\n",
 				mean.Speed, mean.Growing.Round(time.Microsecond), mean.GrowingSeconds, mean.Prealloc.Round(time.Microsecond), mean.PreallocSeconds, mean.Ratio)
 		}
+	}
+	heats, err := filepath.Glob(filepath.Join(b.out, "heat-*.json"))
+	if err != nil {
+		return nil, err
+	}
+	if len(heats) > 0 {
+		s.WriteString("\nheat at the start and the end of each session of the plan:\n")
+	}
+	for _, name := range heats {
+		var h control.Heat
+		if err := readJSON(name, &h); err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&s, "  heat %s: energy_performance_preference %s, platform_profile %s, intel_pstate max_perf_pct %s, x86_pkg_temp %.1f °C",
+			filepath.Base(name), h.Preference, h.Profile, h.MaxPerf, h.PackageTemp)
+		for _, p := range h.Packages {
+			fmt.Fprintf(&s, "; package %s: package_throttle_count %d, package_throttle_total_time_ms %d", p.ID, p.Throttles, p.ThrottledMs)
+		}
+		s.WriteString("\n")
 	}
 	tests, err := filepath.Glob(filepath.Join(b.out, "selftest-*.json"))
 	if err != nil {

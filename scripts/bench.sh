@@ -8,6 +8,7 @@ marker=.dmn-ledger-bench
 usage() {
 	echo "usage: scripts/bench.sh all|smoke [flags for bench plan]" >&2
 	echo "       scripts/bench.sh clean" >&2
+	echo "all runs the plan for four to five hours; smoke runs it once with short windows in about 20 minutes" >&2
 	exit 2
 }
 
@@ -40,8 +41,19 @@ power() {
 	echo "not on mains"
 }
 
+enough_memory() {
+	local memory=$1 want have
+	want=$(($(numfmt --from=iec "$memory") + (1 << 30)))
+	have=$(($(awk '$1 == "MemAvailable:" {print $2}' /proc/meminfo) * 1024))
+	if ((have < want)); then
+		echo "bench: $((have >> 20)) MiB available, the plan wants $((want >> 20)) MiB (its limit of $memory and 1 GiB to spare), $(((want - have) >> 20)) MiB missing" >&2
+		echo "bench: close something, or start it with a lower limit: BENCH_MEMORY=5G scripts/bench.sh all" >&2
+		return 1
+	fi
+}
+
 plan() {
-	local mode=$1 dir out memory commit status=0
+	local mode=$1 dir out memory commit status=0 inhibit=()
 	shift
 	dir=$(own_dir)
 	mkdir -p "$dir/bin"
@@ -51,6 +63,10 @@ plan() {
 		memory=${BENCH_MEMORY:-4G}
 		out=$dir/smoke/$(date -u +%Y%m%dT%H%M%SZ)-$commit
 		set -- -smoke "$@"
+	elif (($# > 0)); then
+		memory=${BENCH_MEMORY:-6G}
+		out=$dir/trial/$(date -u +%Y%m%dT%H%M%SZ)-$commit
+		echo "bench: all with flags for bench plan ($*) is a trial, so its results go below $dir and not to docs/bench"
 	else
 		memory=${BENCH_MEMORY:-6G}
 		shopt -s nullglob
@@ -64,8 +80,12 @@ plan() {
 	fi
 	echo "bench: governor $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown), $(power), memory limit $memory"
 	echo "bench: results go to $out"
+	enough_memory "$memory" || return 1
+	if command -v systemd-inhibit >/dev/null; then
+		inhibit=(systemd-inhibit --what=idle:sleep --who=dmn-ledger-bench --why="the benchmark plan runs")
+	fi
 	(cd "$repo/bench" && go build -o "$dir/bin/bench" ./cmd/bench)
-	systemd-run --user --scope --quiet -p MemoryMax="$memory" -p MemorySwapMax=0 -- \
+	"${inhibit[@]}" systemd-run --user --scope --quiet -p MemoryMax="$memory" -p MemorySwapMax=0 -- \
 		taskset -c 8-15 "$dir/bin/bench" plan -dir "$dir" -repo "$repo" -out "$out" "$@" || status=$?
 	if compgen -G "$out/raw/*.json" >/dev/null; then
 		"$dir/bin/bench" report "$out" || status=1

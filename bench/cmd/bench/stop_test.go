@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -189,6 +190,44 @@ func TestDirtyTree(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestHangUpStopsThePlan(t *testing.T) {
+	ctx, stop := stopping()
+	defer stop()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("SIGHUP did not stop the plan, so it would not clean up")
+	}
+}
+
+func TestStageWithoutRoomEndsTheChain(t *testing.T) {
+	bins := t.TempDir()
+	bin, err := ledgerrun.Build(t.Context(), "../../..", bins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	fsys := machine("6442450944", "0", "16000000")
+	cg, _ := ownCgroup(fsys)
+	b := &bench{root: fsys, cgroup: cg, dir: dir, bins: map[string]string{"": bin}, th: control.Defaults(), log: io.Discard, files: map[string]*raw.File{}}
+	var runs []run
+	for i, rate := range []int{1_000_000, 2_000_000} {
+		runs = append(runs, run{m: "m1", pass: 1, nr: 1, target: l1, lanes: 1, workload: "uniform-10k", rate: rate, stage: i + 1, timing: shape{smoke: true}.stage()})
+	}
+	if err := b.onLedger(t.Context(), runs); err != nil {
+		t.Fatalf("a stage without room for a window of %v: %v, want the chain to end without an error", ledgerrun.MinWindow, err)
+	}
+	if len(b.lines) != 1 || b.lines[0].id != runs[0].id() || !strings.Contains(b.lines[0].text, "not run") || len(b.files) != 0 {
+		t.Fatalf("plan.txt lines %+v, %d raw files; want one line that the stage did not run, and no raw file", b.lines, len(b.files))
+	}
+	if left := ownLedgerd(os.DirFS("/")); len(left) > 0 {
+		t.Fatalf("ledgerd %v still runs", left)
 	}
 }
 

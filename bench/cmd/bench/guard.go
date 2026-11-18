@@ -27,6 +27,7 @@ var (
 )
 
 const (
+	container  = 3 << 30
 	spare      = 1 << 30
 	memoryWait = time.Minute
 	memoryPoll = 5 * time.Second
@@ -97,6 +98,10 @@ func headroom(fsys fs.FS, cgroups []string) (uint64, error) {
 	return room, nil
 }
 
+func (b *bench) postgresLimit() uint64 {
+	return min(container, max(b.limit, container+spare)-container)
+}
+
 func (b *bench) capTo(ctx context.Context, bytes uint64) error {
 	if b.limit == 0 {
 		return nil
@@ -132,11 +137,18 @@ func awaitMemory(ctx context.Context, fsys fs.FS, cgroups []string, log io.Write
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("%w: %d MiB available, a run may take %d MiB more and 1 GiB must stay free; close something and start the plan again, it goes on where it stopped",
-				errMemory, have>>20, (want-spare)>>20)
+			var limits []string
+			for _, cg := range cgroups {
+				if limit, _, err := cgroupMemory(fsys, cg); err == nil {
+					limits = append(limits, fmt.Sprintf("%d MiB", limit>>20))
+				}
+			}
+			return fmt.Errorf("%w: %d MiB available, %d MiB missing: a run may take %d MiB more under the limits %s, and 1 GiB must stay free; "+
+				"close something, or start the plan with BENCH_MEMORY=5G scripts/bench.sh all, and it goes on where it stopped",
+				errMemory, have>>20, (want-have)>>20, (want-spare)>>20, strings.Join(limits, " and "))
 		}
 		if !said {
-			fmt.Fprintf(log, "waiting for memory: %d MiB available, want %d MiB\n", have>>20, want>>20)
+			fmt.Fprintf(log, "waiting for memory: %d MiB available, want %d MiB, %d MiB missing\n", have>>20, want>>20, (want-have)>>20)
 			said = true
 		}
 		if !pause(ctx, memoryPoll) {

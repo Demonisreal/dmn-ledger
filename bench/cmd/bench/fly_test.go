@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -42,6 +43,26 @@ func TestEnoughLeavesOutSecondsWithoutASample(t *testing.T) {
 	}
 	if enough(th, slowSeconds(1), all[:1], 1, 1) {
 		t.Error("a window without a second is enough")
+	}
+}
+
+func TestEnoughEndsAnUnpacedWindow(t *testing.T) {
+	th := control.Defaults()
+	secs := make([]control.Second, 11)
+	seen := make([]sampled, 12)
+	for i := range secs {
+		secs[i] = control.Second{Span: time.Second, Flushes: 8, FlushTime: 16 * time.Millisecond, Target: 1.0}
+		seen[i+1].ok = true
+	}
+	seen[0].ok = true
+	if !enough(th, secs, seen, 1, 8) {
+		t.Fatal("ten seconds with 8 flushes on a full core are not enough for 8")
+	}
+	for _, i := range []int{3, 5, 7} {
+		secs[i].Target = 0.02
+	}
+	if enough(th, secs, seen, 1, 8) {
+		t.Error("three idle seconds of ten still left 8 valid seconds")
 	}
 }
 
@@ -111,6 +132,133 @@ func TestMoreRunsWhereUndecided(t *testing.T) {
 	}
 }
 
+func stageFile(id string, pass, rate int, valid, saturated bool, reasons ...string) *raw.File {
+	speed := control.Slow
+	if !valid {
+		speed = control.Restless
+	}
+	f := file(id, pass, valid, speed, 1500*time.Microsecond, 0, float64(rate), reasons...)
+	f.Measurement, f.Load.Rate, f.Verdict.Saturated = "m1", rate, saturated
+	if saturated {
+		f.Verdict.Limit = raw.LimitTarget
+	}
+	return f
+}
+
+func TestPassWithoutAValidSaturatedStageIsNotSettled(t *testing.T) {
+	files := []*raw.File{
+		stageFile("a-16000-1", 1, 16000, true, false),
+		stageFile("a-32000-1", 1, 32000, false, true, raw.WhyRestless, raw.WhyStalled),
+		stageFile("a-16000-2", 2, 16000, true, false),
+		stageFile("a-32000-2", 2, 32000, false, true, raw.WhyRestless, raw.WhyStalled),
+	}
+	if settled("m1", files) {
+		t.Error("both passes ended in a saturated stage that is not valid: the chain has no throughput under overload, yet it counts as settled")
+	}
+	files[3] = stageFile("a-32000-2", 2, 32000, true, true)
+	if settled("m1", files) {
+		t.Error("pass 1 is open and pass 2 saturated: settled")
+	}
+	files = append(files, stageFile("a-32000-1r1", 1, 32000, true, true))
+	if !settled("m1", files) {
+		t.Error("the repeat of pass 1 saturated as pass 2 did: undecided")
+	}
+	held := []*raw.File{stageFile("b-16000-1", 1, 16000, true, false), stageFile("b-16000-2", 2, 16000, true, true)}
+	if settled("m1", held) {
+		t.Error("one pass held every stage, the other saturated at the target: settled without a second saturated run")
+	}
+	if settled("m1", []*raw.File{stageFile("c-16000-1", 1, 16000, false, false, raw.WhyFailed)}) {
+		t.Error("a chain without a valid run counts as settled")
+	}
+}
+
+func TestRepeatsComeBeforeTheThirdPass(t *testing.T) {
+	b := &bench{files: map[string]*raw.File{}}
+	for pass := 1; pass <= 2; pass++ {
+		var it item
+		for i, rate := range []int{16000, 32000} {
+			it.runs = append(it.runs, run{m: "m1", pass: pass, nr: pass, target: v3, lanes: r4Lanes, workload: "uniform-10k", rate: rate, stage: i + 1})
+		}
+		b.items = append(b.items, it)
+		for _, r := range it.runs {
+			b.files[r.id()] = stageFile(r.id(), pass, r.rate, true, r.rate == 32000)
+			b.remember(r)
+		}
+	}
+	open := b.items[1].runs[1]
+	b.files[open.id()] = stageFile(open.id(), 2, open.rate, false, true, raw.WhyRestless)
+	var ran []string
+	for step := range steps {
+		for _, it := range b.extra(step) {
+			for _, r := range it.runs {
+				if b.files[r.id()] == nil {
+					ran = append(ran, r.id())
+					b.files[r.id()] = stageFile(r.id(), r.pass, r.rate, true, r.rate == 32000)
+					b.remember(r)
+				}
+			}
+		}
+	}
+	if want := []string{open.id() + "r1"}; !slices.Equal(ran, want) {
+		t.Errorf("ran %q, want only %q: the repeat of a restless saturated stage settles the chain before a third pass is decided", ran, want)
+	}
+}
+
+func TestOneBadRunDoesNotStopASmallBlock(t *testing.T) {
+	b := &bench{files: map[string]*raw.File{}, out: t.TempDir()}
+	var runs []run
+	for _, rate := range []int{2000, 2001, 120000, 50000} {
+		r := run{m: "m3", pass: 1, nr: 1, target: l1, lanes: 4, workload: "uniform-10k", rate: rate, build: "pprof"}
+		b.items = append(b.items, item{runs: []run{r}})
+		runs = append(runs, r)
+	}
+	for _, r := range runs[:2] {
+		b.files[r.id()] = file(r.id(), 1, true, control.Slow, 0, 0, 0)
+		b.remember(r)
+	}
+	for _, r := range runs[2:] {
+		b.files[r.id()] = file(r.id(), 1, false, control.Slow, 0, 0, 0, raw.WhyFailed)
+		b.remember(r)
+		if err := b.judgeBlocks(false); err != nil {
+			t.Fatalf("profile runs that failed stop the whole plan after an hour: %v", err)
+		}
+	}
+	if err := b.judgeBlocks(true); err != nil {
+		t.Fatalf("the end of the plan: %v, want the verdict in plan.txt and no error", err)
+	}
+	if text := string(b.planText()); !strings.Contains(text, "m3: 2 of 4 runs invalid, more than a quarter") {
+		t.Errorf("plan.txt without the verdict on m3:\n%s", text)
+	}
+}
+
+func TestGoingOnAfterAHaltRunsSomething(t *testing.T) {
+	b := &bench{files: map[string]*raw.File{}, earlier: map[string]bool{}}
+	var runs []run
+	for i := range 8 {
+		r := run{m: "m2", pass: 1, nr: 1, target: l1, lanes: 32, workload: "uniform-10k", rate: 1000 * (i + 1)}
+		b.items = append(b.items, item{runs: []run{r}})
+		runs = append(runs, r)
+	}
+	for _, r := range runs[:3] {
+		b.files[r.id()] = file(r.id(), 1, false, control.Slow, 0, 0, 0, raw.WhyFailed)
+		b.earlier[r.id()] = true
+		b.remember(r)
+	}
+	if err := b.judgeBlocks(false); err != nil {
+		t.Fatalf("the plan goes on after the halt and stops again before it ran anything: %v", err)
+	}
+	b.files[runs[3].id()] = file(runs[3].id(), 1, true, control.Slow, 0, 0, 0)
+	b.remember(runs[3])
+	if err := b.judgeBlocks(false); err != nil {
+		t.Fatalf("a valid run after going on: %v", err)
+	}
+	b.files[runs[4].id()] = file(runs[4].id(), 1, false, control.Slow, 0, 0, 0, raw.WhyFailed)
+	b.remember(runs[4])
+	if err := b.judgeBlocks(false); !errors.Is(err, errTooManyBad) {
+		t.Fatalf("a fourth run of eight invalid for good: %v, want errTooManyBad", err)
+	}
+}
+
 func restlessBench() (*bench, run) {
 	r := run{m: "m2", pass: 1, nr: 1, target: l1, lanes: 32, workload: "uniform-10k", rate: r32}
 	b := &bench{files: map[string]*raw.File{}, items: []item{{runs: []run{r}}}}
@@ -166,15 +314,24 @@ func TestTooManyBadCountsAfterRepeats(t *testing.T) {
 	if err := b.judgeBlocks(false); err != nil {
 		t.Fatalf("three restless runs of eight before their repeats: %v", err)
 	}
-	if err := b.judgeBlocks(true); !errors.Is(err, errTooManyBad) {
-		t.Fatalf("three of three made runs restless at the end: %v, want errTooManyBad", err)
+	if err := b.judgeBlocks(true); err != nil || !strings.Contains(string(b.planText()), "m2: 3 of 3 runs invalid, more than a quarter") {
+		t.Fatalf("three of three made runs restless at the end: %v, want the verdict in plan.txt\n%s", err, b.planText())
 	}
 	for _, r := range runs[3:] {
 		b.files[r.id()] = file(r.id(), 1, true, control.Slow, 0, 0, 0)
 		b.remember(r)
 	}
-	if err := b.judgeBlocks(true); !errors.Is(err, errTooManyBad) {
-		t.Fatalf("three of eight invalid after the repeats: %v, want errTooManyBad", err)
+	if err := b.judgeBlocks(true); err != nil || !strings.Contains(string(b.planText()), "m2: 3 of 8 runs invalid, more than a quarter") {
+		t.Fatalf("three of eight invalid after the repeats: %v\n%s", err, b.planText())
+	}
+	for _, r := range runs[:3] {
+		b.files[r.id()] = file(r.id(), 1, false, control.Slow, 0, 0, 0, raw.WhyGenerator)
+	}
+	if err := b.judgeBlocks(false); err != nil {
+		t.Fatalf("three of eight invalid only because the generator was at its limit: %v", err)
+	}
+	if err := b.judgeBlocks(true); err != nil || !strings.Contains(string(b.planText()), "m2: 0 of 8 runs invalid, 3 more only because the generator was at its limit") {
+		t.Fatalf("runs at the limit of the generator at the end: %v\n%s", err, b.planText())
 	}
 	for _, r := range runs[:3] {
 		b.files[r.id()] = file(r.id(), 1, false, control.Slow, 0, 0, 0, raw.WhyFailed)
@@ -209,11 +366,15 @@ func TestPlanTextNamesEveryRun(t *testing.T) {
 	f := file(r.id(), 1, false, control.Restless, 0, 0, 0, raw.WhyRestless, raw.WhyStalled)
 	f.Seconds = []raw.Second{
 		{Phase: load.Window.String(), Why: []string{control.WhyForeign}},
-		{Phase: load.Window.String(), Why: []string{control.WhyForeign, control.WhyThrottled}},
+		{Phase: load.Window.String(), Why: []string{control.WhyForeign, control.WhySwapped}},
 		{Phase: load.Window.String(), Valid: true, Speed: control.Fast, Parts: []raw.Part{{Name: "n1", Counters: map[string]uint64{"peak_rss": 300 << 20}}}},
 	}
-	f.Verdict.Excluded = 3
+	f.Verdict.Excluded, f.Verdict.Throttled = 3, 2
 	b.note(r, summary(f))
+	quiet := file("m1-v3x4-uniform-10k-64000-1", 1, true, control.Unpaced, 0, 0, 18000)
+	quiet.Bands.Unpaced.Seconds, quiet.Verdict.Saturated, quiet.Verdict.Limit, quiet.Target.Kind = 12, true, raw.LimitTarget, "postgres"
+	quiet.Seconds = []raw.Second{{Phase: load.Window.String(), Shed: 40}, {Phase: load.Window.String(), Shed: 2}, {Phase: load.Drain.String(), Shed: 7}}
+	b.note(r, summary(quiet))
 	other := run{m: "m7", pass: 1, nr: 1, target: l3, lanes: 4, workload: "uniform-10k", rate: r4}
 	b.note(other, "not selected")
 	b.only = regexp.MustCompile("^m2")
@@ -221,7 +382,8 @@ func TestPlanTextNamesEveryRun(t *testing.T) {
 	text := string(b.planText())
 	for _, want := range []string{
 		"at commit f70d5b0, tree with changes (dirty)",
-		"m2, pass 1\n  m2-l1x32-uniform-10k-2000-1  invalid: restless; target stalled; speed restless; 0 of 3 window seconds counted (left out: foreign cpu 2, other speed 1, throttled 1); peak rss of a node 300 MiB",
+		"m2, pass 1\n  m2-l1x32-uniform-10k-2000-1  invalid: restless; target stalled; speed restless; 0 of 3 window seconds counted, thermal limit in 2 (left out: foreign cpu 2, other speed 1, swapped out 1); peak rss of a node 300 MiB",
+		"valid; speed unpaced; saturated, limit target; 12 of 12 window seconds counted; deadlocks in the window 0, transfers given up in the window 42",
 		"m7, pass 1\n  m7-l3x4-uniform-10k-20000-1  not selected",
 		`Only runs matching "^m2"`,
 		"m6 is not part of this plan",

@@ -72,6 +72,9 @@ func (b *bench) prepare(ctx context.Context) error {
 		return err
 	}
 	at := time.Now().UTC().Format(stamp)
+	if err := writeJSON(filepath.Join(b.out, "heat-"+at+".json"), control.ReadHeat(b.root)); err != nil {
+		return err
+	}
 	fmt.Fprintf(b.log, "disk probe, %v for each kind of write\n", b.shape.probe())
 	if b.probe, err = control.RunProbe(ctx, b.dir, b.disk, b.shape.probe(), b.th); err != nil {
 		return err
@@ -141,7 +144,7 @@ func (b *bench) discard(ctx context.Context) (err error) {
 	if b.smoke {
 		window = 3 * time.Second
 	}
-	if err := b.capTo(ctx, min(b.limit, b.postgresLimit())); err != nil {
+	if err := b.capTo(ctx, b.postgresLimit()); err != nil {
 		return err
 	}
 	if err := awaitMemory(ctx, b.root, []string{b.cgroup, b.srv.Cgroup()}, b.log); err != nil {
@@ -164,7 +167,7 @@ func (b *bench) discard(ctx context.Context) (err error) {
 	if _, err := load.Drive(ctx, c, load.NewStream(w, r.seed()), load.Plan{Rate: r.rate, Lanes: r.lanes, Window: window}); err != nil {
 		return fmt.Errorf("%s: %w", r.id(), err)
 	}
-	b.note(r, "discarded: WAL segments are created on first use")
+	b.note(r, "discarded: the first run after the start of the container")
 	return nil
 }
 
@@ -214,6 +217,7 @@ func (b *bench) readFiles() error {
 			return fmt.Errorf("%s holds the run %s", name, f.ID)
 		}
 		b.files[f.ID] = f
+		b.earlier[f.ID] = true
 	}
 	return nil
 }
@@ -268,6 +272,9 @@ func (b *bench) finish(ctx context.Context, cause error) error {
 		probe, err := control.RunProbe(ctx, b.dir, b.disk, b.shape.probe(), b.th)
 		if err == nil {
 			err = writeJSON(filepath.Join(b.out, "probe-"+at+".json"), probe)
+		}
+		if err == nil {
+			err = writeJSON(filepath.Join(b.out, "heat-"+at+".json"), control.ReadHeat(b.root))
 		}
 		if err == nil {
 			err = b.writeMachine()

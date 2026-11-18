@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -62,8 +63,10 @@ type bench struct {
 	srv            *pg.Server
 	described      bool
 	files          map[string]*raw.File
+	earlier        map[string]bool
 	slots          []run
 	lines          []line
+	blocks         []string
 	stopped        string
 	ran            bool
 }
@@ -90,24 +93,32 @@ func (b *bench) fly(ctx context.Context) error {
 			return err
 		}
 	}
-	if b.smoke || b.only != nil {
+	if b.smoke {
 		return nil
 	}
-	for pass := 3; pass <= 4; pass++ {
-		for _, it := range b.undecided(pass) {
-			if err := b.item(ctx, it); err != nil {
-				return err
-			}
-		}
-	}
-	for round := 1; round <= 2; round++ {
-		for _, r := range b.restless(round) {
-			if err := b.fresh(ctx, []run{r}); err != nil {
-				return err
+	if b.only == nil {
+		for step := range steps {
+			for _, it := range b.extra(step) {
+				if err := b.item(ctx, it); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	return b.judgeBlocks(true)
+}
+
+var steps = []struct{ round, pass int }{{round: 1}, {round: 2}, {pass: 3}, {pass: 4}, {round: 1}, {round: 2}}
+
+func (b *bench) extra(step int) []item {
+	if s := steps[step]; s.pass > 0 {
+		return b.undecided(s.pass)
+	}
+	var out []item
+	for _, r := range b.restless(steps[step].round) {
+		out = append(out, item{runs: []run{r}})
+	}
+	return out
 }
 
 func (b *bench) item(ctx context.Context, it item) error {
@@ -154,6 +165,7 @@ func (b *bench) onLedger(ctx context.Context, runs []run) (err error) {
 	if err := b.capTo(ctx, b.limit); err != nil {
 		return err
 	}
+
 	if err := awaitMemory(ctx, b.root, []string{b.cgroup}, b.log); err != nil {
 		return err
 	}
@@ -204,6 +216,11 @@ func (b *bench) onLedger(ctx context.Context, runs []run) (err error) {
 		p, need := r.plan(), r.timing.need
 		if r.m != "m4" {
 			fitted, err := c.Fit(ctx, p)
+			if errors.Is(err, ledgerrun.ErrBudget) {
+				b.note(r, fmt.Sprintf("not run, the chain ends before this stage: cut to the budget it would measure less than %v (%v)", ledgerrun.MinWindow, err))
+				fmt.Fprintf(b.log, "%s: not run, no room for a window of %v\n", r.id(), ledgerrun.MinWindow)
+				break
+			}
 			if err != nil {
 				return fmt.Errorf("%s: %w", r.id(), err)
 			}
@@ -285,7 +302,7 @@ func (b *bench) onPostgres(ctx context.Context, runs []run) error {
 	watch := func() control.Watch {
 		return control.Watch{Disk: b.disk, Cgroups: []string{b.srv.Cgroup()}, CPUs: targetCPUs}
 	}
-	if err := b.capTo(ctx, min(b.limit, b.postgresLimit())); err != nil {
+	if err := b.capTo(ctx, b.postgresLimit()); err != nil {
 		return err
 	}
 	for _, r := range runs {
@@ -362,6 +379,7 @@ func enough(th control.Thresholds, secs []control.Second, seen []sampled, warm, 
 		return sec >= 0 && i < len(seen) && (!seen[i].ok || seen[i].stale)
 	}
 	marks := th.Judge(secs)
+	th.Unpace(marks, secs, func(i int) bool { return i >= warm })
 	for i := range marks {
 		if unseen(i) || unseen(i-1) {
 			marks[i].Valid = false
@@ -439,7 +457,9 @@ func (b *bench) drive(ctx context.Context, r run, t stand, watch func() control.
 	if grew(f, "wal_init_syncs") > 0 {
 		f.Refuse(whySegment)
 	}
-	return f, errors.Join(halt, b.keep(r, f))
+	err = errors.Join(halt, b.keep(r, f))
+	debug.FreeOSMemory()
+	return f, err
 }
 
 func (b *bench) head(r run, t raw.Target, p load.Plan, need int) raw.Head {
@@ -537,22 +557,43 @@ func (b *bench) judgeBlocks(final bool) error {
 			planned[it.runs[0].m] += n
 		}
 	}
-	bad, made := make(map[string]int), make(map[string]int)
+	bad, made, limited, fresh := make(map[string]int), make(map[string]int), make(map[string]int), make(map[string]int)
 	for _, slot := range b.slots {
 		r, f := b.last(slot)
 		made[slot.m]++
-		if f != nil && !f.Verdict.Valid && (final || !repeatable(f) || r.repeat >= 2) {
+		switch {
+		case f == nil || f.Verdict.Valid:
+		case slices.Equal(f.Verdict.Reasons, []string{raw.WhyGenerator}):
+			limited[slot.m]++
+		case final || !repeatable(f) || r.repeat >= 2:
 			bad[slot.m]++
+			if !b.earlier[r.id()] {
+				fresh[slot.m]++
+			}
 		}
 	}
+	if !final {
+		for _, m := range []string{"m1", "m2"} {
+			runs := max(planned[m], made[m])
+			if runs > 0 && control.TooManyBad(bad[m], runs) && fresh[m] > 0 {
+				return fmt.Errorf("%w: %s has %d invalid of %d", errTooManyBad, m, bad[m], runs)
+			}
+		}
+		return nil
+	}
+	b.blocks = nil
 	for _, m := range []string{"m1", "m2", "m3", "m4", "m5", "m7"} {
-		runs := max(planned[m], made[m])
-		if final {
-			runs = made[m]
+		if made[m] == 0 {
+			continue
 		}
-		if runs > 0 && control.TooManyBad(bad[m], runs) {
-			return fmt.Errorf("%w: %s has %d invalid of %d", errTooManyBad, m, bad[m], runs)
+		verdict := fmt.Sprintf("%s: %d of %d runs invalid", m, bad[m], made[m])
+		if limited[m] > 0 {
+			verdict += fmt.Sprintf(", %d more only because the generator was at its limit", limited[m])
 		}
+		if control.TooManyBad(bad[m], made[m]) {
+			verdict += ", more than a quarter"
+		}
+		b.blocks = append(b.blocks, verdict)
 	}
 	return nil
 }
@@ -618,14 +659,21 @@ func passes(files []*raw.File) int {
 	return most
 }
 
+func bandOf(f *raw.File) raw.Band {
+	switch f.Verdict.Speed {
+	case control.Fast:
+		return f.Bands.Fast
+	case control.Unpaced:
+		return f.Bands.Unpaced
+	}
+	return f.Bands.Slow
+}
+
 func figures(files []*raw.File, flat bool) []control.Figures {
 	var figs []control.Figures
 	for _, f := range files {
 		v := f.Verdict
-		band := f.Bands.Slow
-		if v.Speed == control.Fast {
-			band = f.Bands.Fast
-		}
+		band := bandOf(f)
 		fig := control.Figures{Valid: v.Valid, Speed: v.Speed, Flush: band.Flush, Throughput: band.Throughput, P50: band.P50, Syncs: band.Syncs}
 		if flat {
 			fig.P50, fig.Syncs = 0, 0
@@ -637,30 +685,41 @@ func figures(files []*raw.File, flat bool) []control.Figures {
 
 func settled(m string, files []*raw.File) bool {
 	if m == "m1" {
+		if !slices.ContainsFunc(files, func(f *raw.File) bool { return f.Verdict.Valid }) {
+			return false
+		}
 		byPass := make(map[int][]*raw.File)
 		for _, f := range files {
-			if f.Verdict.Valid {
-				byPass[f.Pass] = append(byPass[f.Pass], f)
-			}
+			byPass[f.Pass] = append(byPass[f.Pass], f)
 		}
 		var firsts []*raw.File
 		for _, stages := range byPass {
+			slices.SortFunc(stages, func(x, y *raw.File) int { return strings.Compare(x.ID, y.ID) })
+			lowest := 0
+			for _, f := range stages {
+				if f.Verdict.Saturated && (lowest == 0 || f.Load.Rate < lowest) {
+					lowest = f.Load.Rate
+				}
+			}
+			if lowest == 0 {
+				continue
+			}
 			var first *raw.File
 			for _, f := range stages {
-				if f.Verdict.Saturated && (first == nil || f.Load.Rate < first.Load.Rate) {
+				if f.Verdict.Valid && f.Load.Rate == lowest {
 					first = f
 				}
 			}
-			if first == nil {
-				return true
+			if first == nil || !first.Verdict.Saturated {
+				return false
 			}
 			firsts = append(firsts, first)
 		}
-		return saturatedSettled(firsts)
+		return len(firsts) == 0 || saturatedSettled(firsts)
 	}
 	speed := control.None
 	for _, f := range files {
-		if v := f.Verdict; v.Valid && (v.Speed == control.Slow || v.Speed == control.Fast && speed != control.Slow) {
+		if v := f.Verdict; v.Valid && v.Speed.Rank() > speed.Rank() {
 			speed = v.Speed
 		}
 	}

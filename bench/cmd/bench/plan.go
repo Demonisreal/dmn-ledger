@@ -142,13 +142,6 @@ func (s shape) pause() time.Duration {
 	return 10 * time.Second
 }
 
-func (s shape) postgresLimit() uint64 {
-	if s.smoke {
-		return 1 << 30
-	}
-	return 3 << 30
-}
-
 func (s shape) probe() time.Duration {
 	if s.smoke {
 		return 2 * time.Second
@@ -165,7 +158,7 @@ func (s shape) fixed() timing {
 
 func (s shape) stage() timing {
 	if s.smoke {
-		return s.short()
+		return timing{warm: 2 * time.Second, window: 6 * time.Second, longest: 6 * time.Second, drain: 3 * time.Second, need: 3}
 	}
 	return timing{warm: 5 * time.Second, window: 15 * time.Second, longest: 30 * time.Second, drain: 5 * time.Second, need: 8}
 }
@@ -191,12 +184,8 @@ func (s shape) short() timing {
 }
 
 func (s shape) stages() []int {
-	top := topStage
-	if s.smoke {
-		top = 2_000
-	}
 	var rates []int
-	for rate := 1_000; rate <= top; rate *= 2 {
+	for rate := 1_000; rate <= topStage; rate *= 2 {
 		rates = append(rates, rate)
 	}
 	return rates

@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
+	"testing/synctest"
 )
 
 func machine(limit, used, free string) fstest.MapFS {
@@ -46,6 +48,19 @@ func TestMemoryBeforeEachRun(t *testing.T) {
 	cancel()
 	if err := awaitMemory(stopped, fsys, []string{cg, "system.slice/docker-abc.scope"}, io.Discard); !errors.Is(err, context.Canceled) {
 		t.Fatalf("7 GiB available for 8 GiB: %v, want to wait until the context ends", err)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		err := awaitMemory(t.Context(), fsys, []string{cg, "system.slice/docker-abc.scope"}, io.Discard)
+		for _, want := range []string{"7168 MiB available, 1024 MiB missing", "limits 6144 MiB and 3072 MiB", "BENCH_MEMORY=5G"} {
+			if !errors.Is(err, errMemory) || !strings.Contains(err.Error(), want) {
+				t.Errorf("7 GiB available for 8 GiB after a minute: %v, want it to say %q", err, want)
+			}
+		}
+	})
+	for _, c := range []struct{ limit, want uint64 }{{6 << 30, 3 << 30}, {5 << 30, 2 << 30}, {4 << 30, 1 << 30}, {3 << 30, 1 << 30}, {8 << 30, 3 << 30}} {
+		if got := (&bench{limit: c.limit}).postgresLimit(); got != c.want {
+			t.Errorf("plan limit %d MiB: Postgres runs get %d MiB, want %d MiB next to the 3 GiB of the container", c.limit>>20, got>>20, c.want>>20)
+		}
 	}
 	unlimited := machine("max", "1073741824", "7340032")
 	if limit, _, err := cgroupMemory(unlimited, cg); err != nil || limit != 0 {
