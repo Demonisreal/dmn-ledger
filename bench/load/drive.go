@@ -353,6 +353,7 @@ func (d *driver) do(ctx context.Context, lane int, op Op, sl *slot) bool {
 	out, err := d.t.Do(ctx, lane, op)
 	if errors.Is(err, ErrShed) {
 		sl.shed.Add(1)
+		sl.retries.Add(uint64(out.Retries)) //nolint:gosec // G115: a count of retries, never negative
 		return false
 	}
 	if err != nil {

@@ -19,6 +19,18 @@ func (c *Cluster) Fit(ctx context.Context, p load.Plan) (load.Plan, error) {
 
 const MinWindow = 6 * time.Second
 
+func Budget(nodes int) uint64 {
+	if nodes == 3 {
+		return 2_000_000
+	}
+	return 6_000_000
+}
+
+func Fits(p load.Plan, w load.Workload, budget uint64) error {
+	_, err := fit(p, w, budget-(w.Bank()-1))
+	return err
+}
+
 func fit(p load.Plan, w load.Workload, room uint64) (load.Plan, error) {
 	if planned(p, w) <= room {
 		return p, nil

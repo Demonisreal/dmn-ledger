@@ -35,17 +35,18 @@ type Target struct {
 }
 
 type Load struct {
-	Workload  string        `json:"workload"`
-	Accounts  int           `json:"accounts"`
-	Rate      int           `json:"rate"`
-	Stage     int           `json:"stage"`
-	Stages    []int         `json:"stages"`
-	Warmup    time.Duration `json:"warmup_ns"`
-	Window    time.Duration `json:"window_ns"`
-	MaxWindow time.Duration `json:"max_window_ns"`
-	Drain     time.Duration `json:"drain_ns"`
-	Need      int           `json:"need"`
-	Seed      uint64        `json:"seed"`
+	Workload   string        `json:"workload"`
+	Accounts   int           `json:"accounts"`
+	Rate       int           `json:"rate"`
+	Stage      int           `json:"stage"`
+	Stages     []int         `json:"stages"`
+	Warmup     time.Duration `json:"warmup_ns"`
+	Window     time.Duration `json:"window_ns"`
+	MaxWindow  time.Duration `json:"max_window_ns"`
+	Drain      time.Duration `json:"drain_ns"`
+	Need       int           `json:"need"`
+	Seed       uint64        `json:"seed"`
+	BudgetEnds bool          `json:"budget_ends_chain"`
 }
 
 type Head struct {
@@ -172,6 +173,13 @@ type Books struct {
 	CreditsPending uint64      `json:"credits_pending"`
 }
 
+type Bounce struct {
+	Node     string        `json:"node"`
+	Role     string        `json:"role"`
+	Snapshot uint64        `json:"snapshot_bytes"`
+	Slowest  time.Duration `json:"slowest_ns"`
+}
+
 type File struct {
 	Head
 	Before  []Part   `json:"before"`
@@ -179,6 +187,7 @@ type File struct {
 	Bands   Bands    `json:"bands"`
 	Verdict Verdict  `json:"verdict"`
 	Books   Books    `json:"books"`
+	Bounce  *Bounce  `json:"bounce"`
 }
 
 func Write(w io.Writer, f *File) error {

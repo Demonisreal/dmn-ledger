@@ -24,6 +24,7 @@ import (
 var (
 	ErrNode       = errors.New("ledgerrun: node failed")
 	ErrNoLeader   = errors.New("ledgerrun: no leader")
+	ErrNoFollower = errors.New("ledgerrun: no follower")
 	ErrFilesystem = errors.New("ledgerrun: data directory not on ext4")
 	ErrLeftover   = errors.New("ledgerrun: run directory not empty")
 	ErrRefused    = errors.New("ledgerrun: refused")
@@ -86,11 +87,11 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	if fs.Type != ext4 {
 		return nil, fmt.Errorf("%w: %s has file system %#x", ErrFilesystem, dir, fs.Type)
 	}
-	limit, budget := "4500MiB", uint64(6_000_000)
+	limit := "4500MiB"
 	if cfg.Nodes == 3 {
-		limit, budget = "1500MiB", 2_000_000
+		limit = "1500MiB"
 	}
-	c := &Cluster{cfg: cfg, run: filepath.Join(dir, "run"), budget: cmp.Or(cfg.Budget, budget)}
+	c := &Cluster{cfg: cfg, run: filepath.Join(dir, "run"), budget: cmp.Or(cfg.Budget, Budget(cfg.Nodes))}
 	if left, _ := os.ReadDir(c.run); len(left) > 0 {
 		return nil, fmt.Errorf("%w: %s holds %d entries", ErrLeftover, c.run, len(left))
 	}
@@ -228,6 +229,30 @@ func (c *Cluster) statuses(ctx context.Context) ([]ledger.NodeStatus, error) {
 	}
 	wg.Wait()
 	return sts, errors.Join(errs...)
+}
+
+func (c *Cluster) Follower(ctx context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, readyWithin)
+	defer cancel()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		sts, err := c.statuses(ctx)
+		var id uint64
+		for _, st := range sts {
+			if st.ID != 0 && st.Role == ledger.Follower && st.Leader != 0 && st.Leader != st.ID {
+				id = max(id, st.ID)
+			}
+		}
+		if id > 0 {
+			return int(id), nil //nolint:gosec // G115: a node id from 1 to 3
+		}
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("%w among %d nodes: %w", ErrNoFollower, len(sts), errors.Join(context.Cause(ctx), err))
+		case <-tick.C:
+		}
+	}
 }
 
 func (c *Cluster) Setup(ctx context.Context, w load.Workload) error {
@@ -408,7 +433,23 @@ func (c *Cluster) Stop(id int) error {
 		return err
 	}
 	c.mark(n, true)
-	return n.stop()
+	if err := n.stop(); err != nil {
+		return err
+	}
+	fi, err := os.Stat(n.log)
+	if err != nil {
+		return err
+	}
+	n.logged = fi.Size()
+	return nil
+}
+
+func (c *Cluster) Received(id int) (uint64, error) {
+	n, err := c.node(id)
+	if err != nil {
+		return 0, err
+	}
+	return received(n.log, n.logged)
 }
 
 func (c *Cluster) Restart(ctx context.Context, id int) error {

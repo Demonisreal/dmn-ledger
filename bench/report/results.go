@@ -27,7 +27,8 @@ const intro = "# Benchmark results\n\n" +
 	"threads they were given, the mean over the window. \"fsync per transfer, all nodes\" adds up the fsyncs of every " +
 	"node of a cluster and divides them by the confirmed transfers. \"given up\" is the share of the transfers due in the " +
 	"counted seconds that Postgres gave up after 20 tries; a stage where more than 1 % of the transfers due in the window were " +
-	"given up counts as saturated. thermal limit: seconds in which the thermal counter of a target core rose. On this laptop " +
+	"given up counts as saturated. \"retries per transfer\" adds up the retries of the transfers due in the counted seconds, " +
+	"booked or given up, and divides them by the transfers booked in them. thermal limit: seconds in which the thermal counter of a target core rose. On this laptop " +
 	"that is every second in which a core runs at turbo; the clock stayed between 4.0 and 4.5 GHz.\n\n"
 
 const unpacedNote = "unpaced: in most seconds of the window the target flushed the disk fewer than 20 times. The speed of the disk " +
@@ -509,13 +510,13 @@ func writeProfiles(b *strings.Builder, runs []*run) {
 }
 
 func writeSnapshots(b *strings.Builder, runs []*run) {
-	t := table{head: []string{"run", "nodes", "accounts", "valid", "longest round ms", "worst second p99 ms", "term changed"}}
+	t := table{head: []string{"run", "nodes", "accounts", "valid", "snapshot MB", "longest round ms", "ms per 100 MB", "worst second p99 ms", "term changed", "stopped node"}}
 	var shown []*run
 	for _, r := range runs {
 		if r.f.Measurement != "m4" {
 			continue
 		}
-		var longest uint64
+		var longest, size uint64
 		var worst float64
 		for _, s := range r.f.Seconds {
 			if s.Phase != load.Window.String() {
@@ -523,22 +524,36 @@ func writeSnapshots(b *strings.Builder, runs []*run) {
 			}
 			for _, p := range s.Parts {
 				longest = max(longest, p.Counters["slowest"])
+				size = max(size, p.Counters["snapshot_bytes"])
 			}
 			worst = max(worst, nanos(s.P99))
+		}
+		mb, per := "n/a", "n/a"
+		if size > 0 {
+			mb, per = grouped(float64(size)/1e6), plainMillis(float64(longest)*1e8/float64(size))
 		}
 		changed := "no"
 		if r.f.TermChanged() {
 			changed = "yes"
 		}
+		stopped := "none"
+		if bo := r.f.Bounce; bo != nil {
+			stopped = bo.Node + ", a " + bo.Role + ", caught up from the log"
+			if bo.Snapshot > 0 {
+				stopped = bo.Node + ", a " + bo.Role + ", got a snapshot of " + grouped(float64(bo.Snapshot)/1e6) + " MB"
+			}
+		}
 		t.add(r.f.ID, strconv.Itoa(r.f.Target.Nodes), grouped(float64(r.f.Load.Accounts)), yesNo(r.f.Verdict.Valid),
-			plainMillis(float64(longest)), millis(r.f.Verdict.Horizon)(worst), changed)
+			mb, plainMillis(float64(longest)), per, millis(r.f.Verdict.Horizon)(worst), changed, stopped)
 		shown = append(shown, r)
 	}
 	b.WriteString("## Snapshot pause (m4)\n\n")
 	b.WriteString("How long does a node stop for a snapshot, and does that cost the lead? \"longest round\" is the slowest " +
 		"single pass of the node loop in any second of the window, and \"worst second\" the highest p99 of a second. Both " +
-		"come from every second of the window, valid or not, because a pause can make its own second invalid. Each run " +
-		"stands on its own row. The size of the snapshot is not in the raw files.\n\n")
+		"come from every second of the window, valid or not, because a pause can make its own second invalid. \"snapshot MB\" " +
+		"is the largest snapshot file of a node in the window and \"ms per 100 MB\" the longest round divided by it. In e one " +
+		"follower stops during the window and comes back; the last column names it and says whether it got a snapshot from the " +
+		"leader, as its own log reports it, or caught up from the log. Each run stands on its own row.\n\n")
 	t.write(b)
 	writeContext(b, shown, groups(shown))
 }
@@ -558,7 +573,7 @@ func writeRuns(b *strings.Builder, runs []*run) {
 			counted[r] = true
 		}
 	}
-	t := table{head: []string{"file", "measurement", "target", "lanes", "load", "rate", "pass", "started", "speed", "valid", "counted", "seconds", "saturated", "reasons"}}
+	t := table{head: []string{"file", "measurement", "target", "lanes", "load", "rate", "pass", "started", "speed", "valid", "counted", "seconds", "left out", "saturated", "reasons"}}
 	for _, r := range runs {
 		f := r.f
 		count := "yes"
@@ -579,10 +594,12 @@ func writeRuns(b *strings.Builder, runs []*run) {
 		}
 		secs := secondsCell(in, in+f.Verdict.Excluded, nanos(f.Verdict.ExcludedP99), f.Verdict.Horizon, f.Verdict.Throttled)
 		t.add(r.name, f.Measurement, name(f.Target), strconv.Itoa(f.Target.Lanes), f.Load.Workload, grouped(float64(f.Load.Rate)),
-			strconv.Itoa(f.Pass), f.Started.UTC().Format("2006-01-02 15:04"), f.Verdict.Speed.String(), yesNo(f.Verdict.Valid), count, secs, sat, why)
+			strconv.Itoa(f.Pass), f.Started.UTC().Format("2006-01-02 15:04"), f.Verdict.Speed.String(), yesNo(f.Verdict.Valid), count, secs, f.LeftOut(), sat, why)
 	}
 	b.WriteString("## Runs\n\n")
-	b.WriteString("Every raw file, valid or not. Only the runs marked as counted enter the figures above.\n\n")
+	b.WriteString("Every raw file, valid or not. Only the runs marked as counted enter the figures above. \"left out\" counts the " +
+		"window seconds outside the figures of a run by their reasons. In a run with a disk speed, a second with fewer than 20 " +
+		"flushes is left out when the target used at least half a core in it, and stalls the run when it used less.\n\n")
 	t.write(b)
 	writeContext(b, runs, gs)
 }

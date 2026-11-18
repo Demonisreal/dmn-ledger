@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"regexp"
 	"slices"
 	"strings"
@@ -201,6 +202,36 @@ func TestRepeatsComeBeforeTheThirdPass(t *testing.T) {
 	}
 	if want := []string{open.id() + "r1"}; !slices.Equal(ran, want) {
 		t.Errorf("ran %q, want only %q: the repeat of a restless saturated stage settles the chain before a third pass is decided", ran, want)
+	}
+}
+
+func TestOnlyRunsTheLaterStepsOfWhatItSelects(t *testing.T) {
+	b := &bench{files: map[string]*raw.File{}, earlier: map[string]bool{}, only: regexp.MustCompile("^m1-v1x32-"), log: io.Discard}
+	b.items = b.schedule()
+	flush := []time.Duration{1500 * time.Microsecond, 1900 * time.Microsecond, 1500 * time.Microsecond, 1520 * time.Microsecond}
+	for pass := 1; pass <= 4; pass++ {
+		for _, rate := range []int{1000, 2000} {
+			r := run{m: "m1", pass: pass, nr: pass, target: v1, lanes: r32Lanes, workload: "uniform-10k", rate: rate}
+			f := stageFile(r.id(), pass, rate, true, rate == 2000)
+			f.Bands.Slow.Flush = flush[pass-1]
+			b.files[r.id()] = f
+		}
+	}
+	if err := b.fly(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var later []string
+	for _, l := range b.lines {
+		if strings.HasPrefix(l.id, "m1-v1x32-") && !strings.HasSuffix(l.id, "-1") && !strings.HasSuffix(l.id, "-2") {
+			later = append(later, l.id)
+		}
+		if !strings.HasPrefix(l.id, "m1-v1x32-") && l.text != "not selected" {
+			t.Errorf("%s %q, want it left out", l.id, l.text)
+		}
+	}
+	want := []string{"m1-v1x32-uniform-10k-1000-3", "m1-v1x32-uniform-10k-2000-3", "m1-v1x32-uniform-10k-1000-4", "m1-v1x32-uniform-10k-2000-4"}
+	if !slices.Equal(later, want) || len(b.blocks) != 1 || !strings.HasPrefix(b.blocks[0], "m1: 0 of 8 runs invalid") {
+		t.Errorf("with -only the later passes are %q and the verdict %q; want %q and the verdict on m1", later, b.blocks, want)
 	}
 }
 

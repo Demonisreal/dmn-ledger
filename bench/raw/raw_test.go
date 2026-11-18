@@ -261,8 +261,8 @@ func TestStallsMakeTheRunInvalid(t *testing.T) {
 		{"too few flushes", func(b *built) { b.ctl[3].Flushes, b.ctl[3].FlushTime = 5, 5*ms(1.4) }, control.WhyFewFlushes},
 		{"stale status", func(b *built) { b.run.Seconds[3].Inside[0].Stale = true }, WhyStale},
 		{"no sample in the last second of the warmup", func(b *built) { b.run.Seconds[0].Sampled = false }, WhyNoSample},
-		{"a busy second with few flushes in a paced run", func(b *built) {
-			b.ctl[3].Flushes, b.ctl[3].FlushTime, b.ctl[3].Target = 8, 16*time.Millisecond, 1.0
+		{"an idle second with few flushes in a paced run", func(b *built) {
+			b.ctl[3].Flushes, b.ctl[3].FlushTime, b.ctl[3].Target = 8, 16*time.Millisecond, 0.4
 		}, control.WhyFewFlushes},
 		{"an unpaced target that stands", func(b *built) {
 			for i := range b.ctl {
@@ -300,13 +300,31 @@ func TestStallsMakeTheRunInvalid(t *testing.T) {
 			}
 		})
 	}
+	busy := newBuilt()
+	busy.add(load.Warmup, 100, 10, ms(1.4), ms(10))
+	for i := range 6 {
+		busy.add(load.Window, 100, uint64(20+10*i), ms(1.4), ms(10), ms(11))
+	}
+	busy.add(load.Drain, 0, 90, ms(1.4))
+	busy.ctl[3].Flushes, busy.ctl[3].FlushTime, busy.ctl[3].Target = 8, 16*time.Millisecond, 0.6
+	busy.run.Seconds[3].Latency.Add(700 * time.Millisecond)
+	f, err := Assemble(head(2), busy.run, busy.ctl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := f.Verdict
+	if !v.Valid || f.Seconds[3].Valid || !slices.Contains(f.Seconds[3].Why, control.WhyFewFlushes) || v.Excluded != 2 || v.ExcludedP99 < 700*time.Millisecond {
+		t.Fatalf("a target on 0.6 cores with 8 flushes in one second of a paced run: valid %v %q, second 3 valid %v %q, %d excluded with p99 up to %v; "+
+			"want a valid run that leaves that second and the next one out with their p99", v.Valid, v.Reasons, f.Seconds[3].Valid, f.Seconds[3].Why, v.Excluded, v.ExcludedP99)
+	}
+
 	b := newBuilt()
 	for i := range 4 {
 		b.add(load.Window, 100, uint64(10+10*i), ms(1.4), ms(10)).Throttled = uint64(700 * (i % 2))
 	}
 	b.add(load.Drain, 0, 50, ms(1.4)).Throttled = 3
 	b.run.Seconds[4].Inside[0].Stale = true
-	f, _ := Assemble(head(1), b.run, b.ctl)
+	f, _ = Assemble(head(1), b.run, b.ctl)
 	if !f.Verdict.Valid || f.Seconds[4].Valid || !slices.Contains(f.Seconds[4].Why, WhyStale) {
 		t.Fatalf("throttled seconds and a stale status in the drain: valid %v %q, drain %v %q", f.Verdict.Valid, f.Verdict.Reasons, f.Seconds[4].Valid, f.Seconds[4].Why)
 	}
@@ -518,6 +536,27 @@ func TestTermAndVerify(t *testing.T) {
 	f.Refuse(WhyTerm)
 	if f.Verdict.Valid || f.Books.Verified || len(f.Verdict.Reasons) != 2 || f.Verdict.Reasons[0] != WhyVerify+": transfer 5 missing" {
 		t.Fatalf("refused: %+v", f.Verdict)
+	}
+}
+
+func TestBounceKeepsTheRoundsAfterTheReturn(t *testing.T) {
+	node := func(name string, slowest time.Duration) Part {
+		return Part{Name: name, Counters: map[string]uint64{"slowest": uint64(slowest)}}
+	}
+	f := &File{Seconds: []Second{
+		{Parts: []Part{node("n1", ms(3)), node("n2", 2900*time.Millisecond)}},
+		{Parts: []Part{node("n1", ms(520))}},
+		{Parts: []Part{node("n1", ms(3)), node("n2", ms(40))}},
+		{Parts: []Part{node("n1", 1900*time.Millisecond), node("n2", 1348*time.Millisecond)}},
+	}}
+	f.Bounced(Bounce{Node: "n2", Role: "follower", Snapshot: 312 << 20})
+	if b := f.Bounce; b == nil || b.Node != "n2" || b.Role != "follower" || b.Snapshot != 312<<20 || b.Slowest != 1348*time.Millisecond {
+		t.Fatalf("%+v, want n2 with its snapshot and 1.348s, the longest round of n2 after its return", b)
+	}
+	f = &File{Seconds: f.Seconds[:1]}
+	f.Bounced(Bounce{Node: "n2", Role: "follower"})
+	if b := f.Bounce; b.Slowest != 0 || b.Snapshot != 0 {
+		t.Errorf("a node that never left: %+v", b)
 	}
 }
 

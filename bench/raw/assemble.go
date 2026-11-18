@@ -1,8 +1,10 @@
 package raw
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -100,7 +102,7 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 		}
 		window = append(window, control.Mark{Speed: f.Seconds[i].Speed, Valid: f.Seconds[i].Valid})
 		stalled = stalled || slices.ContainsFunc(f.Seconds[i].Why, func(why string) bool {
-			return why == WhyNoSample || why == WhyStale || why == control.WhyFewFlushes || why == control.WhyIdle
+			return why == WhyNoSample || why == WhyStale || why == control.WhyIdle || why == control.WhyFewFlushes && ctl[i].Target < control.IdleCPU
 		})
 		if ctl[i].Throttled > 0 {
 			throttled++
@@ -303,6 +305,43 @@ func (f *File) Verified(t load.Tally, err error) {
 	if err != nil {
 		f.Refuse(fmt.Sprintf("%s: %v", WhyVerify, err))
 	}
+}
+
+func (f *File) Bounced(b Bounce) {
+	gone := false
+	for _, s := range f.Seconds {
+		i := slices.IndexFunc(s.Parts, func(p Part) bool { return p.Name == b.Node })
+		switch {
+		case i < 0:
+			gone = true
+		case gone:
+			b.Slowest = max(b.Slowest, time.Duration(s.Parts[i].Counters["slowest"])) //nolint:gosec // G115: nanoseconds of one round
+		}
+	}
+	f.Bounce = &b
+}
+
+func (f *File) LeftOut() string {
+	why := make(map[string]int)
+	for _, s := range f.Seconds {
+		if s.Phase != load.Window.String() || s.Valid && s.Speed == f.Verdict.Speed {
+			continue
+		}
+		if s.Valid {
+			why["other speed"]++
+		}
+		for _, w := range s.Why {
+			why[w]++
+		}
+	}
+	names := slices.SortedFunc(maps.Keys(why), func(a, b string) int {
+		return cmp.Or(why[b]-why[a], strings.Compare(a, b))
+	})
+	var out []string
+	for _, name := range names {
+		out = append(out, fmt.Sprintf("%s %d", name, why[name]))
+	}
+	return strings.Join(out, ", ")
 }
 
 func (f *File) TermChanged() bool {

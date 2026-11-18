@@ -16,7 +16,8 @@ const (
 	r32, r32Lanes = 2_000, 32
 	r4, r4Lanes   = 20_000, 4
 	topStage      = 512_000
-	snapshotEvery = "LEDGER_SNAPSHOT_EVERY=20000"
+	snapshotOne   = "LEDGER_SNAPSHOT_EVERY=20000"
+	snapshotThree = "LEDGER_SNAPSHOT_EVERY=7000"
 	bug           = "LEDGER_BUG=B13"
 	stoppedNode   = 3
 )
@@ -84,7 +85,11 @@ func (r run) id() string {
 func (r run) env() []string {
 	var env []string
 	if r.m == "m4" {
-		env = append(env, snapshotEvery)
+		every := snapshotOne
+		if r.target.nodes == 3 {
+			every = snapshotThree
+		}
+		env = append(env, every)
 	}
 	if r.bug {
 		env = append(env, bug)

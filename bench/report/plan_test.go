@@ -32,6 +32,8 @@ type plan struct {
 	throttled, foreign         []int
 	few, shed                  uint64
 	cpu                        float64
+	lulls                      []int
+	snapshot                   uint64
 }
 
 func (p plan) target() string {
@@ -137,6 +139,9 @@ func (p plan) file(t testing.TB) *raw.File {
 				if i == 2 && p.slowest > 0 {
 					c.Counters["slowest"] = p.slowest
 				}
+				if i >= 2 && p.snapshot > 0 {
+					c.Counters["snapshot_bytes"] = p.snapshot
+				}
 				c.Counters["logsync"] += syncs / 2
 				c.Counters["logsync_ns"] += syncs / 2 * uint64(3*mean)
 				c.Counters["metasync"] += syncs / 2
@@ -149,6 +154,9 @@ func (p plan) file(t testing.TB) *raw.File {
 		flushes, target := uint64(300), 0.2
 		if p.few > 0 {
 			flushes, target = p.few, p.cpu
+		}
+		if slices.Contains(p.lulls, i) {
+			flushes, target = 5, p.cpu
 		}
 		c := control.Second{Span: time.Second, Flushes: flushes, FlushTime: time.Duration(flushes) * mean, Writes: 900, WriteTime: 900 * 50 * time.Microsecond,
 			Generator: 0.5, Target: target, Foreign: 0.2, MHz: []int{2500, 2500}, Available: 7 << 30}
@@ -256,7 +264,7 @@ func testPlan() []plan {
 
 		ledger("m3", 1, 32, "uniform-10k", 2000).with(func(p *plan) { p.tags = []string{"pprof"} }),
 		ledger("m4", 1, 32, "uniform-10k", 2000).with(func(p *plan) {
-			p.env, p.slowest = map[string]string{"LEDGER_SNAPSHOT_EVERY": "20000"}, uint64(420*time.Millisecond)
+			p.env, p.slowest, p.snapshot = map[string]string{"LEDGER_SNAPSHOT_EVERY": "20000"}, uint64(420*time.Millisecond), 600_000_000
 		}),
 		ledger("m7", 3, 32, "uniform-10k", 2000).with(func(p *plan) { p.p50 = 7 * time.Millisecond }),
 	)

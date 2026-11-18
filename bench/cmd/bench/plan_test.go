@@ -59,6 +59,22 @@ func TestScheduleRunsOnce(t *testing.T) {
 			if r.excused() != (r.m == "m4" || r.m == "m7") || r.stop != (r.m == "m7") || r.bounce != (r.id() == "m4e-l3x32-uniform-1m-2000-"+string(rune('0'+r.pass))) {
 				t.Errorf("smoke %v: %s stalls %v, stop %v, bounce %v", c.smoke, r.id(), r.excused(), r.stop, r.bounce)
 			}
+			var every []string
+			for _, kv := range r.env() {
+				if strings.HasPrefix(kv, "LEDGER_SNAPSHOT_EVERY=") {
+					every = append(every, kv)
+				}
+			}
+			switch {
+			case r.m != "m4":
+				if len(every) > 0 {
+					t.Errorf("smoke %v: %s with %v", c.smoke, r.id(), every)
+				}
+			case r.target.nodes == 3 && !slices.Equal(every, []string{"LEDGER_SNAPSHOT_EVERY=7000"}):
+				t.Errorf("smoke %v: %s with %v, want a snapshot about every 10 s on three nodes as on one", c.smoke, r.id(), every)
+			case r.target.nodes == 1 && !slices.Equal(every, []string{"LEDGER_SNAPSHOT_EVERY=20000"}):
+				t.Errorf("smoke %v: %s with %v", c.smoke, r.id(), every)
+			}
 		}
 	}
 }
@@ -193,6 +209,25 @@ func TestPlanFileFitsTheReport(t *testing.T) {
 		p := expected(b.items)
 		if n := len(p.Expect); n != 45 {
 			t.Errorf("smoke %v: %d groups in plan.json, want 45", smoke, n)
+		}
+		runs := runsOf(b.items)
+		m4 := runs[slices.IndexFunc(runs, func(r run) bool { return r.m == "m4" && r.target.nodes == 3 })]
+		target := describe(m4)
+		target.Env["LEDGER_SNAPSHOT_EVERY"] = "20000"
+		f := &raw.File{Head: raw.Head{Schema: raw.Schema, ID: m4.id(), Measurement: m4.m, Pass: m4.pass, Build: raw.Build{Tags: m4.tags()},
+			Target: target, Load: raw.Load{Workload: m4.workload, Rate: m4.rate, Need: 1}, Thresholds: control.Defaults()}}
+		var buf bytes.Buffer
+		if err := raw.Write(&buf, f); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "raw", m4.id()+".json"), buf.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		verdicts, _ = report.Check(dir)
+		if !slices.ContainsFunc(verdicts, func(v report.Verdict) bool {
+			return strings.Contains(v.Subject, "LEDGER_SNAPSHOT_EVERY=20000") && slices.Contains(v.Why, report.WhyUnplanned)
+		}) {
+			t.Errorf("smoke %v: a run of m4 on three nodes with a snapshot every 20000 entries passed check", smoke)
 		}
 	}
 }

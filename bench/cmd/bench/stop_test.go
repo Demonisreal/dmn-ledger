@@ -99,6 +99,25 @@ func TestTermChangesOnlyCountInM4AndM7(t *testing.T) {
 	}
 }
 
+func TestBounceIsInTheRawFile(t *testing.T) {
+	out := t.TempDir()
+	if err := os.Mkdir(filepath.Join(out, "raw"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	b := &bench{root: fstest.MapFS{}, th: control.Defaults(), log: io.Discard, out: out, files: map[string]*raw.File{}}
+	r := run{m: "m4", letter: "e", pass: 1, nr: 1, target: l3, lanes: 1, workload: "uniform-10k", rate: 100, bounce: true}
+	settle := func(context.Context) (raw.Bounce, error) { return raw.Bounce{Node: "n2", Role: "follower"}, nil }
+	f, err := b.drive(t.Context(), r, sham{}, func() control.Watch { return control.Watch{} }, load.NewStream(mustNamed(r.workload), 1),
+		load.Plan{Rate: 100, Lanes: 1, Window: time.Second}, 1, settle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := os.ReadFile(filepath.Join(out, "plan.txt"))
+	if err != nil || f.Bounce == nil || f.Bounce.Node != "n2" || !strings.Contains(string(text), "stopped n2, a follower; after its return it caught up from the log") {
+		t.Fatalf("bounce %+v, plan.txt %v:\n%s", f.Bounce, err, text)
+	}
+}
+
 func TestFailedVerifyStopsThePlan(t *testing.T) {
 	out := t.TempDir()
 	if err := os.Mkdir(filepath.Join(out, "raw"), 0o750); err != nil {
@@ -138,7 +157,7 @@ func TestFailedVerifyStopsThePlan(t *testing.T) {
 		{"a node that fell behind", nil, ledgerrun.ErrBehind, false, whyNodes},
 	} {
 		r.nr++
-		f, halt = b.drive(t.Context(), r, sham{verify: c.verify}, watch, load.NewStream(w, 1), p, 1, func(context.Context) error { return c.settle })
+		f, halt = b.drive(t.Context(), r, sham{verify: c.verify}, watch, load.NewStream(w, 1), p, 1, func(context.Context) (raw.Bounce, error) { return raw.Bounce{}, c.settle })
 		if errors.Is(halt, errVerify) != c.halts || f == nil || b.files[r.id()] == nil {
 			t.Fatalf("%s: halt %v; want halt %v and a raw file", c.name, halt, c.halts)
 		}
@@ -228,6 +247,83 @@ func TestStageWithoutRoomEndsTheChain(t *testing.T) {
 	}
 	if left := ownLedgerd(os.DirFS("/")); len(left) > 0 {
 		t.Fatalf("ledgerd %v still runs", left)
+	}
+}
+
+func TestBounceStopsAFollower(t *testing.T) {
+	bin, err := ledgerrun.Build(t.Context(), "../../..", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := ledgerrun.Start(t.Context(), ledgerrun.Config{Bin: bin, Dir: t.TempDir(), Nodes: 3, Lanes: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	leader := func() int {
+		inside, err := c.Sample(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range inside {
+			if p.Role == "leader" {
+				return int(p.Name[1] - '0')
+			}
+		}
+		return 0
+	}
+	for tries := 0; leader() != stoppedNode; tries++ {
+		if tries == 20 {
+			t.Fatalf("n%d still leads after %d elections", leader(), tries)
+		}
+		id := leader()
+		if err := c.Stop(id); err != nil {
+			t.Fatal(err)
+		}
+		if err := oneLeader(t.Context(), c); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Restart(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, err := bounce(t.Context(), c, timing{restartAt: time.Second})
+	if err != nil || id == 0 || id == stoppedNode {
+		t.Fatalf("n3 leads and the bounce stopped n%d: %v; want a follower", id, err)
+	}
+	if len(c.Pids()) != 3 || leader() != stoppedNode {
+		t.Fatalf("after the bounce: %d nodes, n%d leads; want three nodes and n3 still in the lead", len(c.Pids()), leader())
+	}
+}
+
+func TestStageWithoutRoomIsNotTriedAgain(t *testing.T) {
+	fsys := machine("6442450944", "0", "16000000")
+	cg, _ := ownCgroup(fsys)
+	b := &bench{root: fsys, cgroup: cg, dir: t.TempDir(), bins: map[string]string{"": filepath.Join(t.TempDir(), "ledgerd")}, th: control.Defaults(),
+		log: io.Discard, files: map[string]*raw.File{}}
+	stages := []int{128_000, 256_000, 512_000}
+	var it item
+	for i, rate := range stages {
+		it.runs = append(it.runs, run{m: "m1", pass: 1, nr: 1, target: l3, lanes: 32, workload: "uniform-10k", rate: rate, stage: i + 1, stages: stages,
+			timing: shape{smoke: true}.stage()})
+	}
+	for _, r := range it.runs[:2] {
+		b.files[r.id()] = stageFile(r.id(), 1, r.rate, true, false)
+	}
+	if err := b.item(t.Context(), it); err != nil {
+		t.Fatalf("going on with a chain whose next stage has no room: %v, want no cluster started", err)
+	}
+	last := b.lines[len(b.lines)-1]
+	if len(b.lines) != 3 || last.id != it.runs[2].id() || !strings.Contains(last.text, "not run, the chain ends before this stage") {
+		t.Fatalf("plan.txt lines %+v", b.lines)
+	}
+	for _, c := range []struct {
+		r    run
+		last bool
+	}{{it.runs[0], false}, {it.runs[1], true}, {it.runs[2], false}} {
+		if got := c.r.lastInBudget(); got != c.last {
+			t.Errorf("%s: last stage in the budget %v, want %v", c.r.id(), got, c.last)
+		}
 	}
 }
 

@@ -53,6 +53,16 @@ func TestStagesAreCutToTheBudget(t *testing.T) {
 		t.Fatalf("a stage with room for one second and none to warm up: got %v, want ErrBudget", err)
 	}
 	for _, tc := range []struct {
+		nodes int
+		rate  int
+		fits  bool
+	}{{3, 256_000, true}, {3, 512_000, false}, {1, 512_000, true}} {
+		err := Fits(stage(tc.rate, 5*s, 15*s, 30*s), uniform, Budget(tc.nodes))
+		if fits := !errors.Is(err, ErrBudget); fits != tc.fits || fits && err != nil {
+			t.Errorf("%d nodes at %d/s: %v, want fits %v", tc.nodes, tc.rate, err, tc.fits)
+		}
+	}
+	for _, tc := range []struct {
 		name string
 		in   load.Plan
 		room uint64

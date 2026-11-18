@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -34,7 +33,7 @@ func summary(f *raw.File) string {
 	if v.Throttled > 0 {
 		counted += fmt.Sprintf(", thermal limit in %d", v.Throttled)
 	}
-	if left := leftOut(f); left != "" {
+	if left := f.LeftOut(); left != "" {
 		counted += " (left out: " + left + ")"
 	}
 	parts = append(parts, counted)
@@ -59,34 +58,18 @@ func summary(f *raw.File) string {
 		if size := highest(f, "snapshot_bytes"); size > 0 {
 			parts = append(parts, fmt.Sprintf("largest snapshot file %d MiB", size>>20))
 		}
+		if b := f.Bounce; b != nil {
+			back := "caught up from the log"
+			if b.Snapshot > 0 {
+				back = fmt.Sprintf("got a snapshot of %d MiB", b.Snapshot>>20)
+			}
+			parts = append(parts, fmt.Sprintf("stopped %s, a %s; after its return it %s, longest round %d ms", b.Node, b.Role, back, b.Slowest.Milliseconds()))
+		}
 	}
 	if len(v.Problems) > 0 {
 		parts = append(parts, "problems: "+strings.Join(v.Problems, "; "))
 	}
 	return strings.Join(parts, "; ")
-}
-
-func leftOut(f *raw.File) string {
-	why := make(map[string]int)
-	for _, s := range f.Seconds {
-		if s.Phase != load.Window.String() || s.Valid && s.Speed == f.Verdict.Speed {
-			continue
-		}
-		if s.Valid {
-			why["other speed"]++
-		}
-		for _, w := range s.Why {
-			why[w]++
-		}
-	}
-	names := slices.SortedFunc(maps.Keys(why), func(a, b string) int {
-		return cmp.Or(why[b]-why[a], strings.Compare(a, b))
-	})
-	var out []string
-	for _, name := range names {
-		out = append(out, fmt.Sprintf("%s %d", name, why[name]))
-	}
-	return strings.Join(out, ", ")
 }
 
 func highest(f *raw.File, counter string) uint64 {

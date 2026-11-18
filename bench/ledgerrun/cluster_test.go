@@ -405,6 +405,32 @@ func TestStoppedNodesAreLeftOut(t *testing.T) {
 	gone(t, c, back)
 }
 
+func TestFollowerIsAskedForItsRole(t *testing.T) {
+	c := startCluster(t, Config{Nodes: 3, Lanes: 1})
+	for range 3 {
+		id, err := c.Follower(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := ledger.Status(t.Context(), cluster, c.nodes[id-1].addr)
+		if err != nil || st.Role != ledger.Follower || st.Leader == uint64(id) {
+			t.Fatalf("n%d picked as a follower: role %v, leader n%d, %v", id, st.Role, st.Leader, err)
+		}
+		if err := c.Stop(int(st.Leader)); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Restart(t.Context(), int(st.Leader)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	solo := startCluster(t, Config{Nodes: 1, Lanes: 1})
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	if id, err := solo.Follower(ctx); !errors.Is(err, ErrNoFollower) {
+		t.Fatalf("one node: n%d, %v, want ErrNoFollower", id, err)
+	}
+}
+
 func TestSampleWithoutStatus(t *testing.T) {
 	dir := t.TempDir()
 	line := "2026/11/17 10:00:00 stats up=1 rounds=2 wait=3 process=4 slowest=5 logsync=6 logsync_ns=7 metasync=8 metasync_ns=9 othersync=10 othersync_ns=11 written=12"

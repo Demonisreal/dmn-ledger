@@ -33,7 +33,8 @@ empty. Runs whose raw file is there already are skipped, so a plan that stopped 
 stopped. The plan refuses to start without a memory limit on its own cgroup: start it through
 scripts/bench.sh. -smoke runs the same plan with one pass and judges nothing: the stages of m1
 with 2 s to warm up, a window of 6 s and 3 s to drain, up to the first saturated stage, the other
-runs with windows of 3 s; it takes about 20 minutes. -only keeps the runs whose id matches.
+runs with windows of 3 s; it takes about 20 minutes. -only keeps the runs whose id matches, together
+with their repeats and later passes.
 
 report writes RESULTS.md and the curves from DIR/raw. check compares them with the raw files and
 judges every measurement; it exits with 1 when a verdict fails.`

@@ -274,15 +274,25 @@ func TestTargetThatStandsStaysStalled(t *testing.T) {
 	if v := idle.Verdict; v.Valid || !slices.Contains(v.Reasons, raw.WhyStalled) {
 		t.Errorf("a target with 8 flushes a second and no CPU time stands: valid %v %q", v.Valid, v.Reasons)
 	}
-	hiccup := driven(t, 1000, 1, func(sec int) control.Second {
-		if sec == 9 {
-			return fewFlushes(1.0)(sec)
-		}
-		return slowSecond()
-	})
-	if v := hiccup.Verdict; v.Valid || !slices.Contains(v.Reasons, raw.WhyStalled) {
-		t.Errorf("one second without flushes in a run with a disk speed must not drop out of the band: valid %v %q, %d slow seconds",
-			v.Valid, v.Reasons, hiccup.Bands.Slow.Seconds)
+	hiccup := func(target float64) *raw.File {
+		return driven(t, 1000, 1, func(sec int) control.Second {
+			if sec == 9 {
+				return fewFlushes(target)(sec)
+			}
+			return slowSecond()
+		})
+	}
+	if v := hiccup(0.02).Verdict; v.Valid || !slices.Contains(v.Reasons, raw.WhyStalled) {
+		t.Errorf("one second without flushes and without CPU time in a run with a disk speed must not drop out of the band: valid %v %q", v.Valid, v.Reasons)
+	}
+	busy := hiccup(1.0)
+	if v := busy.Verdict; !v.Valid || v.Excluded != 2 || busy.Bands.Slow.Seconds != 13 || !slices.Contains(busy.Seconds[9].Why, control.WhyFewFlushes) {
+		t.Errorf("one second with 8 flushes on a full core in a run with a disk speed: valid %v %q, %d excluded, %d slow seconds, second 9 %q; "+
+			"want it left out of the band with its reason", v.Valid, v.Reasons, v.Excluded, busy.Bands.Slow.Seconds, busy.Seconds[9].Why)
+	}
+	out := string(render([]*run{{name: busy.ID + ".json", f: busy}})[Results])
+	if !strings.Contains(out, "| 13 of 15, worst excluded p99 ") || !strings.Contains(out, "too few flushes 1") {
+		t.Errorf("RESULTS.md does not say that a second with too few flushes was left out:\n%s", out)
 	}
 }
 

@@ -57,9 +57,10 @@ func TestMemoryBeforeEachRun(t *testing.T) {
 			}
 		}
 	})
-	for _, c := range []struct{ limit, want uint64 }{{6 << 30, 3 << 30}, {5 << 30, 2 << 30}, {4 << 30, 1 << 30}, {3 << 30, 1 << 30}, {8 << 30, 3 << 30}} {
+	for _, c := range []struct{ limit, want uint64 }{{6 << 30, 3 << 30}, {5 << 30, 2 << 30}, {4 << 30, 1536 << 20}, {3 << 30, 1536 << 20}, {8 << 30, 3 << 30}} {
 		if got := (&bench{limit: c.limit}).postgresLimit(); got != c.want {
-			t.Errorf("plan limit %d MiB: Postgres runs get %d MiB, want %d MiB next to the 3 GiB of the container", c.limit>>20, got>>20, c.want>>20)
+			t.Errorf("plan limit %d MiB: Postgres runs get %d MiB, want %d MiB next to the 3 GiB of the container; "+
+				"the generator held 680 MiB with 100 000 calls open", c.limit>>20, got>>20, c.want>>20)
 		}
 	}
 	unlimited := machine("max", "1073741824", "7340032")

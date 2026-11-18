@@ -96,12 +96,10 @@ func (b *bench) fly(ctx context.Context) error {
 	if b.smoke {
 		return nil
 	}
-	if b.only == nil {
-		for step := range steps {
-			for _, it := range b.extra(step) {
-				if err := b.item(ctx, it); err != nil {
-					return err
-				}
+	for step := range steps {
+		for _, it := range b.extra(step) {
+			if err := b.item(ctx, it); err != nil {
+				return err
 			}
 		}
 	}
@@ -138,7 +136,35 @@ func (b *bench) item(ctx context.Context, it item) error {
 	if len(todo) == 0 {
 		return nil
 	}
+	if r := todo[0]; r.budgeted() {
+		if err := r.room(); errors.Is(err, ledgerrun.ErrBudget) {
+			b.noRoom(r, err)
+			return nil
+		}
+	}
 	return b.fresh(ctx, todo)
+}
+
+func (r run) budgeted() bool {
+	return r.target.kind == "ledger" && r.m != "m4"
+}
+
+func (r run) room() error {
+	return ledgerrun.Fits(r.plan(), mustNamed(r.workload), ledgerrun.Budget(r.target.nodes))
+}
+
+func (r run) lastInBudget() bool {
+	if !r.budgeted() || r.stage == 0 || r.stage >= len(r.stages) {
+		return false
+	}
+	next := r
+	next.rate, next.stage = r.stages[r.stage], r.stage+1
+	return errors.Is(next.room(), ledgerrun.ErrBudget)
+}
+
+func (b *bench) noRoom(r run, err error) {
+	b.note(r, fmt.Sprintf("not run, the chain ends before this stage: cut to the budget it would measure less than %v (%v)", ledgerrun.MinWindow, err))
+	fmt.Fprintf(b.log, "%s: not run, no room for a window of %v\n", r.id(), ledgerrun.MinWindow)
 }
 
 func (b *bench) fresh(ctx context.Context, runs []run) error {
@@ -214,11 +240,10 @@ func (b *bench) onLedger(ctx context.Context, runs []run) (err error) {
 			}
 		}
 		p, need := r.plan(), r.timing.need
-		if r.m != "m4" {
+		if r.budgeted() {
 			fitted, err := c.Fit(ctx, p)
 			if errors.Is(err, ledgerrun.ErrBudget) {
-				b.note(r, fmt.Sprintf("not run, the chain ends before this stage: cut to the budget it would measure less than %v (%v)", ledgerrun.MinWindow, err))
-				fmt.Fprintf(b.log, "%s: not run, no room for a window of %v\n", r.id(), ledgerrun.MinWindow)
+				b.noRoom(r, err)
 				break
 			}
 			if err != nil {
@@ -230,19 +255,26 @@ func (b *bench) onLedger(ctx context.Context, runs []run) (err error) {
 			p = fitted
 		}
 		var bounced sync.WaitGroup
+		var follower int
 		var bounceErr error
 		if r.bounce {
-			bounced.Go(func() { bounceErr = bounce(ctx, c, r.timing) })
+			bounced.Go(func() { follower, bounceErr = bounce(ctx, c, r.timing) })
 		}
-		settle := func(ctx context.Context) error {
+		settle := func(ctx context.Context) (raw.Bounce, error) {
 			bounced.Wait()
-			if bounceErr != nil {
-				return bounceErr
+			var stopped raw.Bounce
+			if follower > 0 {
+				stopped = raw.Bounce{Node: fmt.Sprintf("n%d", follower), Role: "follower"}
 			}
-			if r.target.nodes > 1 {
-				return c.Converge(ctx)
+			if bounceErr != nil || r.target.nodes == 1 {
+				return stopped, bounceErr
 			}
-			return nil
+			if err := c.Converge(ctx); err != nil || follower == 0 {
+				return stopped, err
+			}
+			var err error
+			stopped.Snapshot, err = c.Received(follower)
+			return stopped, err
 		}
 		f, err := b.drive(ctx, r, c, watch, stream, p, need, settle)
 		if err != nil {
@@ -277,20 +309,24 @@ func oneLeader(ctx context.Context, c *ledgerrun.Cluster) error {
 	}
 }
 
-func bounce(ctx context.Context, c *ledgerrun.Cluster, t timing) error {
+func bounce(ctx context.Context, c *ledgerrun.Cluster, t timing) (int, error) {
 	if !pause(ctx, t.stopAt) {
-		return ctx.Err()
+		return 0, ctx.Err()
 	}
-	if err := c.Stop(stoppedNode); err != nil {
-		return fmt.Errorf("stop n%d: %w", stoppedNode, err)
+	id, err := c.Follower(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if err := c.Stop(id); err != nil {
+		return id, fmt.Errorf("stop n%d: %w", id, err)
 	}
 	if !pause(ctx, t.restartAt-t.stopAt) {
-		return ctx.Err()
+		return id, ctx.Err()
 	}
-	if err := c.Restart(ctx, stoppedNode); err != nil {
-		return fmt.Errorf("restart n%d: %w", stoppedNode, err)
+	if err := c.Restart(ctx, id); err != nil {
+		return id, fmt.Errorf("restart n%d: %w", id, err)
 	}
-	return nil
+	return id, nil
 }
 
 func (b *bench) onPostgres(ctx context.Context, runs []run) error {
@@ -412,7 +448,7 @@ func (g *gauge) seconds() []control.Second {
 	return slices.Concat(g.done, g.m.Seconds())
 }
 
-func (b *bench) drive(ctx context.Context, r run, t stand, watch func() control.Watch, s *load.Stream, p load.Plan, need int, settle func(context.Context) error) (*raw.File, error) {
+func (b *bench) drive(ctx context.Context, r run, t stand, watch func() control.Watch, s *load.Stream, p load.Plan, need int, settle func(context.Context) (raw.Bounce, error)) (*raw.File, error) {
 	fmt.Fprintf(b.log, "%s: %d/s on %d lanes, window %v to %v\n", r.id(), p.Rate, p.Lanes, p.Window, p.MaxWindow)
 	g := newGauge(b.root, watch())
 	seen := &watched{Target: t}
@@ -425,9 +461,10 @@ func (b *bench) drive(ctx context.Context, r run, t stand, watch func() control.
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", r.id(), err)
 	}
+	var stopped raw.Bounce
 	var settled error
 	if settle != nil {
-		settled = settle(ctx)
+		stopped, settled = settle(ctx)
 	}
 	tally, verr := t.Verify(ctx, driven.Books)
 	if ctx.Err() != nil {
@@ -438,6 +475,9 @@ func (b *bench) drive(ctx context.Context, r run, t stand, watch func() control.
 		return nil, fmt.Errorf("%s: %w", r.id(), err)
 	}
 	f.Verified(tally, verr)
+	if stopped.Node != "" {
+		f.Bounced(stopped)
+	}
 	var halt error
 	if verr != nil {
 		halt = fmt.Errorf("%w: %s: %w", errVerify, r.id(), verr)
@@ -473,7 +513,7 @@ func (b *bench) head(r run, t raw.Target, p load.Plan, need int) raw.Head {
 		Machine:     b.machine,
 		Target:      t,
 		Load: raw.Load{Workload: r.workload, Accounts: mustNamed(r.workload).Accounts, Rate: r.rate, Stage: r.stage, Stages: r.stages,
-			Warmup: p.Warmup, Window: p.Window, MaxWindow: p.MaxWindow, Drain: p.Drain, Need: need, Seed: r.seed()},
+			Warmup: p.Warmup, Window: p.Window, MaxWindow: p.MaxWindow, Drain: p.Drain, Need: need, Seed: r.seed(), BudgetEnds: r.lastInBudget()},
 		Probe:       b.probe,
 		Thresholds:  b.th,
 		AllowStalls: r.excused(),

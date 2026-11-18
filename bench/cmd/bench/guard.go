@@ -28,6 +28,7 @@ var (
 
 const (
 	container  = 3 << 30
+	generator  = 1536 << 20
 	spare      = 1 << 30
 	memoryWait = time.Minute
 	memoryPoll = 5 * time.Second
@@ -99,7 +100,7 @@ func headroom(fsys fs.FS, cgroups []string) (uint64, error) {
 }
 
 func (b *bench) postgresLimit() uint64 {
-	return min(container, max(b.limit, container+spare)-container)
+	return min(container, max(b.limit, container+generator)-container)
 }
 
 func (b *bench) capTo(ctx context.Context, bytes uint64) error {

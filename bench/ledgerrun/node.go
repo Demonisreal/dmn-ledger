@@ -32,6 +32,7 @@ type node struct {
 	stats   *statsLog
 	exited  chan struct{}
 	stopped bool
+	logged  int64
 	status  ledger.NodeStatus
 	err     error
 }
@@ -261,6 +262,25 @@ func newestSnapshot(dir string) uint64 {
 		return 0
 	}
 	return uint64(fi.Size()) //nolint:gosec // G115: the size of a file
+}
+
+func received(path string, from int64) (uint64, error) {
+	text, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return 0, err
+	}
+	var size uint64
+	for line := range strings.Lines(string(text[min(from, int64(len(text))):])) {
+		_, snapshot, ok := strings.Cut(line, "received snapshot ")
+		if !ok {
+			continue
+		}
+		var index, term, sender uint64
+		if _, err := fmt.Sscanf(snapshot, "%d/%d from node %d, %d bytes", &index, &term, &sender, &size); err != nil {
+			return 0, fmt.Errorf("ledgerrun: %s: %q: %w", filepath.Base(path), strings.TrimSpace(line), err)
+		}
+	}
+	return size, nil
 }
 
 func tail(path string, lines int) string {

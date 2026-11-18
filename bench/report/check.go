@@ -190,7 +190,7 @@ func recount(f *raw.File) []string {
 		if s.Speed != m.Speed || s.Valid != valid {
 			wrong = append(wrong, fmt.Sprintf("second %d is %v and valid %v, its flushes say %v and %v", i, s.Speed, s.Valid, m.Speed, valid))
 		}
-		stood := unseen || m.Speed == control.None || slices.Contains(m.Why, control.WhyIdle)
+		stood := unseen || m.Speed == control.None && ctl[i].Target < control.IdleCPU || slices.Contains(m.Why, control.WhyIdle)
 		if s.Phase == load.Window.String() && f.Verdict.Valid && !f.AllowStalls && stood {
 			wrong = append(wrong, fmt.Sprintf("second %d stalled and the run is valid", i))
 		}

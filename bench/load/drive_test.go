@@ -393,6 +393,35 @@ func TestShedCallsSaturate(t *testing.T) {
 	}
 }
 
+type giving struct {
+	Null
+	mu sync.Mutex
+	n  int
+}
+
+func (g *giving) Do(context.Context, int, Op) (Outcome, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.n++
+	if g.n%10 == 0 {
+		return Outcome{Retries: 19}, fmt.Errorf("gave up after 20 tries: %w", ErrShed)
+	}
+	return Outcome{Retries: 1}, nil
+}
+
+func TestRetriesOfShedCallsCount(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		run := drive(t, &giving{}, Plan{Rate: 1000, Lanes: 2, Warmup: time.Second, Window: 4 * time.Second, Drain: time.Second})
+		var retries, shed uint64
+		for _, sec := range run.Seconds {
+			retries, shed = retries+sec.Retries, shed+sec.Shed
+		}
+		if shed != 500 || retries != 4500+500*19 {
+			t.Fatalf("%d retries with %d calls given up, want 4500 booked after one retry and 500 given up after 19", retries, shed)
+		}
+	})
+}
+
 func TestBooks(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		w, _ := Named("twophase")

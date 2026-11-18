@@ -49,14 +49,15 @@ func (c *chain) subject() string {
 }
 
 type overload struct {
-	passes  int
-	valid   bool
-	held    spread
-	never   []string
-	open    []int
-	runs    []*run
-	speed   control.Speed
-	counted []*run
+	passes    int
+	valid     bool
+	held      spread
+	heldSpeed control.Speed
+	never     []string
+	open      []int
+	runs      []*run
+	speed     control.Speed
+	counted   []*run
 }
 
 func (c *chain) overload() overload {
@@ -67,7 +68,7 @@ func (c *chain) overload() overload {
 		}
 	}
 	var o overload
-	var held []float64
+	var lasts []map[control.Speed]int
 	for _, p := range slices.Sorted(maps.Keys(byPass)) {
 		runs := byPass[p]
 		sortRuns(runs)
@@ -78,7 +79,7 @@ func (c *chain) overload() overload {
 			}
 		}
 		var first *run
-		last := 0
+		last, at := 0, make(map[control.Speed]int)
 		for _, r := range runs {
 			switch v := r.f.Verdict; {
 			case !v.Valid:
@@ -86,6 +87,7 @@ func (c *chain) overload() overload {
 				first = r
 			case !v.Saturated && (lowest == 0 || r.f.Load.Rate < lowest):
 				last = max(last, r.f.Load.Rate)
+				at[v.Speed] = max(at[v.Speed], r.f.Load.Rate)
 			}
 			o.valid = o.valid || r.f.Verdict.Valid
 		}
@@ -95,23 +97,45 @@ func (c *chain) overload() overload {
 		case first == nil || !first.f.Verdict.Saturated:
 			o.open = append(o.open, p)
 			if first != nil {
-				last = lowest
+				at[first.f.Verdict.Speed] = lowest
 			}
 		default:
 			o.runs = append(o.runs, first)
 		}
-		if last > 0 {
-			held = append(held, float64(last))
-		}
+		lasts = append(lasts, at)
 	}
 	o.passes = len(byPass)
-	o.held = median(held)
 	o.speed = speedOf(o.runs)
 	o.counted = countedAt(o.runs, o.speed)
+	o.heldSpeed = o.speed
+	if !slices.ContainsFunc(lasts, func(at map[control.Speed]int) bool { return at[o.speed] > 0 }) {
+		o.heldSpeed = control.None
+		for _, at := range lasts {
+			for speed := range at {
+				if speed.Rank() > o.heldSpeed.Rank() {
+					o.heldSpeed = speed
+				}
+			}
+		}
+	}
+	var held []float64
+	for _, at := range lasts {
+		if at[o.heldSpeed] > 0 {
+			held = append(held, float64(at[o.heldSpeed]))
+		}
+	}
+	o.held = median(held)
 	return o
 }
 
+func (o overload) heldElsewhere() bool {
+	return o.held.n > 0 && o.heldSpeed != o.speed && (o.speed != control.None || o.heldSpeed != control.Slow)
+}
+
 func beyond(runs []*run, last int) string {
+	if top := slices.MaxFunc(runs, func(a, b *run) int { return a.f.Load.Rate - b.f.Load.Rate }); top.f.Load.BudgetEnds {
+		return "budget"
+	}
 	next := 0
 	for _, r := range runs {
 		if r.f.Load.Rate > last && (next == 0 || r.f.Load.Rate < next) {
@@ -238,8 +262,12 @@ func writeStages(b *strings.Builder, gs []*group, out map[string][]byte) {
 	b.WriteString("How many transfers per second does one node hold, how many a cluster of three nodes, and how does the wait grow " +
 		"with the load? Each stage offers a fixed rate for a fixed window. A stage is held when at the end of its window fewer " +
 		"arrivals are open than fall due in one second; otherwise it is saturated. The last held stage comes from the raster of " +
-		"stages, the throughput under overload is measured in the first saturated stage of each pass. Where the load generator " +
-		"and not the target was the limit, the table says \"at least\".\n\n")
+		"stages, the throughput under overload is measured in the first saturated stage of each pass. The last held stage counts " +
+		"only stages that ran at the disk speed of the throughput under overload; where none held at that speed, the speed of " +
+		"the stage shown stands next to it. A row without a throughput under overload counts the stages at the slow speed, else " +
+		"at the fast one, and names the speed when it is not slow. Where the load generator and not the target was the limit, " +
+		"the table says \"at least\"; \"budget\" in the column \"limit\" marks a chain that ended because its next stage " +
+		"would not fit the transfers a run of the cluster may write.\n\n")
 	sum := table{head: []string{"target", "lanes", "load", "passes", "last held stage", "throughput under overload", "runs", "seconds", "limit", "agreement"}}
 	var all []*run
 	var stageGroups []*group
@@ -249,6 +277,9 @@ func writeStages(b *strings.Builder, gs []*group, out map[string][]byte) {
 		held := o.held.show(grouped)
 		if o.atLeast() && o.held.n > 0 {
 			held = "at least " + held
+		}
+		if o.heldElsewhere() {
+			held += ", " + o.heldSpeed.String()
 		}
 		tp := o.throughput().show(grouped)
 		switch {

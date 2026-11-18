@@ -228,7 +228,7 @@ func TestAtLeast(t *testing.T) {
 	for _, want := range []string{
 		"| three nodes | 4 | uniform-10k | 2 | at least 1,000 (1,000–1,000) | at least 1,500 (1,500–1,500) | 2 of 2 | 6 of 6 | generator |",
 		"| one node | 32 | uniform-10k | 2 | 4,000 (4,000–4,000) | 5,100 (5,000–5,200) | 2 of 2 | 6 of 6 | target | agreed |",
-		"| Postgres, batched, read committed | 4 | uniform-10k | 2 | 1,000 (1,000–1,000) | 1,850 (1,800–1,900) | 2 of 2 | 6 of 6 | target | agreed |",
+		"| Postgres, batched, read committed | 4 | uniform-10k | 2 | 1,000 (1,000–1,000), slow | 1,850 (1,800–1,900) | 2 of 2 | 6 of 6 | target | agreed |",
 		"| Postgres, batched, read committed | 4 | uniform-10k | 20,000 | saturated at 20,000 |",
 	} {
 		if !strings.Contains(out, want) {
@@ -264,10 +264,53 @@ func TestAtLeast(t *testing.T) {
 	if !strings.Contains(lateOut.String(), "| three nodes | 32 | uniform-10k | 2 | at least 1,000 (1,000–1,000) | not reached | 0 of 0 | n/a | generator | at least: a pass held every stage |") {
 		t.Errorf("the stage above the last held one is out because of the generator, yet the limit is not the generator:\n%s", lateOut.String())
 	}
+	var budget []*run
+	for _, rate := range []int{1000, 2000} {
+		p := ledger("m1", 3, 4, "uniform-10k", rate)
+		budget = append(budget, &run{name: p.id() + ".json", f: p.file(t)})
+	}
+	budget[1].f.Load.BudgetEnds = true
+	var budgetOut strings.Builder
+	writeStages(&budgetOut, groups(budget), map[string][]byte{})
+	if !strings.Contains(budgetOut.String(), "| three nodes | 4 | uniform-10k | 1 | at least 2,000 | not reached | 0 of 0 | n/a | budget | at least: a pass held every stage |") {
+		t.Errorf("a chain that ended at the budget does not say so:\n%s", budgetOut.String())
+	}
 	var b strings.Builder
 	writeStages(&b, groups(none), map[string][]byte{})
 	if out := b.String(); strings.Contains(out, "at least 0") || !strings.Contains(out, "| one node | 4 | uniform-10k | 2 | n/a | 700 (700–700) |") {
 		t.Errorf("a chain saturated in its first stage has no last held stage:\n%s", out)
+	}
+}
+
+func TestHeldStageKeepsToTheSpeedOfItsRow(t *testing.T) {
+	stage := func(rate int, speed time.Duration, saturated bool) plan {
+		return postgres("m1", "V1", 32, rate).with(func(p *plan) {
+			p.flush, p.saturated = window(speed, speed, speed), saturated
+			if saturated {
+				p.booked = uint64(rate) / 2
+			}
+		})
+	}
+	for _, c := range []struct {
+		name   string
+		stages []plan
+		want   string
+	}{
+		{"held slow below a stage held fast", []plan{stage(8000, slow, false), stage(16000, fast, false), stage(32000, slow, true)}, "| 1 | 8,000 | 16,000 |"},
+		{"held only fast", []plan{stage(8000, fast, false), stage(16000, fast, false), stage(32000, slow, true)}, "| 1 | 16,000, fast | 16,000 |"},
+		{"held only slow under a fast overload", []plan{stage(8000, slow, false), stage(16000, fast, true)}, "| 1 | 8,000, slow | 8,000 |"},
+		{"no overload, slow and fast", []plan{stage(8000, slow, false), stage(16000, fast, false)}, "| 1 | at least 8,000 | not reached |"},
+		{"no overload, only fast", []plan{stage(8000, fast, false), stage(16000, fast, false)}, "| 1 | at least 16,000, fast | not reached |"},
+	} {
+		var runs []*run
+		for _, p := range c.stages {
+			runs = append(runs, &run{name: p.id() + ".json", f: p.file(t)})
+		}
+		var b strings.Builder
+		writeStages(&b, groups(runs), map[string][]byte{})
+		if !strings.Contains(b.String(), "| Postgres, one transaction per transfer, read committed | 32 | uniform-10k "+c.want) {
+			t.Errorf("%s: want %q in\n%s", c.name, c.want, b.String())
+		}
 	}
 }
 
@@ -431,6 +474,14 @@ func TestCheckRefuses(t *testing.T) {
 	if f := failed(checked(t, quiet, nil, nil)); len(f) > 0 {
 		t.Fatalf("two agreeing unpaced runs refused: %q", f)
 	}
+	lull := []plan{
+		good[0].with(func(p *plan) { p.flush, p.lulls, p.cpu = window(slow, slow, slow, slow, slow), []int{2}, 1.0 }),
+		good[1].with(func(p *plan) { p.flush = window(slow, slow, slow, slow, slow) }),
+	}
+	if f := failed(checked(t, lull, nil, nil)); len(f) > 0 {
+		t.Fatalf("a paced run that leaves out a second with few flushes on a full core refused: %q", f)
+	}
+	idle := []plan{lull[0].with(func(p *plan) { p.cpu = 0.02 }), lull[1]}
 	for _, c := range []struct {
 		name   string
 		plans  []plan
@@ -475,6 +526,8 @@ func TestCheckRefuses(t *testing.T) {
 		{"band fsync", good, func(rs []*run) { rs[1].f.Bands.Slow.Syncs *= 0.9 }, nil, WhyBand + ": slow fsync per transfer"},
 		{"band histogram", good, func(rs []*run) { rs[0].f.Bands.Slow.Histogram.Buckets = rs[0].f.Bands.Slow.Histogram.Buckets[1:] }, nil, WhyBand + ": slow histogram"},
 		{"thermal seconds", good, func(rs []*run) { rs[0].f.Verdict.Throttled = 2 }, nil, WhySeconds + ": 2 window seconds marked thermal, their counters say 0"},
+		{"an idle second with few flushes in a valid paced run", idle, func(rs []*run) { rs[0].f.Verdict.Valid, rs[0].f.Verdict.Reasons = true, nil }, nil,
+			"second 2 stalled and the run is valid"},
 		{"unpaced with an idle second", quiet, func(rs []*run) { rs[0].f.Seconds[2].CPU.Target = 0.01 }, nil, "second 2 stalled and the run is valid"},
 		{"unpaced band", quiet, func(rs []*run) { rs[1].f.Bands.Unpaced.Throughput *= 1.05 }, nil, WhyBand + ": unpaced throughput"},
 		{"unpaced, but the seconds say otherwise", quiet, func(rs []*run) {
@@ -522,6 +575,39 @@ func TestCheckRefuses(t *testing.T) {
 	}
 	if _, err := Check(t.TempDir()); err == nil {
 		t.Error("an empty folder passed")
+	}
+}
+
+func TestSnapshotTableShowsSizeAndStoppedNode(t *testing.T) {
+	one := ledger("m4", 1, 32, "uniform-1m", 2000).with(func(p *plan) {
+		p.env, p.slowest, p.snapshot = map[string]string{"LEDGER_SNAPSHOT_EVERY": "20000"}, uint64(1239*time.Millisecond), 613_000_000
+	})
+	three := ledger("m4", 3, 32, "uniform-1m", 2000).with(func(p *plan) {
+		p.env, p.slowest, p.snapshot = map[string]string{"LEDGER_SNAPSHOT_EVERY": "7000"}, uint64(2458*time.Millisecond), 312_000_000
+	})
+	bounced := three.file(t)
+	bounced.ID = "m4e-l3-uniform-1m-2000-1"
+	bounced.Seconds[1].Parts = bounced.Seconds[1].Parts[:2]
+	bounced.Bounced(raw.Bounce{Node: "n3", Role: "follower", Snapshot: 298_000_000})
+	caught := three.with(func(p *plan) { p.slowest = uint64(480 * time.Millisecond) }).file(t)
+	caught.ID = "m4e-l3-uniform-1m-2000-2"
+	caught.Seconds[1].Parts = caught.Seconds[1].Parts[:2]
+	caught.Bounced(raw.Bounce{Node: "n3", Role: "follower"})
+	out := string(render([]*run{{name: "c.json", f: one.file(t)}, {name: "e1.json", f: bounced}, {name: "e2.json", f: caught}})[Results])
+	for _, want := range []string{
+		"| snapshot MB | longest round ms | ms per 100 MB | worst second p99 ms | term changed | stopped node |",
+		"| m4-l1-uniform-1m-2000-1 | 1 | 1,000,000 | yes | 613 | 1,239 | 202 | ",
+		" | no | none |",
+		"| m4e-l3-uniform-1m-2000-1 | 3 | 1,000,000 | yes | 312 | 2,458 | 788 | ",
+		" | no | n3, a follower, got a snapshot of 298 MB |",
+		" | no | n3, a follower, caught up from the log |",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("snapshot table lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "not in the raw files") {
+		t.Error("the snapshot table still says the size is not in the raw files")
 	}
 }
 
