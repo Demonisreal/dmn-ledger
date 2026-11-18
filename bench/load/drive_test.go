@@ -3,6 +3,7 @@ package load
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"runtime"
 	"sync"
@@ -352,6 +353,44 @@ func TestFailuresAreCounted(t *testing.T) {
 			t.Errorf("%d failed arrivals without latency, want 20 counted as unfinished", got)
 		}
 	})
+}
+
+func TestShedCallsSaturate(t *testing.T) {
+	for _, c := range []struct {
+		every     int
+		saturated bool
+	}{{50, true}, {200, false}} {
+		synctest.Test(t, func(t *testing.T) {
+			var n int
+			var mu sync.Mutex
+			target := answering(func(context.Context) error {
+				mu.Lock()
+				defer mu.Unlock()
+				n++
+				if n%c.every == 0 {
+					return fmt.Errorf("batch of 3: gave up after 20 tries: %w", ErrShed)
+				}
+				return nil
+			})
+			run := drive(t, target, Plan{Rate: 1000, Lanes: 2, Warmup: time.Second, Window: 4 * time.Second, Drain: time.Second})
+			var shed, failed uint64
+			for _, sec := range run.Seconds {
+				shed += sec.Shed
+				failed += sec.Failed
+			}
+			want := uint64(5000 / c.every)
+			if shed != want || failed != 0 || run.Books.Unsure.Calls() != 0 || run.Books.Confirmed != 5000-want || len(run.Problems) != 0 {
+				t.Fatalf("one call in %d given up: %d shed, %d failed, %d unsure, %d confirmed, problems %q, want %d shed and nothing else",
+					c.every, shed, failed, run.Books.Unsure.Calls(), run.Books.Confirmed, run.Problems, want)
+			}
+			if run.Saturated != c.saturated || run.Capped || run.OpenAtEnd > 0 {
+				t.Errorf("one call in %d given up: saturated %v, capped %v, %d open at the end, want saturated %v", c.every, run.Saturated, run.Capped, run.OpenAtEnd, c.saturated)
+			}
+			if got := merge(run, Window, false).Unfinished(); got != 4000/uint64(c.every) {
+				t.Errorf("%d window arrivals without latency, want the %d given up", got, 4000/c.every)
+			}
+		})
+	}
 }
 
 func TestBooks(t *testing.T) {

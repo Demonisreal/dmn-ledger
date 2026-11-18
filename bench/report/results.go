@@ -25,7 +25,19 @@ const intro = "# Benchmark results\n\n" +
 	"window seconds of the counted runs that entered the figures, out of all their window seconds, with the highest p99 " +
 	"of a second that was left out. \"target cpu\" is the CPU time of the target processes divided by the hardware " +
 	"threads they were given, the mean over the window. \"fsync per transfer, all nodes\" adds up the fsyncs of every " +
-	"node of a cluster and divides them by the confirmed transfers.\n\n"
+	"node of a cluster and divides them by the confirmed transfers. \"given up\" is the share of the transfers due in the " +
+	"counted seconds that Postgres gave up after 20 tries; a stage where more than 1 % of the transfers due in the window were " +
+	"given up counts as saturated. thermal limit: seconds in which the thermal counter of a target core rose. On this laptop " +
+	"that is every second in which a core runs at turbo; the clock stayed between 4.0 and 4.5 GHz.\n\n"
+
+const unpacedNote = "unpaced: in most seconds of the window the target flushed the disk fewer than 20 times. The speed of the disk " +
+	"cannot be told from so few flushes, and it mattered little: in each of these seconds the target used at least half a core, " +
+	"so it was computing, not waiting for the disk. Every second of the window counts, and such runs are compared with each " +
+	"other without asking for an equally fast disk.\n\n"
+
+func unpaced(gs []*group) bool {
+	return slices.ContainsFunc(gs, func(g *group) bool { return g.speed == control.Unpaced })
+}
 
 type section struct{ m, title, text string }
 
@@ -48,6 +60,9 @@ func render(in []*run) map[string][]byte {
 	out := make(map[string][]byte)
 	var b strings.Builder
 	b.WriteString(intro)
+	if unpaced(gs) {
+		b.WriteString(unpacedNote)
+	}
 	var ms []string
 	for _, g := range gs {
 		if !slices.Contains(ms, g.m) {
@@ -135,6 +150,9 @@ func writeContext(b *strings.Builder, runs []*run, gs []*group) {
 			speeds = append(speeds, fmt.Sprintf("%v, mean flush %s ms", speed, median(flush).show(millis(0))))
 		}
 	}
+	if slices.ContainsFunc(gs, func(g *group) bool { return g.speed == control.Unpaced && len(g.counted) > 0 }) {
+		speeds = append(speeds, "unpaced, no flush time")
+	}
 	if len(speeds) == 0 {
 		speeds = []string{"no counted run"}
 	}
@@ -144,6 +162,9 @@ func writeContext(b *strings.Builder, runs []*run, gs []*group) {
 		b.WriteString("A second counts as fast by the mean time of its flushes, and fast flushes come about seven times as " +
 			"often as slow ones: a fast second can have spent up to about two thirds of its time in slow flushes, a slow " +
 			"second at most about a tenth in fast ones.\n\n")
+	}
+	if unpaced(gs) {
+		b.WriteString(unpacedNote)
 	}
 }
 
@@ -169,29 +190,37 @@ func (g *group) atLeast() bool {
 	return slices.ContainsFunc(g.counted, func(r *run) bool { return r.f.Verdict.Limit == raw.LimitGenerator })
 }
 
-func secondsCell(counted, all int, worst float64, horizon time.Duration) string {
+func secondsCell(counted, all int, worst float64, horizon time.Duration, thermal int) string {
 	cell := fmt.Sprintf("%d of %d", counted, all)
 	if all > counted {
 		cell += ", worst excluded p99 " + millis(horizon)(worst) + " ms"
 	}
+	if thermal > 0 {
+		cell += fmt.Sprintf(", thermal limit in %d", thermal)
+	}
 	return cell
 }
 
-func (g *group) seconds() string {
-	if len(g.counted) == 0 {
+func secondsOf(runs []*run, speed control.Speed, horizon time.Duration) string {
+	if len(runs) == 0 {
 		return "n/a"
 	}
-	var counted, all int
+	var counted, all, thermal int
 	var worst float64
-	for _, r := range g.counted {
-		n := bandOf(r.f, g.speed).Seconds
+	for _, r := range runs {
+		n := bandOf(r.f, speed).Seconds
 		counted += n
 		all += n + r.f.Verdict.Excluded
+		thermal += r.f.Verdict.Throttled
 		if r.f.Verdict.Excluded > 0 {
 			worst = max(worst, nanos(r.f.Verdict.ExcludedP99))
 		}
 	}
-	return secondsCell(counted, all, worst, g.horizon())
+	return secondsCell(counted, all, worst, horizon, thermal)
+}
+
+func (g *group) seconds() string {
+	return secondsOf(g.counted, g.speed, g.horizon())
 }
 
 func share(x float64) string {
@@ -212,13 +241,17 @@ func fixedRow(g *group) []string {
 		tp = "at least " + tp
 	}
 	text, _ := g.judge()
+	flush, flushes := g.spread(func(x fig) float64 { return x.flush }).show(millis(0)), g.spread(func(x fig) float64 { return x.flushes }).show(fixed(1))
+	if g.speed == control.Unpaced {
+		flush, flushes = "n/a", "n/a"
+	}
 	return []string{
 		name(g.target), strconv.Itoa(g.target.Lanes), g.workload, grouped(float64(g.rate)), g.held(), speedCell(g.speed),
-		g.spread(func(x fig) float64 { return x.flush }).show(millis(0)),
+		flush,
 		fmt.Sprintf("%d of %d", len(g.counted), len(g.runs)),
 		g.seconds(),
 		g.spread(func(x fig) float64 { return x.p50 }).show(ms),
-		g.spread(func(x fig) float64 { return x.flushes }).show(fixed(1)),
+		flushes,
 		g.spread(func(x fig) float64 { return x.p99 }).show(ms),
 		g.spread(func(x fig) float64 { return x.p999 }).show(ms),
 		tp,
@@ -226,12 +259,14 @@ func fixedRow(g *group) []string {
 		g.spread(func(x fig) float64 { return x.syncs }).show(fixed(3)),
 		g.spread(func(x fig) float64 { return x.perRequest }).show(fixed(1)),
 		g.spread(func(x fig) float64 { return x.retries }).show(fixed(3)),
+		g.spread(func(x fig) float64 { return x.shed }).show(share),
 		text,
 	}
 }
 
 var fixedHead = []string{"target", "lanes", "load", "rate", "held", "speed", "flush ms", "runs", "seconds", "p50 ms", "p50 flushes",
-	"p99 ms", "p99.9 ms", "throughput/s", "target cpu", "fsync per transfer, all nodes", "transfers per request", "retries per transfer", "agreement"}
+	"p99 ms", "p99.9 ms", "throughput/s", "target cpu", "fsync per transfer, all nodes", "transfers per request", "retries per transfer",
+	"given up", "agreement"}
 
 func writeFixed(b *strings.Builder, gs []*group) {
 	t := table{head: fixedHead}
@@ -239,7 +274,7 @@ func writeFixed(b *strings.Builder, gs []*group) {
 	var runs []*run
 	for _, g := range gs {
 		row := fixedRow(g)
-		if e := env(g.target); e != "" {
+		if e := distinct(g.target); e != "" {
 			row[0] += ", " + e
 		}
 		t.add(row...)
@@ -268,9 +303,13 @@ func writeTwoPhase(b *strings.Builder, gs []*group) {
 			continue
 		}
 		ms := millis(g.horizon())
+		inFlushes := g.spread(func(x fig) float64 { return x.reserveP50 / x.flush }).show(fixed(1))
+		if g.speed == control.Unpaced {
+			inFlushes = "n/a"
+		}
 		t.add(name(g.target), strconv.Itoa(g.target.Lanes), grouped(float64(g.rate)), speedCell(g.speed), strconv.Itoa(len(g.counted)),
 			g.spread(func(x fig) float64 { return x.reserveP50 }).show(ms),
-			g.spread(func(x fig) float64 { return x.reserveP50 / x.flush }).show(fixed(1)),
+			inFlushes,
 			g.spread(func(x fig) float64 { return x.reserveP99 }).show(ms),
 			g.spread(func(x fig) float64 { return x.p50 }).show(ms),
 			g.spread(func(x fig) float64 { return x.p99 }).show(ms))
@@ -535,10 +574,10 @@ func writeRuns(b *strings.Builder, runs []*run) {
 		}
 		why := strings.Join(append(slices.Clone(f.Verdict.Reasons), f.Verdict.Problems...), "; ")
 		in := 0
-		if v := f.Verdict.Speed; v == control.Slow || v == control.Fast {
+		if v := f.Verdict.Speed; v.Rank() > 0 {
 			in = bandOf(f, v).Seconds
 		}
-		secs := secondsCell(in, in+f.Verdict.Excluded, nanos(f.Verdict.ExcludedP99), f.Verdict.Horizon)
+		secs := secondsCell(in, in+f.Verdict.Excluded, nanos(f.Verdict.ExcludedP99), f.Verdict.Horizon, f.Verdict.Throttled)
 		t.add(r.name, f.Measurement, name(f.Target), strconv.Itoa(f.Target.Lanes), f.Load.Workload, grouped(float64(f.Load.Rate)),
 			strconv.Itoa(f.Pass), f.Started.UTC().Format("2006-01-02 15:04"), f.Verdict.Speed.String(), yesNo(f.Verdict.Valid), count, secs, sat, why)
 	}

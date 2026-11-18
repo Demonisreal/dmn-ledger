@@ -175,19 +175,23 @@ func refusals(f *raw.File) []string {
 func recount(f *raw.File) []string {
 	ctl := make([]control.Second, len(f.Seconds))
 	for i, s := range f.Seconds {
-		ctl[i] = control.Second{Flushes: s.Flushes, FlushTime: s.FlushTime, Foreign: s.CPU.Foreign, Throttled: s.Throttled, SwappedOut: s.SwappedOut}
+		ctl[i] = control.Second{Flushes: s.Flushes, FlushTime: s.FlushTime, Target: s.CPU.Target, Foreign: s.CPU.Foreign, Throttled: s.Throttled, SwappedOut: s.SwappedOut}
 	}
 	var wrong []string
 	var window []control.Mark
 	inBand := map[control.Speed]int{}
-	for i, m := range f.Thresholds.Judge(ctl) {
+	thermal := 0
+	marks := f.Thresholds.Judge(ctl)
+	f.Thresholds.Unpace(marks, ctl, func(i int) bool { return f.Seconds[i].Phase == load.Window.String() })
+	for i, m := range marks {
 		s := f.Seconds[i]
 		unseen := slices.Contains(s.Why, raw.WhyNoSample) || slices.Contains(s.Why, raw.WhyStale)
 		valid := m.Valid && !unseen && !slices.Contains(s.Why, control.WhyUnread)
 		if s.Speed != m.Speed || s.Valid != valid {
 			wrong = append(wrong, fmt.Sprintf("second %d is %v and valid %v, its flushes say %v and %v", i, s.Speed, s.Valid, m.Speed, valid))
 		}
-		if s.Phase == load.Window.String() && f.Verdict.Valid && !f.AllowStalls && (unseen || m.Speed == control.None) {
+		stood := unseen || m.Speed == control.None || slices.Contains(m.Why, control.WhyIdle)
+		if s.Phase == load.Window.String() && f.Verdict.Valid && !f.AllowStalls && stood {
 			wrong = append(wrong, fmt.Sprintf("second %d stalled and the run is valid", i))
 		}
 		if s.Phase == load.Window.String() {
@@ -195,16 +199,22 @@ func recount(f *raw.File) []string {
 			if valid {
 				inBand[m.Speed]++
 			}
+			if s.Throttled > 0 {
+				thermal++
+			}
 		}
+	}
+	if thermal != f.Verdict.Throttled {
+		wrong = append(wrong, fmt.Sprintf("%d window seconds marked thermal, their counters say %d", f.Verdict.Throttled, thermal))
 	}
 	if f.Load.Need > 0 {
 		if speed := control.Settle(window, f.Load.Need); speed != f.Verdict.Speed {
 			wrong = append(wrong, fmt.Sprintf("the run is %v, its seconds say %v", f.Verdict.Speed, speed))
 		}
 	}
-	if inBand[control.Slow] != f.Bands.Slow.Seconds || inBand[control.Fast] != f.Bands.Fast.Seconds {
-		wrong = append(wrong, fmt.Sprintf("bands have %d slow and %d fast seconds, the window has %d and %d",
-			f.Bands.Slow.Seconds, f.Bands.Fast.Seconds, inBand[control.Slow], inBand[control.Fast]))
+	if inBand[control.Slow] != f.Bands.Slow.Seconds || inBand[control.Fast] != f.Bands.Fast.Seconds || inBand[control.Unpaced] != f.Bands.Unpaced.Seconds {
+		wrong = append(wrong, fmt.Sprintf("bands have %d slow, %d fast and %d unpaced seconds, the window has %d, %d and %d",
+			f.Bands.Slow.Seconds, f.Bands.Fast.Seconds, f.Bands.Unpaced.Seconds, inBand[control.Slow], inBand[control.Fast], inBand[control.Unpaced]))
 	}
 	if f.Verdict.Valid != (len(f.Verdict.Reasons) == 0) {
 		wrong = append(wrong, fmt.Sprintf("valid %v with reasons %q", f.Verdict.Valid, f.Verdict.Reasons))
@@ -218,7 +228,7 @@ func rebuild(f *raw.File) []string {
 		name  string
 		speed control.Speed
 		band  raw.Band
-	}{{"slow", control.Slow, f.Bands.Slow}, {"fast", control.Fast, f.Bands.Fast}} {
+	}{{"slow", control.Slow, f.Bands.Slow}, {"fast", control.Fast, f.Bands.Fast}, {"unpaced", control.Unpaced, f.Bands.Unpaced}} {
 		var n int
 		var booked, latencies, syncs uint64
 		prev := f.Before
@@ -306,7 +316,7 @@ func (g *group) required() bool {
 
 func (g *group) subject() string {
 	s := fmt.Sprintf("%s %s, %d lanes, %s at %s/s", g.m, name(g.target), g.target.Lanes, g.workload, grouped(float64(g.rate)))
-	if e := env(g.target); e != "" {
+	if e := distinct(g.target); e != "" {
 		s += ", " + e
 	}
 	return s

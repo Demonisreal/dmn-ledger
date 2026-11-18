@@ -109,6 +109,19 @@ func env(t raw.Target) string {
 	return strings.Join(pairs, " ")
 }
 
+var nodeDefaults = map[string]string{"GOMEMLIMIT": "", "LEDGER_CLUSTER": "", "LEDGER_MAX_CLIENTS": "128", "LEDGER_SNAPSHOT_EVERY": "4294967296", "LEDGER_SWEEP": "on"}
+
+func distinct(t raw.Target) string {
+	var pairs []string
+	for _, k := range slices.Sorted(maps.Keys(t.Env)) {
+		if usual, ok := nodeDefaults[k]; ok && (usual == "" || usual == t.Env[k]) {
+			continue
+		}
+		pairs = append(pairs, k+"="+t.Env[k])
+	}
+	return strings.Join(pairs, " ")
+}
+
 func keyOf(f *raw.File) string {
 	t := f.Target
 	return strings.Join([]string{f.Measurement, t.Kind, strconv.Itoa(t.Nodes), t.Variant, strconv.Itoa(t.Lanes), env(t),
@@ -190,8 +203,7 @@ func sortRuns(runs []*run) {
 func speedOf(runs []*run) control.Speed {
 	speed := control.None
 	for _, r := range runs {
-		v := r.f.Verdict
-		if v.Valid && (v.Speed == control.Slow || v.Speed == control.Fast && speed != control.Slow) {
+		if v := r.f.Verdict; v.Valid && v.Speed.Rank() > speed.Rank() {
 			speed = v.Speed
 		}
 	}
@@ -209,8 +221,11 @@ func countedAt(runs []*run, speed control.Speed) []*run {
 }
 
 func bandOf(f *raw.File, speed control.Speed) raw.Band {
-	if speed == control.Fast {
+	switch speed {
+	case control.Fast:
 		return f.Bands.Fast
+	case control.Unpaced:
+		return f.Bands.Unpaced
 	}
 	return f.Bands.Slow
 }
@@ -219,7 +234,8 @@ type fig struct {
 	p50, p99, p999, flushes, flush     float64
 	throughput, syncs, perRequest      float64
 	targetShare                        float64
-	retries, reserveP50, reserveP99    float64
+	retries, shed, reserveP50          float64
+	reserveP99                         float64
 	saturated, generator, reserveKnown bool
 }
 
@@ -246,15 +262,20 @@ func figOf(f *raw.File, speed control.Speed) fig {
 	if math.IsInf(x.p50, 1) {
 		x.flushes = math.Inf(1)
 	}
-	var retries, booked uint64
+	var retries, booked, shed, due uint64
 	for i, s := range f.Seconds {
 		if counts(f, i, speed) {
 			retries += s.Retries
 			booked += s.Booked
+			shed += s.Shed
+			due += s.Due
 		}
 	}
 	if booked > 0 {
 		x.retries = float64(retries) / float64(booked)
+	}
+	if due > 0 {
+		x.shed = float64(shed) / float64(due)
 	}
 	return x
 }

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -82,7 +83,7 @@ func TestSpeedOfASecond(t *testing.T) {
 		why   string
 	}{
 		{Slow, ""}, {Slow, ""}, {Fast, WhyChange}, {Fast, ""}, {Transition, WhyTransition}, {Fast, WhyChange}, {Fast, ""},
-		{None, WhyFewFlushes}, {Fast, WhyChange}, {Slow, WhyChange}, {Slow, ""}, {Slow, WhyForeign}, {Slow, WhyThrottled},
+		{None, WhyFewFlushes}, {Fast, WhyChange}, {Slow, WhyChange}, {Slow, ""}, {Slow, WhyForeign}, {Slow, ""},
 		{Slow, WhySwapped}, {None, WhyUnread}, {Slow, WhyChange},
 	}
 	marks := th.Judge(secs)
@@ -90,6 +91,67 @@ func TestSpeedOfASecond(t *testing.T) {
 		if m.Speed != want[i].speed || m.Valid != (want[i].why == "") || want[i].why != "" && !slices.Contains(m.Why, want[i].why) {
 			t.Errorf("second %d: %v valid %v %q, want %v %q", i, m.Speed, m.Valid, m.Why, want[i].speed, want[i].why)
 		}
+	}
+}
+
+func TestUnpace(t *testing.T) {
+	th := Defaults()
+	busy := func(n uint64, mean time.Duration) Second {
+		s := flushes(n, mean)
+		s.Target = 1.0
+		return s
+	}
+	run := func(few int) []Second {
+		secs := []Second{busy(300, 1400*time.Microsecond)}
+		for i := range 15 {
+			switch {
+			case i < few:
+				secs = append(secs, busy(8, 2*time.Millisecond))
+			case i%3 == 0:
+				secs = append(secs, busy(300, 1400*time.Microsecond))
+			case i%3 == 1:
+				secs = append(secs, busy(2000, 220*time.Microsecond))
+			default:
+				secs = append(secs, busy(500, 700*time.Microsecond))
+			}
+		}
+		return append(secs, flushes(3, time.Millisecond))
+	}
+	window := func(i int) bool { return i >= 1 && i <= 15 }
+
+	secs := run(7)
+	marks := th.Judge(secs)
+	before := slices.Clone(marks)
+	if th.Unpace(marks, secs, window) {
+		t.Fatal("7 of 15 window seconds with few flushes made the run unpaced")
+	}
+	for i := range marks {
+		if marks[i].Speed != before[i].Speed || marks[i].Valid != before[i].Valid || !slices.Equal(marks[i].Why, before[i].Why) {
+			t.Errorf("second %d changed in a paced run: %+v, was %+v", i, marks[i], before[i])
+		}
+	}
+
+	secs = run(8)
+	secs[13].Foreign = 1.5
+	secs[4].Target = 0.02
+	marks = th.Judge(secs)
+	if !th.Unpace(marks, secs, window) {
+		t.Fatal("8 of 15 window seconds with few flushes: not unpaced")
+	}
+	for i, m := range marks {
+		var want []string
+		switch i {
+		case 4:
+			want = []string{WhyIdle}
+		case 13:
+			want = []string{WhyForeign}
+		}
+		if m.Speed != Unpaced || !slices.Equal(m.Why, want) || m.Valid != (len(want) == 0) {
+			t.Errorf("second %d: %v valid %v %q, want unpaced with %q", i, m.Speed, m.Valid, m.Why, want)
+		}
+	}
+	if marks[16].Speed != Unpaced || !marks[16].Valid {
+		t.Errorf("an idle second after the window: %+v, want unpaced and valid, only window seconds can stand", marks[16])
 	}
 }
 
@@ -111,6 +173,19 @@ func TestSettle(t *testing.T) {
 	}
 	if got := Settle(window[:3], 1); got != Slow {
 		t.Errorf("slow wins when both have enough: %v", got)
+	}
+	var unpaced []Mark
+	for range 8 {
+		unpaced = append(unpaced, mark(Unpaced, true), mark(Unpaced, false))
+	}
+	if got := Settle(unpaced, 8); got != Unpaced {
+		t.Errorf("8 valid unpaced seconds, 8 needed: %v, want unpaced", got)
+	}
+	if got := Settle(unpaced, 9); got != Restless {
+		t.Errorf("8 valid unpaced seconds, 9 needed: %v, want restless", got)
+	}
+	if got := Settle(append(unpaced, window...), 8); got != Slow {
+		t.Errorf("slow before unpaced: %v", got)
 	}
 }
 
@@ -138,6 +213,12 @@ func TestAgreement(t *testing.T) {
 		{"slow before fast", []Figures{run(Slow, 1.2, 9, 2000, 0.13), run(Fast, 0.22, 2, 2000, 0.13), run(Fast, 0.23, 2.1, 2000, 0.13), run(Slow, 1.6, 12, 2000, 0.13)}, Undecided, [2]int{}},
 		{"fast when no slow", []Figures{run(Fast, 0.22, 2, 2000, 0.13), invalid, run(Fast, 0.23, 2.1, 2050, 0.13)}, Agreed, [2]int{0, 2}},
 		{"invalid runs do not count", []Figures{invalid, run(Slow, 1.5, 11, 2000, 0.13), invalid}, Undecided, [2]int{}},
+		{"unpaced, any disk", []Figures{run(Unpaced, 0.3, 40, 18000, 0.001), run(Unpaced, 20, 41, 18500, 0.001)}, Agreed, [2]int{0, 1}},
+		{"unpaced, throughput off", []Figures{run(Unpaced, 0.3, 40, 18000, 0.001), run(Unpaced, 20, 41, 20500, 0.001)}, Missed, [2]int{0, 1}},
+		{"unpaced alone", []Figures{run(Unpaced, 0.3, 40, 18000, 0.001)}, Undecided, [2]int{}},
+		{"unpaced, four runs, never in flush units", []Figures{run(Unpaced, 0.3, 40, 18000, 0.001), run(Unpaced, 20, 41, 18500, 0.001),
+			run(Unpaced, 0.31, 60, 18100, 0.001), run(Unpaced, 21, 90, 18200, 0.001)}, Agreed, [2]int{0, 1}},
+		{"fast before unpaced", []Figures{run(Unpaced, 0.3, 40, 18000, 0.001), run(Fast, 0.22, 2, 2000, 0.13), run(Unpaced, 20, 41, 18500, 0.001)}, Undecided, [2]int{}},
 		{"nothing valid", []Figures{invalid}, Undecided, [2]int{}},
 	} {
 		ag := Agree(c.runs)
@@ -293,6 +374,39 @@ func TestReadMachine(t *testing.T) {
 	model, threads := cpuinfo(strings.NewReader("processor\t: 0\nmodel name\t: 12th Gen Intel(R) Core(TM) i5-12500H\n\nprocessor\t: 1\nmodel name\t: 12th Gen Intel(R) Core(TM) i5-12500H\n"))
 	if model != "12th Gen Intel(R) Core(TM) i5-12500H" || threads != 2 {
 		t.Errorf("cpuinfo: %q, %d", model, threads)
+	}
+}
+
+func TestReadHeat(t *testing.T) {
+	file := func(s string) *fstest.MapFile { return &fstest.MapFile{Data: []byte(s + "\n")} }
+	cpu := "sys/devices/system/cpu/"
+	fsys := fstest.MapFS{
+		cpu + "cpu0/cpufreq/energy_performance_preference":           file("balance_performance"),
+		"sys/firmware/acpi/platform_profile":                         file("performance"),
+		cpu + "intel_pstate/max_perf_pct":                            file("100"),
+		"sys/class/thermal/thermal_zone1/type":                       file("SKIN"),
+		"sys/class/thermal/thermal_zone1/temp":                       file("40050"),
+		"sys/class/thermal/thermal_zone11/type":                      file("x86_pkg_temp"),
+		"sys/class/thermal/thermal_zone11/temp":                      file("59000"),
+		cpu + "cpu0/topology/physical_package_id":                    file("0"),
+		cpu + "cpu0/thermal_throttle/package_throttle_count":         file("62114"),
+		cpu + "cpu0/thermal_throttle/package_throttle_total_time_ms": file("273576"),
+		cpu + "cpu1/topology/physical_package_id":                    file("0"),
+		cpu + "cpu1/thermal_throttle/package_throttle_count":         file("62114"),
+		cpu + "cpu1/thermal_throttle/package_throttle_total_time_ms": file("273576"),
+		cpu + "cpufreq/policy0/scaling_governor":                     file("powersave"),
+	}
+	h := ReadHeat(fsys)
+	want := Heat{Preference: "balance_performance", Profile: "performance", MaxPerf: "100", PackageTemp: 59,
+		Packages: []PackageHeat{{ID: "0", Throttles: 62114, ThrottledMs: 273576}}}
+	if !reflect.DeepEqual(h, want) {
+		t.Fatalf("heat %+v, want %+v", h, want)
+	}
+	if h := ReadHeat(fstest.MapFS{}); h.Preference != "" || h.PackageTemp != 0 || len(h.Packages) != 0 {
+		t.Fatalf("heat of a machine without these files: %+v", h)
+	}
+	if h := ReadHeat(os.DirFS("/")); len(h.Packages) == 0 {
+		t.Logf("no thermal counters on this machine: %+v", h)
 	}
 }
 

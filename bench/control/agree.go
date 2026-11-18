@@ -55,7 +55,7 @@ func within(a, b float64) bool {
 func Agree(runs []Figures) Agreement {
 	speed := None
 	for _, r := range runs {
-		if r.Valid && (r.Speed == Slow || r.Speed == Fast && speed != Slow) {
+		if r.Valid && r.Speed.Rank() > speed.Rank() {
 			speed = r.Speed
 		}
 	}
@@ -71,7 +71,7 @@ func Agree(runs []Figures) Agreement {
 	for j := 1; j < len(same); j++ {
 		for i := range j {
 			a, b := runs[same[i]], runs[same[j]]
-			if !within(float64(a.Flush), float64(b.Flush)) {
+			if speed != Unpaced && !within(float64(a.Flush), float64(b.Flush)) {
 				continue
 			}
 			ag := Agreement{Accord: Agreed, Speed: speed, Pair: [2]int{same[i], same[j]}}
@@ -85,6 +85,9 @@ func Agree(runs []Figures) Agreement {
 			}
 			return ag
 		}
+	}
+	if speed == Unpaced {
+		return Agreement{Speed: speed, Why: fmt.Sprintf("%d valid run without a disk speed", len(same))}
 	}
 	if len(same) < runsForUnit {
 		return Agreement{Speed: speed, Why: fmt.Sprintf("no pair on an equally fast disk in %d runs", len(same))}

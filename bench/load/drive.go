@@ -13,7 +13,10 @@ import (
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
-var ErrPlan = errors.New("load: bad plan")
+var (
+	ErrPlan = errors.New("load: bad plan")
+	ErrShed = errors.New("load: call given up")
+)
 
 const (
 	MaxOpen     = 100_000
@@ -59,6 +62,7 @@ type Second struct {
 	Open    uint64
 	Retries uint64
 	Failed  uint64
+	Shed    uint64
 	Latency *Histogram
 	Reserve *Histogram
 	Late    *Histogram
@@ -82,12 +86,12 @@ type Run struct {
 }
 
 type slot struct {
-	due, done, booked, retries, failed atomic.Uint64
-	latency, late                      Histogram
-	reserve                            *Histogram
-	open                               uint64
-	inside                             Inside
-	sampled                            bool
+	due, done, booked, retries, failed, shed atomic.Uint64
+	latency, late                            Histogram
+	reserve                                  *Histogram
+	open                                     uint64
+	inside                                   Inside
+	sampled                                  bool
 }
 
 type driver struct {
@@ -174,7 +178,11 @@ func Drive(ctx context.Context, t Target, s *Stream, p Plan) (*Run, error) {
 	}
 
 	run.Window = max(end-warm, 0)
-	run.Saturated = run.Capped || run.OpenAtEnd > uint64(p.Rate) //nolint:gosec // G115: Rate is at least 1
+	var due, shed uint64
+	for i := warm; i < end; i++ {
+		due, shed = due+d.slots[i].due.Load(), shed+d.slots[i].shed.Load()
+	}
+	run.Saturated = run.Capped || run.OpenAtEnd > uint64(p.Rate) || 100*shed > due //nolint:gosec // G115: Rate is at least 1
 	run.Horizon = time.Duration(total-end) * time.Second
 	run.Seconds = make([]Second, total)
 	for i := range run.Seconds {
@@ -187,7 +195,7 @@ func Drive(ctx context.Context, t Target, s *Stream, p Plan) (*Run, error) {
 		case i < end:
 			sec.Phase = Window
 		}
-		sec.Due, sec.Booked, sec.Retries, sec.Failed = sl.due.Load(), sl.booked.Load(), sl.retries.Load(), sl.failed.Load()
+		sec.Due, sec.Booked, sec.Retries, sec.Failed, sec.Shed = sl.due.Load(), sl.booked.Load(), sl.retries.Load(), sl.failed.Load(), sl.shed.Load()
 		sec.Open, sec.Inside, sec.Sampled = sl.open, sl.inside, sl.sampled
 		sec.Latency, sec.Late, sec.Reserve = &sl.latency, &sl.late, sl.reserve
 	}
@@ -343,6 +351,10 @@ func (d *driver) call(ctx context.Context, lane, i int, due time.Duration, a Arr
 
 func (d *driver) do(ctx context.Context, lane int, op Op, sl *slot) bool {
 	out, err := d.t.Do(ctx, lane, op)
+	if errors.Is(err, ErrShed) {
+		sl.shed.Add(1)
+		return false
+	}
 	if err != nil {
 		if ctx.Err() == nil {
 			sl.failed.Add(1)

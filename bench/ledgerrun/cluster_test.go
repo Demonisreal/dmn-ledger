@@ -535,8 +535,8 @@ func TestBudgetResetsTheCluster(t *testing.T) {
 	}
 
 	pids = c.Pids()
-	got, err = c.Fit(t.Context(), load.Plan{Rate: 20, Lanes: 1, Warmup: time.Second, Window: 4 * time.Second})
-	if err != nil || got.Warmup != time.Second || got.Window != time.Second || got.MaxWindow != time.Second {
+	got, err = c.Fit(t.Context(), load.Plan{Rate: 8, Lanes: 1, Warmup: time.Second, Window: 9 * time.Second})
+	if err != nil || got.Warmup != time.Second || got.Window != MinWindow || got.MaxWindow != MinWindow {
 		t.Fatalf("stage over the budget on its own: %+v, %v", got, err)
 	}
 	if !slices.Equal(c.Pids(), pids) {

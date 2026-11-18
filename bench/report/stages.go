@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Demonisreal/dmn-ledger/bench/control"
 	"github.com/Demonisreal/dmn-ledger/bench/raw"
@@ -49,8 +50,10 @@ func (c *chain) subject() string {
 
 type overload struct {
 	passes  int
+	valid   bool
 	held    spread
-	never   bool
+	never   []string
+	open    []int
 	runs    []*run
 	speed   control.Speed
 	counted []*run
@@ -60,32 +63,45 @@ func (c *chain) overload() overload {
 	byPass := make(map[int][]*run)
 	for _, g := range c.stages {
 		for _, r := range g.runs {
-			if r.f.Verdict.Valid {
-				byPass[r.f.Pass] = append(byPass[r.f.Pass], r)
-			}
+			byPass[r.f.Pass] = append(byPass[r.f.Pass], r)
 		}
 	}
 	var o overload
 	var held []float64
 	for _, p := range slices.Sorted(maps.Keys(byPass)) {
 		runs := byPass[p]
-		var first *run
+		sortRuns(runs)
+		lowest := 0
 		for _, r := range runs {
-			if r.f.Verdict.Saturated && (first == nil || r.f.Load.Rate < first.f.Load.Rate) {
-				first = r
+			if r.f.Verdict.Saturated && (lowest == 0 || r.f.Load.Rate < lowest) {
+				lowest = r.f.Load.Rate
 			}
 		}
+		var first *run
 		last := 0
 		for _, r := range runs {
-			if !r.f.Verdict.Saturated && (first == nil || r.f.Load.Rate < first.f.Load.Rate) {
+			switch v := r.f.Verdict; {
+			case !v.Valid:
+			case lowest > 0 && r.f.Load.Rate == lowest:
+				first = r
+			case !v.Saturated && (lowest == 0 || r.f.Load.Rate < lowest):
 				last = max(last, r.f.Load.Rate)
 			}
+			o.valid = o.valid || r.f.Verdict.Valid
 		}
-		held = append(held, float64(last))
-		if first == nil {
-			o.never = true
-		} else {
+		switch {
+		case lowest == 0:
+			o.never = append(o.never, beyond(runs, last))
+		case first == nil || !first.f.Verdict.Saturated:
+			o.open = append(o.open, p)
+			if first != nil {
+				last = lowest
+			}
+		default:
 			o.runs = append(o.runs, first)
+		}
+		if last > 0 {
+			held = append(held, float64(last))
 		}
 	}
 	o.passes = len(byPass)
@@ -95,8 +111,33 @@ func (c *chain) overload() overload {
 	return o
 }
 
+func beyond(runs []*run, last int) string {
+	next := 0
+	for _, r := range runs {
+		if r.f.Load.Rate > last && (next == 0 || r.f.Load.Rate < next) {
+			next = r.f.Load.Rate
+		}
+	}
+	if slices.ContainsFunc(runs, func(r *run) bool {
+		return r.f.Load.Rate == next && slices.Contains(r.f.Verdict.Reasons, raw.WhyGenerator)
+	}) {
+		return raw.LimitGenerator
+	}
+	return "none reached"
+}
+
 func (o overload) atLeast() bool {
-	return o.never || slices.ContainsFunc(o.runs, func(r *run) bool { return r.f.Verdict.Limit == raw.LimitGenerator })
+	return len(o.never) > 0 || slices.ContainsFunc(o.runs, func(r *run) bool { return r.f.Verdict.Limit == raw.LimitGenerator })
+}
+
+func (o overload) seconds() string {
+	var h time.Duration
+	for _, r := range o.counted {
+		if v := r.f.Verdict.Horizon; v > 0 && (h == 0 || v < h) {
+			h = v
+		}
+	}
+	return secondsOf(o.counted, o.speed, h)
 }
 
 func (o overload) throughput() spread {
@@ -109,9 +150,11 @@ func (o overload) throughput() spread {
 
 func (o overload) judge() (string, bool) {
 	switch {
-	case o.passes == 0:
+	case !o.valid:
 		return "no valid run", false
-	case o.never:
+	case len(o.open) > 0:
+		return fmt.Sprintf("undecided: the saturated stage of pass %d has no valid run", o.open[0]), false
+	case len(o.runs) == 0:
 		return "at least: a pass held every stage", true
 	}
 	return judgeThroughput(o.runs)
@@ -125,8 +168,13 @@ func (o overload) limit() string {
 		}
 	}
 	slices.Sort(limits)
-	if o.never {
-		limits = append(limits, "none reached")
+	for _, l := range o.never {
+		if !slices.Contains(limits, l) {
+			limits = append(limits, l)
+		}
+	}
+	if len(o.open) > 0 {
+		limits = append(limits, "saturated, not valid")
 	}
 	return strings.Join(limits, ", ")
 }
@@ -192,24 +240,26 @@ func writeStages(b *strings.Builder, gs []*group, out map[string][]byte) {
 		"arrivals are open than fall due in one second; otherwise it is saturated. The last held stage comes from the raster of " +
 		"stages, the throughput under overload is measured in the first saturated stage of each pass. Where the load generator " +
 		"and not the target was the limit, the table says \"at least\".\n\n")
-	sum := table{head: []string{"target", "lanes", "load", "passes", "last held stage", "throughput under overload", "runs", "limit", "agreement"}}
+	sum := table{head: []string{"target", "lanes", "load", "passes", "last held stage", "throughput under overload", "runs", "seconds", "limit", "agreement"}}
 	var all []*run
 	var stageGroups []*group
 	for _, c := range cs {
 		o := c.overload()
 		g := c.first()
-		held := o.held.show(func(x float64) string { return grouped(x) })
+		held := o.held.show(grouped)
+		if o.atLeast() && o.held.n > 0 {
+			held = "at least " + held
+		}
 		tp := o.throughput().show(grouped)
 		switch {
-		case o.never && len(o.counted) == 0:
+		case len(o.runs) == 0 && len(o.open) == 0:
 			tp = "not reached"
-			held = "at least " + held
-		case o.atLeast():
-			held, tp = "at least "+held, "at least "+tp
+		case o.atLeast() && len(o.counted) > 0:
+			tp = "at least " + tp
 		}
 		text, _ := o.judge()
 		sum.add(name(g.target), strconv.Itoa(g.target.Lanes), g.workload, strconv.Itoa(o.passes), held, tp,
-			fmt.Sprintf("%d of %d", len(o.counted), len(o.runs)), o.limit(), text)
+			fmt.Sprintf("%d of %d", len(o.counted), len(o.runs)), o.seconds(), o.limit(), text)
 		for _, s := range c.stages {
 			all = append(all, s.runs...)
 		}
@@ -269,7 +319,7 @@ func writeStages(b *strings.Builder, gs []*group, out map[string][]byte) {
 		g := c.first()
 		fmt.Fprintf(b, "### %s, %d lanes, %s\n\n", name(g.target), g.target.Lanes, g.workload)
 		t := table{head: []string{"rate", "held", "speed", "flush ms", "runs", "seconds", "p50 ms", "p50 flushes", "p99 ms", "p99.9 ms",
-			"throughput/s", "target cpu", "fsync per transfer, all nodes", "transfers per request", "retries per transfer", "agreement"}}
+			"throughput/s", "target cpu", "fsync per transfer, all nodes", "transfers per request", "retries per transfer", "given up", "agreement"}}
 		perNode := table{head: []string{"rate", "speed", "runs", "fsync per transfer, leader", "fsync per transfer, one follower"}}
 		var runs []*run
 		for _, s := range c.stages {

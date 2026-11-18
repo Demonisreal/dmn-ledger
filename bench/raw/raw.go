@@ -12,7 +12,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/bench/load"
 )
 
-const Schema = 2
+const Schema = 3
 
 var ErrSchema = errors.New("raw: unknown schema")
 
@@ -87,6 +87,7 @@ type Second struct {
 	Open       uint64        `json:"open"`
 	Retries    uint64        `json:"retries"`
 	Failed     uint64        `json:"failed"`
+	Shed       uint64        `json:"shed"`
 	Count      uint64        `json:"count"`
 	P50        time.Duration `json:"p50_ns"`
 	P99        time.Duration `json:"p99_ns"`
@@ -131,8 +132,9 @@ type Band struct {
 }
 
 type Bands struct {
-	Slow Band `json:"slow"`
-	Fast Band `json:"fast"`
+	Slow    Band `json:"slow"`
+	Fast    Band `json:"fast"`
+	Unpaced Band `json:"unpaced"`
 }
 
 type Verdict struct {
@@ -149,6 +151,7 @@ type Verdict struct {
 	TargetShare    float64       `json:"target_share"`
 	Excluded       int           `json:"excluded_seconds"`
 	ExcludedP99    time.Duration `json:"excluded_p99_ns"`
+	Throttled      int           `json:"throttled_seconds"`
 	Reasons        []string      `json:"reasons"`
 	Problems       []string      `json:"problems"`
 }

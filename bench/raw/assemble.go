@@ -46,6 +46,7 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 	h.Schema = Schema
 	h.Started = run.Started.UTC()
 	marks := h.Thresholds.Judge(ctl[:len(run.Seconds)])
+	h.Thresholds.Unpace(marks, ctl[:len(run.Seconds)], func(i int) bool { return run.Seconds[i].Phase == load.Window })
 	f := &File{Head: h, Before: parts(run.Before), Seconds: make([]Second, len(run.Seconds))}
 	deltas := make([]delta, len(run.Seconds))
 	prev := run.Before
@@ -64,6 +65,7 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 			Open:       sec.Open,
 			Retries:    sec.Retries,
 			Failed:     sec.Failed,
+			Shed:       sec.Shed,
 			Count:      sec.Latency.Finished() + sec.Latency.Unfinished(),
 			P50:        sec.Latency.Quantile(0.5),
 			P99:        sec.Latency.Quantile(0.99),
@@ -90,6 +92,7 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 	late := new(load.Histogram)
 	var booked uint64
 	var generator, target float64
+	var throttled int
 	stalled := false
 	for i, sec := range run.Seconds {
 		if sec.Phase != load.Window {
@@ -97,8 +100,11 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 		}
 		window = append(window, control.Mark{Speed: f.Seconds[i].Speed, Valid: f.Seconds[i].Valid})
 		stalled = stalled || slices.ContainsFunc(f.Seconds[i].Why, func(why string) bool {
-			return why == WhyNoSample || why == WhyStale || why == control.WhyFewFlushes
+			return why == WhyNoSample || why == WhyStale || why == control.WhyFewFlushes || why == control.WhyIdle
 		})
+		if ctl[i].Throttled > 0 {
+			throttled++
+		}
 		late.Merge(sec.Late)
 		booked += sec.Booked
 		generator += ctl[i].Generator
@@ -106,12 +112,14 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 	}
 	f.Bands.Slow = band(run, f.Seconds, deltas, control.Slow)
 	f.Bands.Fast = band(run, f.Seconds, deltas, control.Fast)
+	f.Bands.Unpaced = band(run, f.Seconds, deltas, control.Unpaced)
 
 	v := &f.Verdict
 	v.Speed = control.Settle(window, h.Load.Need)
 	v.Saturated, v.Capped = run.Saturated, run.Capped
 	v.OpenAtEnd, v.Horizon = run.OpenAtEnd, run.Horizon
 	v.LateP99 = late.Quantile(0.99)
+	v.Throttled = throttled
 	for i, sec := range f.Seconds {
 		if run.Seconds[i].Phase == load.Window && (!sec.Valid || sec.Speed != v.Speed) {
 			v.Excluded++
@@ -127,7 +135,7 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 		}
 		v.TargetShare = target / float64(n*max(cores, 1))
 	}
-	limited := v.LateP99 > LateLimit || v.GeneratorShare > CPULimit
+	limited := v.GeneratorShare > CPULimit || v.LateP99 > LateLimit && (!v.Saturated || v.OpenAtEnd <= uint64(h.Load.Rate)) //nolint:gosec // G115: a rate is never negative
 	switch {
 	case v.Saturated && limited:
 		v.Limit = LimitGenerator
@@ -209,7 +217,7 @@ func band(run *load.Run, secs []Second, deltas []delta, speed control.Speed) Ban
 	if requests > 0 {
 		b.PerRequest = float64(booked) / float64(requests)
 	}
-	if flushes > 0 {
+	if flushes > 0 && speed != control.Unpaced {
 		b.Flush = flushTime / time.Duration(flushes) //nolint:gosec // G115: flushes in a window
 		if b.P50 != load.Never {
 			b.P50Flushes = float64(b.P50) / float64(b.Flush)

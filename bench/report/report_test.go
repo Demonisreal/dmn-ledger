@@ -201,7 +201,7 @@ func TestSpeedsAreNotMixed(t *testing.T) {
 }
 
 func TestInvalidSecondsStayOut(t *testing.T) {
-	p := ledger("m2", 1, 32, "uniform-10k", 2000).with(func(p *plan) { p.flush, p.throttled, p.retries = window(slow, slow, slow, slow), []int{2}, 4 })
+	p := ledger("m2", 1, 32, "uniform-10k", 2000).with(func(p *plan) { p.flush, p.foreign, p.retries = window(slow, slow, slow, slow), []int{2}, 4 })
 	f := p.file(t)
 	if f.Seconds[2].Valid || f.Bands.Slow.Seconds != 3 {
 		t.Fatalf("second 2 valid %v, %d counted seconds", f.Seconds[2].Valid, f.Bands.Slow.Seconds)
@@ -226,8 +226,9 @@ func TestInvalidSecondsStayOut(t *testing.T) {
 func TestAtLeast(t *testing.T) {
 	out := string(render(planRuns(t))[Results])
 	for _, want := range []string{
-		"| three nodes | 4 | uniform-10k | 2 | at least 1,000 (1,000–1,000) | at least 1,500 (1,500–1,500) | 2 of 2 | generator |",
-		"| one node | 32 | uniform-10k | 2 | 4,000 (4,000–4,000) | 5,100 (5,000–5,200) | 2 of 2 | target | agreed |",
+		"| three nodes | 4 | uniform-10k | 2 | at least 1,000 (1,000–1,000) | at least 1,500 (1,500–1,500) | 2 of 2 | 6 of 6 | generator |",
+		"| one node | 32 | uniform-10k | 2 | 4,000 (4,000–4,000) | 5,100 (5,000–5,200) | 2 of 2 | 6 of 6 | target | agreed |",
+		"| Postgres, batched, read committed | 4 | uniform-10k | 2 | 1,000 (1,000–1,000) | 1,850 (1,800–1,900) | 2 of 2 | 6 of 6 | target | agreed |",
 		"| Postgres, batched, read committed | 4 | uniform-10k | 20,000 | saturated at 20,000 |",
 	} {
 		if !strings.Contains(out, want) {
@@ -236,13 +237,80 @@ func TestAtLeast(t *testing.T) {
 	}
 	held := ledger("m1", 1, 32, "uniform-10k", 1000)
 	cs := chains(groups([]*run{{name: "a.json", f: held.file(t)}}))
-	if o := cs[0].overload(); !o.never || !o.atLeast() {
+	if o := cs[0].overload(); len(o.never) == 0 || !o.atLeast() {
 		t.Fatalf("a chain that held every stage: %+v", o)
 	}
 	limited := postgres("m2", "V3", 4, 20000).with(func(p *plan) { p.saturated, p.late, p.booked = true, true, 9000 })
 	g := groups([]*run{{name: "b.json", f: limited.file(t)}})[0]
 	if row := fixedRow(g); !strings.HasPrefix(row[13], "at least ") || row[4] != "saturated at 20,000" {
 		t.Errorf("generator at its limit: held %q, throughput %q", row[4], row[13])
+	}
+	var none []*run
+	for pass := 1; pass <= 2; pass++ {
+		p := ledger("m1", 1, 4, "uniform-10k", 1000).with(func(p *plan) { p.pass, p.nr, p.saturated, p.booked = pass, pass, true, 700 })
+		none = append(none, &run{name: p.id() + ".json", f: p.file(t)})
+	}
+	var late []*run
+	for pass := 1; pass <= 2; pass++ {
+		for _, p := range []plan{
+			ledger("m1", 3, 32, "uniform-10k", 1000).with(func(p *plan) { p.pass, p.nr = pass, pass }),
+			ledger("m1", 3, 32, "uniform-10k", 2000).with(func(p *plan) { p.pass, p.nr, p.late = pass, pass, true }),
+		} {
+			late = append(late, &run{name: p.id() + ".json", f: p.file(t)})
+		}
+	}
+	var lateOut strings.Builder
+	writeStages(&lateOut, groups(late), map[string][]byte{})
+	if !strings.Contains(lateOut.String(), "| three nodes | 32 | uniform-10k | 2 | at least 1,000 (1,000–1,000) | not reached | 0 of 0 | n/a | generator | at least: a pass held every stage |") {
+		t.Errorf("the stage above the last held one is out because of the generator, yet the limit is not the generator:\n%s", lateOut.String())
+	}
+	var b strings.Builder
+	writeStages(&b, groups(none), map[string][]byte{})
+	if out := b.String(); strings.Contains(out, "at least 0") || !strings.Contains(out, "| one node | 4 | uniform-10k | 2 | n/a | 700 (700–700) |") {
+		t.Errorf("a chain saturated in its first stage has no last held stage:\n%s", out)
+	}
+}
+
+func TestGivenUpTransfersSaturate(t *testing.T) {
+	var runs []*run
+	for pass := 1; pass <= 2; pass++ {
+		p := postgres("m2", "V4", 4, 20000).with(func(p *plan) { p.pass, p.nr, p.saturated, p.booked, p.shed = pass, pass, true, 16000, 400 })
+		runs = append(runs, &run{name: p.id() + ".json", f: p.file(t)})
+	}
+	g := groups(runs)[0]
+	row := fixedRow(g)
+	if !runs[0].f.Verdict.Valid || row[4] != "saturated at 20,000" || row[18] != "2.0% (2.0%–2.0%)" {
+		t.Errorf("Postgres gave up 2 %% of the transfers due: valid %v, held %q, given up %q", runs[0].f.Verdict.Valid, row[4], row[18])
+	}
+	if !strings.Contains(string(render(runs)[Results]), "| retries per transfer | given up | agreement |") {
+		t.Error("RESULTS.md has no column for transfers given up")
+	}
+}
+
+func TestTargetLeavesOutTheDefaultsOfTheNode(t *testing.T) {
+	node := map[string]string{"GOMEMLIMIT": "4500MiB", "LEDGER_CLUSTER": "1", "LEDGER_MAX_CLIENTS": "128", "LEDGER_SNAPSHOT_EVERY": "4294967296", "LEDGER_SWEEP": "on"}
+	with := func(k, v string) map[string]string {
+		env := maps.Clone(node)
+		if k != "" {
+			env[k] = v
+		}
+		return env
+	}
+	for _, c := range []struct {
+		env   map[string]string
+		shown string
+	}{
+		{with("", ""), ""},
+		{with("LEDGER_BUG", "B13"), ", LEDGER_BUG=B13"},
+		{with("LEDGER_SNAPSHOT_EVERY", "20000"), ", LEDGER_SNAPSHOT_EVERY=20000"},
+	} {
+		p := ledger("m2", 1, 32, "uniform-10k", 2000).with(func(p *plan) { p.env = c.env })
+		g := groups([]*run{{name: "a.json", f: p.file(t)}})[0]
+		var b strings.Builder
+		writeFixed(&b, []*group{g})
+		if !strings.Contains(b.String(), "| one node"+c.shown+" | 32 | uniform-10k |") || g.subject() != "m2 one node, 32 lanes, uniform-10k at 2,000/s"+c.shown {
+			t.Errorf("env %v: subject %q, table\n%s", c.env, g.subject(), b.String())
+		}
 	}
 }
 
@@ -254,6 +322,7 @@ func TestResultsShowWhatIsLeftOut(t *testing.T) {
 		"| runs | seconds | p50 ms |",
 		"| throughput/s | target cpu | fsync per transfer, all nodes |",
 		"| three nodes | 32 | uniform-10k | 2,000 | held | slow | 1.40 (1.40–1.40) | 2 of 2 | 5 of 6, worst excluded p99 ",
+		" ms, thermal limit in 1 |",
 		"| 10.0% (10.0%–10.0%) |",
 		"Each node on its own:",
 		"| three nodes | 32 | uniform-10k | 2,000 | slow | 2 |",
@@ -353,6 +422,15 @@ func TestCheckRefuses(t *testing.T) {
 	if f := failed(checked(t, good, nil, nil)); len(f) > 0 {
 		t.Fatalf("two agreeing runs refused: %q", f)
 	}
+	quiet := []plan{
+		postgres("m2", "V3", 4, 20000).with(func(p *plan) { p.few, p.cpu, p.throttled = 8, 1.0, []int{1, 2} }),
+		postgres("m2", "V3", 4, 20000).with(func(p *plan) {
+			p.pass, p.nr, p.few, p.cpu, p.flush = 2, 2, 12, 1.0, window(20*time.Millisecond, slow, fast)
+		}),
+	}
+	if f := failed(checked(t, quiet, nil, nil)); len(f) > 0 {
+		t.Fatalf("two agreeing unpaced runs refused: %q", f)
+	}
 	for _, c := range []struct {
 		name   string
 		plans  []plan
@@ -396,6 +474,14 @@ func TestCheckRefuses(t *testing.T) {
 		{"band throughput", good, func(rs []*run) { rs[1].f.Bands.Slow.Throughput *= 1.05 }, nil, WhyBand + ": slow throughput"},
 		{"band fsync", good, func(rs []*run) { rs[1].f.Bands.Slow.Syncs *= 0.9 }, nil, WhyBand + ": slow fsync per transfer"},
 		{"band histogram", good, func(rs []*run) { rs[0].f.Bands.Slow.Histogram.Buckets = rs[0].f.Bands.Slow.Histogram.Buckets[1:] }, nil, WhyBand + ": slow histogram"},
+		{"thermal seconds", good, func(rs []*run) { rs[0].f.Verdict.Throttled = 2 }, nil, WhySeconds + ": 2 window seconds marked thermal, their counters say 0"},
+		{"unpaced with an idle second", quiet, func(rs []*run) { rs[0].f.Seconds[2].CPU.Target = 0.01 }, nil, "second 2 stalled and the run is valid"},
+		{"unpaced band", quiet, func(rs []*run) { rs[1].f.Bands.Unpaced.Throughput *= 1.05 }, nil, WhyBand + ": unpaced throughput"},
+		{"unpaced, but the seconds say otherwise", quiet, func(rs []*run) {
+			for i := range rs[0].f.Seconds {
+				rs[0].f.Seconds[i].Flushes = 300
+			}
+		}, nil, WhySeconds + ": second 0 is unpaced and valid true, its flushes say"},
 	} {
 		f := failed(checked(t, c.plans, c.edit, c.tamper))
 		if !slices.ContainsFunc(f, func(s string) bool { return strings.Contains(s, c.want) }) {

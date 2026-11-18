@@ -30,8 +30,8 @@ func TestStagesAreCutToTheBudget(t *testing.T) {
 		{"a window that may grow counts at its longest", stage(64_000, 5*s, 15*s, 30*s), uniform, 2_000_000 - 10_000, stage(64_000, 7*s, 24*s, 24*s)},
 		{"a window that may grow and still fits", stage(32_000, 5*s, 15*s, 30*s), uniform, 2_000_000 - 10_000, stage(32_000, 5*s, 15*s, 30*s)},
 		{"exactly the room", stage(1000, 1*s, 9*s, 0), uniform, 10_000, stage(1000, 1*s, 9*s, 0)},
-		{"three nodes cut 512 000/s and still warm up", stage(512_000, 5*s, 15*s, 0), uniform, 2_000_000 - 10_000, stage(512_000, 1*s, 2*s, 2*s)},
-		{"two seconds are one to warm up and one to measure", stage(1000, 5*s, 15*s, 0), uniform, 2_500, stage(1000, 1*s, 1*s, 1*s)},
+		{"three nodes cut 256 000/s to the shortest window", stage(256_000, 2*s, 6*s, 6*s), uniform, 2_000_000 - 10_000, stage(256_000, 1*s, 6*s, 6*s)},
+		{"seven seconds are one to warm up and six to measure", stage(1000, 5*s, 15*s, 0), uniform, 7_000, stage(1000, 1*s, 6*s, 6*s)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := fit(tc.in, tc.w, tc.room)
@@ -51,5 +51,17 @@ func TestStagesAreCutToTheBudget(t *testing.T) {
 	}
 	if _, err := fit(stage(1000, 5*s, 15*s, 0), uniform, 1_999); !errors.Is(err, ErrBudget) {
 		t.Fatalf("a stage with room for one second and none to warm up: got %v, want ErrBudget", err)
+	}
+	for _, tc := range []struct {
+		name string
+		in   load.Plan
+		room uint64
+	}{
+		{"three nodes at 512 000/s keep a window of 2 s", stage(512_000, 5*s, 15*s, 0), 2_000_000 - 10_000},
+		{"six seconds leave five to measure", stage(1000, 5*s, 15*s, 0), 6_999},
+	} {
+		if p, err := fit(tc.in, uniform, tc.room); !errors.Is(err, ErrBudget) {
+			t.Errorf("%s: got %+v, %v, want ErrBudget: a window under %v is not a stage", tc.name, p, err, MinWindow)
+		}
 	}
 }

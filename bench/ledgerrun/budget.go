@@ -17,16 +17,18 @@ func (c *Cluster) Fit(ctx context.Context, p load.Plan) (load.Plan, error) {
 	return p, c.reset(ctx)
 }
 
+const MinWindow = 6 * time.Second
+
 func fit(p load.Plan, w load.Workload, room uint64) (load.Plan, error) {
 	if planned(p, w) <= room {
 		return p, nil
 	}
 	each := perSecond(p, w)
 	secs := room / each
-	if secs < 2 {
+	warm := max(secs/4, 1)
+	if secs < warm+uint64(MinWindow/time.Second) {
 		return p, fmt.Errorf("%w: %d transfers a second, room for %d", ErrBudget, each, room)
 	}
-	warm := max(secs/4, 1)
 	p.Warmup = time.Duration(warm) * time.Second      //nolint:gosec // G115: seconds of a stage
 	p.Window = time.Duration(secs-warm) * time.Second //nolint:gosec // G115: seconds of a stage
 	p.MaxWindow = p.Window

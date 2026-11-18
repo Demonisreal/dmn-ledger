@@ -2,6 +2,7 @@ package control
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -13,15 +14,28 @@ const (
 	Transition
 	Slow
 	Restless
+	Unpaced
 )
 
-var speedNames = [...]string{"none", "fast", "transition", "slow", "restless"}
+var speedNames = [...]string{"none", "fast", "transition", "slow", "restless", "unpaced"}
 
 func (s Speed) String() string {
 	if int(s) < len(speedNames) {
 		return speedNames[s]
 	}
 	return fmt.Sprintf("speed(%d)", s)
+}
+
+func (s Speed) Rank() int {
+	switch s {
+	case Slow:
+		return 3
+	case Fast:
+		return 2
+	case Unpaced:
+		return 1
+	}
+	return 0
 }
 
 func (s Speed) MarshalText() ([]byte, error) {
@@ -38,7 +52,10 @@ func (s *Speed) UnmarshalText(b []byte) error {
 	return fmt.Errorf("control: unknown speed %q", b)
 }
 
-const ForeignLimit = 1.0
+const (
+	ForeignLimit = 1.0
+	IdleCPU      = 0.5
+)
 
 type Thresholds struct {
 	Fast       time.Duration `json:"fast_ns"`
@@ -69,10 +86,37 @@ const (
 	WhyTransition = "transition"
 	WhyChange     = "first second after a change"
 	WhyForeign    = "foreign cpu"
-	WhyThrottled  = "throttled"
 	WhySwapped    = "swapped out"
 	WhyUnread     = "unread"
+	WhyIdle       = "target idle"
 )
+
+func (th Thresholds) Unpace(marks []Mark, secs []Second, window func(i int) bool) bool {
+	var few, all int
+	for i, m := range marks {
+		if window(i) {
+			all++
+			if m.Speed == None {
+				few++
+			}
+		}
+	}
+	if 2*few <= all {
+		return false
+	}
+	for i := range marks {
+		m := &marks[i]
+		m.Speed = Unpaced
+		m.Why = slices.DeleteFunc(m.Why, func(why string) bool {
+			return why == WhyFewFlushes || why == WhyTransition || why == WhyChange
+		})
+		if window(i) && secs[i].Flushes < th.MinFlushes && secs[i].Target < IdleCPU {
+			m.Why = append(m.Why, WhyIdle)
+		}
+		m.Valid = len(m.Why) == 0
+	}
+	return true
+}
 
 type Mark struct {
 	Speed Speed
@@ -97,9 +141,6 @@ func (th Thresholds) Judge(secs []Second) []Mark {
 		if s.Foreign >= ForeignLimit {
 			m.Why = append(m.Why, WhyForeign)
 		}
-		if s.Throttled > 0 {
-			m.Why = append(m.Why, WhyThrottled)
-		}
 		if s.SwappedOut > 0 {
 			m.Why = append(m.Why, WhySwapped)
 		}
@@ -113,7 +154,7 @@ func (th Thresholds) Judge(secs []Second) []Mark {
 }
 
 func Settle(window []Mark, need int) Speed {
-	var slow, fast int
+	var slow, fast, unpaced int
 	for _, m := range window {
 		switch {
 		case !m.Valid:
@@ -121,6 +162,8 @@ func Settle(window []Mark, need int) Speed {
 			slow++
 		case m.Speed == Fast:
 			fast++
+		case m.Speed == Unpaced:
+			unpaced++
 		}
 	}
 	switch {
@@ -128,6 +171,8 @@ func Settle(window []Mark, need int) Speed {
 		return Slow
 	case fast >= need:
 		return Fast
+	case unpaced >= need:
+		return Unpaced
 	}
 	return Restless
 }

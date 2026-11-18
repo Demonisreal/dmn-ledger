@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -146,4 +149,54 @@ func mountOf(r io.Reader, dir string) (fstype, options string) {
 		}
 	}
 	return fstype, options
+}
+
+type Heat struct {
+	Preference  string        `json:"energy_performance_preference"`
+	Profile     string        `json:"platform_profile"`
+	MaxPerf     string        `json:"max_perf_pct"`
+	PackageTemp float64       `json:"x86_pkg_temp"`
+	Packages    []PackageHeat `json:"packages"`
+}
+
+type PackageHeat struct {
+	ID          string `json:"id"`
+	Throttles   uint64 `json:"package_throttle_count"`
+	ThrottledMs uint64 `json:"package_throttle_total_time_ms"`
+}
+
+func ReadHeat(fsys fs.FS) Heat {
+	read := func(name string) string {
+		b, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(b))
+	}
+	const cpus = "sys/devices/system/cpu/"
+	h := Heat{Preference: read(cpus + "cpu0/cpufreq/energy_performance_preference"), Profile: read("sys/firmware/acpi/platform_profile"),
+		MaxPerf: read(cpus + "intel_pstate/max_perf_pct")}
+	zones, _ := fs.Glob(fsys, "sys/class/thermal/thermal_zone*")
+	for _, zone := range zones {
+		if read(zone+"/type") != "x86_pkg_temp" {
+			continue
+		}
+		if milli, err := strconv.ParseFloat(read(zone+"/temp"), 64); err == nil {
+			h.PackageTemp = milli / 1000
+		}
+	}
+	ids, _ := fs.Glob(fsys, cpus+"cpu[0-9]*/topology/physical_package_id")
+	for _, name := range ids {
+		id := read(name)
+		if slices.ContainsFunc(h.Packages, func(p PackageHeat) bool { return p.ID == id }) {
+			continue
+		}
+		dir := path.Dir(path.Dir(name)) + "/thermal_throttle/"
+		count, errCount := strconv.ParseUint(read(dir+"package_throttle_count"), 10, 64)
+		ms, errMs := strconv.ParseUint(read(dir+"package_throttle_total_time_ms"), 10, 64)
+		if errCount == nil && errMs == nil {
+			h.Packages = append(h.Packages, PackageHeat{ID: id, Throttles: count, ThrottledMs: ms})
+		}
+	}
+	return h
 }

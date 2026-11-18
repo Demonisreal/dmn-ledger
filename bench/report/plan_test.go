@@ -29,7 +29,9 @@ type plan struct {
 	booked, syncs, retries     uint64
 	slowest                    uint64
 	saturated, late, reserve   bool
-	throttled                  []int
+	throttled, foreign         []int
+	few, shed                  uint64
+	cpu                        float64
 }
 
 func (p plan) target() string {
@@ -98,7 +100,7 @@ func (p plan) file(t testing.TB) *raw.File {
 		if i == 0 {
 			phase = load.Warmup
 		}
-		sec := load.Second{Phase: phase, Due: uint64(p.rate), Booked: p.booked, Retries: p.retries, Latency: new(load.Histogram), Late: new(load.Histogram), Sampled: true}
+		sec := load.Second{Phase: phase, Due: uint64(p.rate), Booked: p.booked, Retries: p.retries, Shed: p.shed, Latency: new(load.Histogram), Late: new(load.Histogram), Sampled: true}
 		if p.reserve {
 			sec.Reserve = new(load.Histogram)
 		}
@@ -144,10 +146,17 @@ func (p plan) file(t testing.TB) *raw.File {
 		}
 		sec.Inside = snapshot()
 		run.Seconds = append(run.Seconds, sec)
-		c := control.Second{Span: time.Second, Flushes: 300, FlushTime: 300 * mean, Writes: 900, WriteTime: 900 * 50 * time.Microsecond,
-			Generator: 0.5, Target: 0.2, Foreign: 0.2, MHz: []int{2500, 2500}, Available: 7 << 30}
+		flushes, target := uint64(300), 0.2
+		if p.few > 0 {
+			flushes, target = p.few, p.cpu
+		}
+		c := control.Second{Span: time.Second, Flushes: flushes, FlushTime: time.Duration(flushes) * mean, Writes: 900, WriteTime: 900 * 50 * time.Microsecond,
+			Generator: 0.5, Target: target, Foreign: 0.2, MHz: []int{2500, 2500}, Available: 7 << 30}
 		if slices.Contains(p.throttled, i) {
-			c.Throttled = 1
+			c.Throttled = 600
+		}
+		if slices.Contains(p.foreign, i) {
+			c.Foreign = 1.5
 		}
 		ctl = append(ctl, c)
 	}
@@ -225,12 +234,18 @@ func testPlan() []plan {
 		postgres("m1", "V1", 32, 1000).with(func(p *plan) { p.flush, p.p50 = window(fast, fast, fast), 400*time.Microsecond }),
 		postgres("m1", "V1", 32, 2000),
 		postgres("m1", "V1", 32, 4000).with(func(p *plan) { p.saturated, p.booked, p.p50 = true, 3100, 900*time.Millisecond }),
+		postgres("m1", "V3", 4, 1000),
+		postgres("m1", "V3", 4, 2000).with(func(p *plan) { p.saturated, p.booked, p.p50, p.few, p.cpu = true, 1800, 300*time.Millisecond, 9, 1.0 }),
+		postgres("m1", "V3", 4, 1000).with(func(p *plan) { p.pass, p.nr = 2, 2 }),
+		postgres("m1", "V3", 4, 2000).with(func(p *plan) {
+			p.pass, p.nr, p.saturated, p.booked, p.p50, p.few, p.cpu, p.flush = 2, 2, true, 1900, 320*time.Millisecond, 11, 1.0, window(20*time.Millisecond, 2*time.Millisecond, fast)
+		}),
 
 		ledger("m2", 1, 32, "uniform-10k", 2000),
 		ledger("m2", 1, 32, "uniform-10k", 2000).with(func(p *plan) { p.pass, p.nr, p.p50 = 2, 2, 3100*time.Microsecond }),
 		ledger("m2", 1, 32, "uniform-10k", 2000).with(func(p *plan) { p.pass, p.nr, p.p50, p.flush = 2, 3, 900*time.Microsecond, window(fast, fast, fast) }),
 		ledger("m2", 1, 32, "uniform-10k", 2000).with(func(p *plan) { p.pass, p.nr, p.flush = 2, 4, window(fast, slow, fast) }),
-		ledger("m2", 3, 32, "uniform-10k", 2000).with(func(p *plan) { p.p50, p.throttled, p.retries = 6*time.Millisecond, []int{2}, 3 }),
+		ledger("m2", 3, 32, "uniform-10k", 2000).with(func(p *plan) { p.p50, p.foreign, p.throttled, p.retries = 6*time.Millisecond, []int{2}, []int{1}, 3 }),
 		ledger("m2", 3, 32, "uniform-10k", 2000).with(func(p *plan) { p.pass, p.nr, p.p50 = 2, 2, 8500*time.Microsecond }),
 		ledger("m2", 3, 32, "twophase", 2000).with(func(p *plan) { p.p50, p.reserve = 9*time.Millisecond, true }),
 		ledger("m2", 3, 32, "twophase", 2000).with(func(p *plan) { p.pass, p.nr, p.p50, p.reserve = 2, 2, 9400*time.Microsecond, true }),

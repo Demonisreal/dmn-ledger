@@ -125,8 +125,8 @@ func TestRawRoundTrip(t *testing.T) {
 		t.Fatalf("round trip changed the file; empty after reading: %q", lost)
 	}
 
-	for _, old := range []string{`"schema": 1`, `"schema": 3`} {
-		if _, err := Read(strings.NewReader(strings.Replace(buf.String(), `"schema": 2`, old, 1))); !errors.Is(err, ErrSchema) {
+	for _, old := range []string{`"schema": 1`, `"schema": 2`, `"schema": 4`} {
+		if _, err := Read(strings.NewReader(strings.Replace(buf.String(), `"schema": 3`, old, 1))); !errors.Is(err, ErrSchema) {
 			t.Errorf("%s: %v", old, err)
 		}
 	}
@@ -171,7 +171,7 @@ func TestInvalidSecondsStayOut(t *testing.T) {
 	b := newBuilt()
 	b.add(load.Warmup, 100, 10, ms(1.4), ms(900), ms(900))
 	b.add(load.Window, 100, 20, ms(1.4), ms(10), ms(11), ms(12))
-	b.add(load.Window, 100, 30, ms(1.4), ms(10), ms(11), ms(12)).Throttled = 1
+	b.add(load.Window, 100, 30, ms(1.4), ms(10), ms(11), ms(12)).SwappedOut = 1
 	b.run.Seconds[2].Latency.Add(5 * time.Second)
 	b.add(load.Window, 100, 45, ms(0.7), ms(800))
 	b.add(load.Window, 100, 50, ms(1.4), ms(700))
@@ -239,7 +239,7 @@ func TestRequestsFollowTheLeader(t *testing.T) {
 	cluster(part("n1", "leader", 2, 1100, 1100), part("n2", "follower", 2, 0, 1100))
 	cluster(part("n1", "candidate", 3, 0, 1150), part("n2", "follower", 3, 0, 1150))
 	cluster(part("n1", "follower", 4, 0, 1250), part("n2", "leader", 4, 1250, 1250))
-	b.ctl[len(b.ctl)-1].Throttled = 1
+	b.ctl[len(b.ctl)-1].SwappedOut = 1
 	cluster(part("n1", "follower", 4, 0, 1340), part("n2", "leader", 4, 1350, 1350))
 	f, err := Assemble(head(3), b.run, b.ctl)
 	if err != nil {
@@ -261,6 +261,15 @@ func TestStallsMakeTheRunInvalid(t *testing.T) {
 		{"too few flushes", func(b *built) { b.ctl[3].Flushes, b.ctl[3].FlushTime = 5, 5*ms(1.4) }, control.WhyFewFlushes},
 		{"stale status", func(b *built) { b.run.Seconds[3].Inside[0].Stale = true }, WhyStale},
 		{"no sample in the last second of the warmup", func(b *built) { b.run.Seconds[0].Sampled = false }, WhyNoSample},
+		{"a busy second with few flushes in a paced run", func(b *built) {
+			b.ctl[3].Flushes, b.ctl[3].FlushTime, b.ctl[3].Target = 8, 16*time.Millisecond, 1.0
+		}, control.WhyFewFlushes},
+		{"an unpaced target that stands", func(b *built) {
+			for i := range b.ctl {
+				b.ctl[i].Flushes, b.ctl[i].FlushTime, b.ctl[i].Target = 8, 16*time.Millisecond, 1.0
+			}
+			b.ctl[3].Target = 0.02
+		}, control.WhyIdle},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			b := newBuilt()
@@ -293,12 +302,77 @@ func TestStallsMakeTheRunInvalid(t *testing.T) {
 	}
 	b := newBuilt()
 	for i := range 4 {
-		b.add(load.Window, 100, uint64(10+10*i), ms(1.4), ms(10)).Throttled = uint64(i % 2)
+		b.add(load.Window, 100, uint64(10+10*i), ms(1.4), ms(10)).Throttled = uint64(700 * (i % 2))
 	}
-	b.add(load.Drain, 0, 50, ms(1.4))
+	b.add(load.Drain, 0, 50, ms(1.4)).Throttled = 3
 	b.run.Seconds[4].Inside[0].Stale = true
-	if f, _ := Assemble(head(1), b.run, b.ctl); !f.Verdict.Valid || f.Seconds[4].Valid || !slices.Contains(f.Seconds[4].Why, WhyStale) {
+	f, _ := Assemble(head(1), b.run, b.ctl)
+	if !f.Verdict.Valid || f.Seconds[4].Valid || !slices.Contains(f.Seconds[4].Why, WhyStale) {
 		t.Fatalf("throttled seconds and a stale status in the drain: valid %v %q, drain %v %q", f.Verdict.Valid, f.Verdict.Reasons, f.Seconds[4].Valid, f.Seconds[4].Why)
+	}
+	if f.Bands.Slow.Seconds != 4 || f.Verdict.Throttled != 2 || f.Seconds[1].Throttled != 700 {
+		t.Errorf("throttled window seconds: %d of 4 in the band, %d marked thermal, counter %d, want all 4 counted and 2 marked",
+			f.Bands.Slow.Seconds, f.Verdict.Throttled, f.Seconds[1].Throttled)
+	}
+}
+
+func TestBusyTargetWithoutFlushes(t *testing.T) {
+	b := newBuilt()
+	b.add(load.Warmup, 100, 10, ms(1.4), ms(10))
+	for i := range 6 {
+		sec := b.add(load.Window, 2000, uint64(11+i), ms(1.4), ms(10), ms(11))
+		sec.Flushes, sec.FlushTime, sec.Target = 6+uint64(i), time.Duration(6+i)*ms(3), 1.0
+	}
+	b.ctl[3].Flushes, b.ctl[3].FlushTime = 300, 300*ms(1.4)
+	b.add(load.Drain, 0, 20, ms(1.4))
+	f, err := Assemble(head(4), b.run, b.ctl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, u := f.Verdict, f.Bands.Unpaced
+	if !v.Valid || v.Speed != control.Unpaced || u.Seconds != 6 || u.Throughput != 2000 || f.Bands.Slow.Seconds != 0 {
+		t.Fatalf("a target on a full core with few flushes: valid %v %q, speed %v, %d unpaced seconds at %.0f/s, %d slow; want a valid unpaced run of 6 seconds",
+			v.Valid, v.Reasons, v.Speed, u.Seconds, u.Throughput, f.Bands.Slow.Seconds)
+	}
+	if u.Flush != 0 || u.P50Flushes != 0 || u.P50 == 0 || u.Syncs == 0 {
+		t.Errorf("unpaced band: flush %v, p50 %v in %.2f flushes, %.3f fsync per transfer; want no flush time and no flush units", u.Flush, u.P50, u.P50Flushes, u.Syncs)
+	}
+	for i, s := range f.Seconds {
+		if s.Speed != control.Unpaced || slices.Contains(s.Why, control.WhyFewFlushes) || slices.Contains(s.Why, control.WhyChange) {
+			t.Errorf("second %d: %v %q, want unpaced without the reasons of a paced run", i, s.Speed, s.Why)
+		}
+	}
+}
+
+func TestGeneratorLimitNeedsAnEmptyBacklog(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		rate  int
+		open  uint64
+		limit string
+	}{
+		{"a late dispatcher in front of a full backlog", 64_000, 100_000, LimitTarget},
+		{"a late dispatcher at the open limit, little backlog", 512_000, 90_000, LimitGenerator},
+	} {
+		b := newBuilt()
+		for range 3 {
+			b.add(load.Window, 100, 10, ms(1.4), ms(10))
+		}
+		for _, sec := range b.run.Seconds {
+			for range 300 {
+				sec.Late.Add(14 * time.Millisecond)
+			}
+		}
+		b.run.Saturated, b.run.Capped, b.run.OpenAtEnd = true, true, c.open
+		h := head(2)
+		h.Load.Rate = c.rate
+		f, err := Assemble(h, b.run, b.ctl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v := f.Verdict; !v.Valid || v.Limit != c.limit {
+			t.Errorf("%s: valid %v %q, limit %q, want %q; late %v, %d open at %d/s", c.name, v.Valid, v.Reasons, v.Limit, c.limit, v.LateP99, v.OpenAtEnd, c.rate)
+		}
 	}
 }
 
