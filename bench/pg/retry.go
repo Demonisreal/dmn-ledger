@@ -9,12 +9,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Demonisreal/dmn-ledger/bench/load"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var (
 	ErrRefused = errors.New("pg: refused")
-	ErrGaveUp  = errors.New("pg: gave up")
+	ErrGaveUp  = fmt.Errorf("pg: gave up (%w)", load.ErrShed)
 )
 
 const (

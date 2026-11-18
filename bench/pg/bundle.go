@@ -6,7 +6,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/bench/load"
 )
 
-const maxBatch = 10_485
+const maxBatch = 1_000
 
 type answer struct {
 	out load.Outcome

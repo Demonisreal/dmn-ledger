@@ -169,6 +169,19 @@ func (c *Client) template(ctx context.Context, tpl string) error {
 	if _, err := c.admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{tpl}.Sanitize()); err != nil {
 		return err
 	}
+	if err := c.fill(ctx, tpl); err != nil {
+		return err
+	}
+	conn, err := pgx.Connect(ctx, c.srv.dsn(tpl))
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	_, err = conn.Exec(ctx, "VACUUM (FREEZE, ANALYZE)")
+	return err
+}
+
+func (c *Client) fill(ctx context.Context, tpl string) error {
 	conn, err := pgx.Connect(ctx, c.srv.dsn(tpl))
 	if err != nil {
 		return err
@@ -194,12 +207,8 @@ func (c *Client) template(ctx context.Context, tpl string) error {
 	if err != nil {
 		return err
 	}
-	for _, sql := range []string{"VACUUM (FREEZE, ANALYZE)", "CREATE EXTENSION pg_prewarm"} {
-		if _, err := conn.Exec(ctx, sql); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err = conn.Exec(ctx, "CREATE EXTENSION pg_prewarm")
+	return err
 }
 
 func (c *Client) open(ctx context.Context) error {
@@ -379,5 +388,12 @@ func (c *Client) Close() error {
 	if c.pool != nil {
 		c.pool.Close()
 	}
-	return errors.Join(append(errs, c.admin.Close(context.Background()))...)
+	ctx := context.Background()
+	for _, sql := range []string{"DROP DATABASE IF EXISTS " + runDB + " WITH (FORCE)", "CHECKPOINT"} {
+		if _, err := c.admin.Exec(ctx, sql); err != nil {
+			errs = append(errs, err)
+			break
+		}
+	}
+	return errors.Join(append(errs, c.admin.Close(ctx))...)
 }

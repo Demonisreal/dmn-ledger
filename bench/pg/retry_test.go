@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/Demonisreal/dmn-ledger/bench/load"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -43,6 +44,9 @@ func TestRetryEnds(t *testing.T) {
 				})
 				if tries != tc.tries || retries != tc.tries-1 || !errors.Is(err, tc.want) || tc.want == nil && err != nil {
 					t.Fatalf("%d tries, %d retries, %v; want %d tries, %v", tries, retries, err, tc.tries, tc.want)
+				}
+				if shed := errors.Is(err, load.ErrShed); shed != (tc.want == ErrGaveUp) {
+					t.Fatalf("%v: given up for the load generator %v, want %v", err, shed, tc.want == ErrGaveUp)
 				}
 				if d, s := seen.deadlocks.Load(), seen.serializations.Load(); d != tc.deadlocks || s != tc.serializations {
 					t.Fatalf("counted %d deadlock and %d serialization retries, want %d and %d", d, s, tc.deadlocks, tc.serializations)

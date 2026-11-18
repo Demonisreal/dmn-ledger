@@ -136,8 +136,8 @@ func TestBundlerWaitsForTheBatch(t *testing.T) {
 func TestBundleStaysUnderTheLimit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, b := startBundler(t)
-		if b.limit != 10_485 {
-			t.Fatalf("a batch carries up to %d transfers, want 10485 like a request of the SDK", b.limit)
+		if b.limit != 1_000 {
+			t.Fatalf("a batch carries up to %d transfers, want 1000", b.limit)
 		}
 		b.limit = 4
 		first := goDo(b, single(1))

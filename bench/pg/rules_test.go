@@ -497,8 +497,9 @@ func TestSampleKeepsSegmentInitApart(t *testing.T) {
 	after := drained(t, c)
 	created := after.Counters["wal_init_syncs"] - before.Counters["wal_init_syncs"]
 	t.Logf("%d segment switches: %d syncs of new segments, %d on the commit path", switches, created, after.Syncs-before.Syncs)
-	if created == 0 {
-		t.Fatalf("%d segment switches synced no new segment", switches)
+	if created != 0 || after.Syncs == before.Syncs {
+		t.Fatalf("%d segment switches: %d new segments synced and %d syncs on the commit path; want the segments from the reserve of Start and the commits counted apart",
+			switches, created, after.Syncs-before.Syncs)
 	}
 	const io = "SELECT sum(fsyncs) FILTER (WHERE context = 'normal')::bigint, sum(fsyncs) FILTER (WHERE context = 'init')::bigint FROM pg_stat_io WHERE object = 'wal'"
 	for range 20 {
@@ -711,6 +712,7 @@ func TestConfigurationIsApplied(t *testing.T) {
 		"port":                "55439",
 		"shared_buffers":      "131072 8kB",
 		"max_wal_size":        "8192 MB",
+		"min_wal_size":        "4096 MB",
 		"checkpoint_timeout":  "900 s",
 		"wal_sync_method":     "fdatasync",
 		"track_wal_io_timing": "on",
@@ -726,5 +728,54 @@ func TestConfigurationIsApplied(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join("/sys/fs/cgroup", srv.Cgroup(), "cpu.stat")); err != nil {
 		t.Errorf("no CPU time for the container: %v", err)
+	}
+}
+
+func TestStartLeavesSegmentsAhead(t *testing.T) {
+	conn, err := pgx.Connect(t.Context(), srv.dsn("postgres"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(t.Context())
+	if _, err := conn.Exec(t.Context(), "CHECKPOINT"); err != nil {
+		t.Fatal(err)
+	}
+	var ahead int
+	err = conn.QueryRow(t.Context(), `SELECT count(*) FILTER (WHERE name > pg_walfile_name(pg_current_wal_insert_lsn()))
+        FROM pg_ls_waldir() WHERE name ~ '^[0-9A-F]{24}$'`).Scan(&ahead)
+	if err != nil || ahead < segments-6 {
+		t.Fatalf("%d WAL segments ahead of the insert position after a checkpoint, %v; want about %d, so that no run creates one", ahead, err, segments)
+	}
+}
+
+func TestCloseLeavesPostgresIdle(t *testing.T) {
+	conn, err := pgx.Connect(t.Context(), srv.dsn("postgres"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(t.Context())
+	done := func() (n int64) {
+		if err := conn.QueryRow(t.Context(), "SELECT num_done FROM pg_stat_checkpointer").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	c, err := Dial(t.Context(), srv, Config{Variant: V3, Lanes: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Setup(t.Context(), rules); err != nil {
+		t.Fatal(err)
+	}
+	before := done()
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var left bool
+	if err := conn.QueryRow(t.Context(), "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)", runDB).Scan(&left); err != nil || left {
+		t.Fatalf("the run database is still there after Close: %v %v", left, err)
+	}
+	if after := done(); after <= before {
+		t.Errorf("checkpoints done %d before Close, %d after; want one at the end of the run", before, after)
 	}
 }

@@ -34,6 +34,7 @@ const (
 	ext4        = 0xef53
 	readyWithin = 60 * time.Second
 	volume      = "/var/lib/postgresql"
+	segments    = 256
 )
 
 //go:embed image.txt
@@ -48,6 +49,7 @@ var settings = []string{
 	"port=" + strconv.Itoa(Port),
 	"shared_buffers=1GB",
 	"max_wal_size=8GB",
+	"min_wal_size=4GB",
 	"checkpoint_timeout=15min",
 	"wal_sync_method=fdatasync",
 	"track_wal_io_timing=on",
@@ -113,7 +115,27 @@ func Start(ctx context.Context, dir string) (*Server, error) {
 		logs, _ := exec.Command("docker", "logs", "--tail", "20", Name).CombinedOutput()
 		return nil, errors.Join(fmt.Errorf("%w: %w\n%s", ErrNotReady, err, logs), s.Stop())
 	}
+	if err := s.reserve(ctx); err != nil {
+		return nil, errors.Join(fmt.Errorf("pg: WAL reserve: %w", err), s.Stop())
+	}
 	return s, nil
+}
+
+func (s *Server) reserve(ctx context.Context) error {
+	conn, err := pgx.Connect(ctx, s.dsn("postgres"))
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	for range segments {
+		for _, sql := range []string{"SELECT pg_current_xact_id()", "SELECT pg_switch_wal()"} {
+			if _, err := conn.Exec(ctx, sql); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = conn.Exec(ctx, "CHECKPOINT")
+	return err
 }
 
 func (s *Server) ready(ctx context.Context) error {
