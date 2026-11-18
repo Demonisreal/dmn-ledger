@@ -207,6 +207,12 @@ func (c *Client) fill(ctx context.Context, tpl string) error {
 	if err != nil {
 		return err
 	}
+	_, err = conn.Exec(ctx, `INSERT INTO transfers (id, debit_account_id, credit_account_id, amount, ledger, code)
+        SELECT ('00000000-0000-0000-0000-' || lpad(to_hex(id), 12, '0'))::uuid, $1::bigint, id, $2::bigint, $3::integer, $4::smallint
+        FROM accounts WHERE id < $1::bigint ORDER BY id`, int64(bank), int64(load.Endowment), int32(load.Ledger), int16(load.Code)) //nolint:gosec // G115: a count of accounts
+	if err != nil {
+		return err
+	}
 	_, err = conn.Exec(ctx, "CREATE EXTENSION pg_prewarm")
 	return err
 }

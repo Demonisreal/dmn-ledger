@@ -146,6 +146,7 @@ type Verdict struct {
 	OpenAtEnd      uint64        `json:"open_at_end"`
 	Horizon        time.Duration `json:"horizon_ns"`
 	Throughput     float64       `json:"throughput"`
+	LateP50        time.Duration `json:"late_p50_ns"`
 	LateP99        time.Duration `json:"late_p99_ns"`
 	GeneratorShare float64       `json:"generator_share"`
 	TargetShare    float64       `json:"target_share"`

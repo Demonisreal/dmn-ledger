@@ -130,7 +130,8 @@ func drained(t *testing.T, c *Client) load.Part {
 func transfers(t *testing.T, c *Client) uint64 {
 	t.Helper()
 	var n uint64
-	if err := c.pool.QueryRow(t.Context(), "SELECT count(*) FROM transfers").Scan(&n); err != nil {
+	err := c.pool.QueryRow(t.Context(), "SELECT count(*) FROM transfers WHERE debit_account_id <> $1", int64(c.w.Bank())).Scan(&n) //nolint:gosec // G115: a count of accounts
+	if err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -422,7 +423,7 @@ func TestVerifyFindsAMissingTransfer(t *testing.T) {
 		name  string
 		spoil string
 	}{
-		{"a sampled transfer is gone", "DELETE FROM transfers WHERE id = (SELECT id FROM transfers ORDER BY id LIMIT 1)"},
+		{"a sampled transfer is gone", "DELETE FROM transfers WHERE id = (SELECT id FROM transfers WHERE debit_account_id <> 17 ORDER BY id LIMIT 1)"},
 		{"a balance moved on its own", "UPDATE accounts SET credits_posted = credits_posted + 1 WHERE id = 3"},
 		{"an amount landed twice", "UPDATE accounts SET debits_posted = debits_posted + 5, credits_posted = credits_posted + 5 WHERE id = 4"},
 	} {

@@ -90,7 +90,7 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 
 	var window []control.Mark
 	late := new(load.Histogram)
-	var booked uint64
+	var booked, due, shed uint64
 	var generator, target float64
 	var throttled int
 	stalled := false
@@ -107,6 +107,7 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 		}
 		late.Merge(sec.Late)
 		booked += sec.Booked
+		due, shed = due+sec.Due, shed+sec.Shed
 		generator += ctl[i].Generator
 		target += ctl[i].Target
 	}
@@ -118,7 +119,7 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 	v.Speed = control.Settle(window, h.Load.Need)
 	v.Saturated, v.Capped = run.Saturated, run.Capped
 	v.OpenAtEnd, v.Horizon = run.OpenAtEnd, run.Horizon
-	v.LateP99 = late.Quantile(0.99)
+	v.LateP50, v.LateP99 = late.Quantile(0.5), late.Quantile(0.99)
 	v.Throttled = throttled
 	for i, sec := range f.Seconds {
 		if run.Seconds[i].Phase == load.Window && (!sec.Valid || sec.Speed != v.Speed) {
@@ -135,7 +136,8 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 		}
 		v.TargetShare = target / float64(n*max(cores, 1))
 	}
-	limited := v.GeneratorShare > CPULimit || v.LateP99 > LateLimit && (!v.Saturated || v.OpenAtEnd <= uint64(h.Load.Rate)) //nolint:gosec // G115: a rate is never negative
+	backlog := 100*shed > due || v.OpenAtEnd > uint64(h.Load.Rate) //nolint:gosec // G115: a rate is never negative
+	limited := v.GeneratorShare > CPULimit || v.LateP50 > LateLimit && (!v.Saturated || !backlog)
 	switch {
 	case v.Saturated && limited:
 		v.Limit = LimitGenerator
