@@ -25,14 +25,14 @@ func spread(ids map[u128.Uint128]bool, most int) []u128.Uint128 {
 }
 
 func (h *harness) prove(cl *ledger.Client, sts []*ledger.NodeStatus) bool {
-	top := sts[0]
+	top, keys := sts[0], h.c.Keys()
 	for i, st := range sts {
 		if st.HeadSeq != top.HeadSeq || st.Head != top.Head {
 			h.fail("head", "n%d and n%d applied up to %d with heads %d %x and %d %x", top.ID, st.ID, st.Applied, top.HeadSeq, top.Head[:8], st.HeadSeq, st.Head[:8])
 			return false
 		}
-		if !bytes.Equal(st.Key, h.keys[i]) {
-			h.fail("key", "n%d shows key %x, it was started with %x", st.ID, st.Key, h.keys[i])
+		if !bytes.Equal(st.Key, keys[i]) {
+			h.fail("key", "n%d shows key %x, it was started with %x", st.ID, st.Key, keys[i])
 			return false
 		}
 	}
@@ -43,7 +43,7 @@ func (h *harness) prove(cl *ledger.Client, sts []*ledger.NodeStatus) bool {
 		h.fail("proof", "head: %v", err)
 		return false
 	}
-	head, err := ledger.VerifyProof(raw, clusterID, h.keys)
+	head, err := ledger.VerifyProof(raw, clusterID, keys)
 	if err != nil || head.HeadSeq != top.HeadSeq || head.Head != top.Head {
 		h.fail("proof", "head %d %x, %v; the nodes show %d %x", head.HeadSeq, head.Head[:8], err, top.HeadSeq, top.Head[:8])
 		return false
@@ -60,7 +60,7 @@ func (h *harness) prove(cl *ledger.Client, sts []*ledger.NodeStatus) bool {
 		if raw == nil {
 			return false, true
 		}
-		p, err := ledger.VerifyProof(raw, clusterID, h.keys)
+		p, err := ledger.VerifyProof(raw, clusterID, keys)
 		if err != nil {
 			h.fail("proof", "%s %v: %v", kind, id, err)
 			return false, false

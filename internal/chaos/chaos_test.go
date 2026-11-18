@@ -21,6 +21,8 @@ import (
 
 	"github.com/Demonisreal/dmn-ledger/internal/check"
 	"github.com/Demonisreal/dmn-ledger/internal/faultnet"
+	"github.com/Demonisreal/dmn-ledger/internal/history"
+	"github.com/Demonisreal/dmn-ledger/internal/local"
 	"github.com/Demonisreal/dmn-ledger/internal/sim"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
@@ -73,7 +75,8 @@ func (h *harness) run(d time.Duration) *finding {
 	rounds := max(1, int(d/round))
 	h.plan = plan(h.seed, rounds)
 	r := check.NewReplayer()
-	h.wg.Go(func() { h.replay(r) })
+	h.rec = history.NewRecorder(history.Options{Window: windowSize, Backlog: backlog, Since: h.since, Sink: h.sink}, r)
+	h.wg.Go(h.replay)
 	if h.connect() {
 		for k, cl := range h.clients {
 			rng := rand.New(rand.NewPCG(h.seed, 10+uint64(k))) //nolint:gosec // G115: four clients
@@ -86,14 +89,10 @@ func (h *harness) run(d time.Duration) *finding {
 }
 
 func (h *harness) connect() bool {
-	var addrs []string
-	for id := 1; id <= nodes; id++ {
-		addrs = append(addrs, h.links[route{0, id}].Addr())
-	}
 	ctx, cancel := context.WithTimeout(h.ctx, 30*time.Second)
 	defer cancel()
 	for k := range clients {
-		cl, err := ledger.Dial(ctx, ledger.Config{Cluster: clusterID, Nodes: addrs})
+		cl, err := ledger.Dial(ctx, ledger.Config{Cluster: clusterID, Nodes: h.c.Doors()})
 		if err != nil {
 			h.fail("dial", "client %d: %v", k+1, err)
 			return false
@@ -164,11 +163,11 @@ func (h *harness) reach() uint64 {
 
 func (h *harness) filled(missing int) bool {
 	lead := h.leader()
-	for _, n := range h.nodes {
-		if n.id == missing || lead != 0 && lead != missing && n.id != lead {
+	for id := 1; id <= nodes; id++ {
+		if id == missing || lead != 0 && lead != missing && id != lead {
 			continue
 		}
-		if _, tail := n.segments(); tail >= segmentSize*15/16 {
+		if _, tail := segments(h.c.Node(id).Dir()); tail >= segmentSize*15/16 {
 			return true
 		}
 	}
@@ -180,7 +179,7 @@ func (h *harness) compacted(missing int, index uint64) bool {
 	if lead == 0 || lead == missing {
 		return false
 	}
-	first, _ := h.nodes[lead-1].segments()
+	first, _ := segments(h.c.Node(lead).Dir())
 	return first > index+1
 }
 
@@ -241,9 +240,9 @@ func (h *harness) strike(w *window) {
 	w.on = time.Now()
 	switch w.act() {
 	case crash:
-		h.nodes[w.hit-1].kill()
+		h.c.Node(w.hit).Kill()
 	case freeze:
-		h.nodes[w.hit-1].signal(syscall.SIGSTOP)
+		h.c.Node(w.hit).Signal(syscall.SIGSTOP)
 	case cut:
 		w.routes = w.side.routes(w.hit)
 	}
@@ -253,11 +252,11 @@ func (h *harness) strike(w *window) {
 func (h *harness) lift(w *window) {
 	switch w.act() {
 	case crash:
-		if err := h.nodes[w.hit-1].start(); err != nil {
+		if err := h.c.Node(w.hit).Start(); err != nil {
 			h.fail("restart", "n%d: %v", w.hit, err)
 		}
 	case freeze:
-		h.nodes[w.hit-1].signal(syscall.SIGCONT)
+		h.c.Node(w.hit).Signal(syscall.SIGCONT)
 	}
 	h.shape(w, false)
 	w.off = time.Now()
@@ -278,9 +277,9 @@ func (h *harness) shape(w *window, on bool) {
 				f = merge(f, o.fault)
 			}
 		}
-		h.links[r].Set(f)
+		h.c.Link(r).Set(f)
 		h.sets[r]++
-		if set := h.sets[r]; r.from == 0 {
+		if set := h.sets[r]; r.From == 0 {
 			h.wg.Go(func() { h.probe(r, set, f) })
 		}
 	}
@@ -298,7 +297,7 @@ func merge(a, b faultnet.Fault) faultnet.Fault {
 	}
 }
 
-func (h *harness) probe(r route, set int, f faultnet.Fault) {
+func (h *harness) probe(r local.Route, set int, f faultnet.Fault) {
 	wait := f.Delay
 	if f.Cut || f.Blackhole || f.Stall {
 		wait = probeFor
@@ -309,7 +308,7 @@ func (h *harness) probe(r route, set int, f faultnet.Fault) {
 	ctx, cancel := context.WithTimeout(h.ctx, wait)
 	defer cancel()
 	began := time.Now()
-	_, err := ledger.Status(ctx, clusterID, h.links[r].Addr())
+	_, err := ledger.Status(ctx, clusterID, h.c.Link(r).Addr())
 	took := time.Since(began)
 	h.fmu.Lock()
 	same := h.sets[r] == set
@@ -321,16 +320,16 @@ func (h *harness) probe(r route, set int, f faultnet.Fault) {
 
 func (h *harness) calm(base time.Time) bool {
 	h.fmu.Lock()
-	for r, l := range h.links {
-		l.Set(faultnet.Fault{})
+	for _, r := range h.c.Routes() {
+		h.c.Link(r).Set(faultnet.Fault{})
 		h.sets[r]++
 	}
 	h.active = nil
 	h.fmu.Unlock()
 	healed := h.since()
-	for _, n := range h.nodes {
-		if !n.running() {
-			h.fail("L2", "n%d is down when the calm begins", n.id)
+	for id := 1; id <= nodes; id++ {
+		if !h.c.Node(id).Running() {
+			h.fail("L2", "n%d is down when the calm begins", id)
 			return false
 		}
 	}
@@ -340,7 +339,7 @@ func (h *harness) calm(base time.Time) bool {
 	if _, ok := h.agree(); !ok {
 		return false
 	}
-	h.resume()
+	h.rec.Resume()
 	return h.sound() && h.sleep(time.Until(base.Add(round)))
 }
 
@@ -349,9 +348,9 @@ func (h *harness) answered(healed uint64) bool {
 	for {
 		h.mu.Lock()
 		late := -1
-		for i, start := range h.open {
+		for n, start := range h.open {
 			if start < healed {
-				late = h.first + i
+				late = n
 			}
 		}
 		h.mu.Unlock()
@@ -419,10 +418,10 @@ func (h *harness) judge(sts []*ledger.NodeStatus) string {
 }
 
 func (h *harness) sound() bool {
-	for _, n := range h.nodes {
-		b, _ := os.ReadFile(n.log)
+	for id := 1; id <= nodes; id++ {
+		b, _ := os.ReadFile(h.log(id))
 		if bytes.Contains(b, []byte("repair flag set")) || bytes.Contains(b, []byte("repair yes")) {
-			h.fail("L4", "n%d went into repair, its log ends with:\n%s", n.id, tail(n.log, 20))
+			h.fail("L4", "n%d went into repair, its log ends with:\n%s", id, tail(h.log(id), 20))
 			return false
 		}
 	}
@@ -434,10 +433,7 @@ func (h *harness) final(r *check.Replayer) {
 		return
 	}
 	accts, ok := h.lookups(h.clients[0])
-	h.mu.Lock()
-	h.closed = true
-	h.cond.Broadcast()
-	h.mu.Unlock()
+	h.rec.Close()
 	<-h.checked
 	if !ok || h.finding() != nil {
 		return
@@ -477,9 +473,7 @@ func (h *harness) sleep(d time.Duration) bool {
 }
 
 func (h *harness) summary() string {
-	h.mu.Lock()
-	calls, windows := h.first+len(h.calls), h.windows
-	h.mu.Unlock()
+	calls, windows := h.rec.Judged()
 	var faults []string
 	for k, n := range h.kinds {
 		faults = append(faults, fmt.Sprintf("%s %d", kind(k), n))
@@ -514,8 +508,8 @@ type stream struct {
 }
 
 func (h *harness) snapshots() (streams []stream, received, dropped int) {
-	for _, n := range h.nodes {
-		b, _ := os.ReadFile(n.log)
+	for id := 1; id <= nodes; id++ {
+		b, _ := os.ReadFile(h.log(id))
 		open := map[int]int{}
 		end := func(to int, at time.Time, sent bool) {
 			if i, ok := open[to]; ok {
@@ -534,7 +528,7 @@ func (h *harness) snapshots() (streams []stream, received, dropped int) {
 			case f[0] == "sending" && f[1] == "snapshot":
 				to, _ := strconv.Atoi(f[5])
 				open[to] = len(streams)
-				streams = append(streams, stream{from: n.id, to: to, began: at, ended: at})
+				streams = append(streams, stream{from: id, to: to, began: at, ended: at})
 			case f[0] == "sent" && f[1] == "snapshot":
 				to, _ := strconv.Atoi(strings.TrimSuffix(f[5], ","))
 				end(to, at, true)
@@ -567,7 +561,7 @@ func (h *harness) disturbed(st stream) bool {
 				return true
 			}
 		default:
-			if slices.Contains(w.routes, route{st.from, st.to}) {
+			if slices.Contains(w.routes, local.Route{From: st.from, To: st.to}) {
 				return true
 			}
 		}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Demonisreal/dmn-ledger/internal/faultnet"
+	"github.com/Demonisreal/dmn-ledger/internal/local"
 )
 
 const (
@@ -51,37 +52,28 @@ const (
 
 var sideNames = [...]string{"both ways around", "out of", "into", "clients to"}
 
-type route struct{ from, to int }
-
-func (r route) String() string {
-	if r.from == 0 {
-		return fmt.Sprintf("c->n%d", r.to)
-	}
-	return fmt.Sprintf("n%d->n%d", r.from, r.to)
-}
-
-func routes() []route {
-	var all []route
+func routes() []local.Route {
+	var all []local.Route
 	for to := 1; to <= nodes; to++ {
-		all = append(all, route{0, to})
+		all = append(all, local.Route{To: to})
 	}
 	for from := 1; from <= nodes; from++ {
 		for to := 1; to <= nodes; to++ {
 			if from != to {
-				all = append(all, route{from, to})
+				all = append(all, local.Route{From: from, To: to})
 			}
 		}
 	}
 	return all
 }
 
-func (s side) routes(node int) []route {
+func (s side) routes(node int) []local.Route {
 	if s == fromClients {
-		return []route{{0, node}}
+		return []local.Route{{To: node}}
 	}
-	var rs []route
+	var rs []local.Route
 	for _, r := range routes() {
-		if r.from != 0 && (s != incoming && r.from == node || s != outgoing && r.to == node) {
+		if r.From != 0 && (s != incoming && r.From == node || s != outgoing && r.To == node) {
 			rs = append(rs, r)
 		}
 	}
@@ -95,7 +87,7 @@ type window struct {
 	node       int
 	leader     bool
 	side       side
-	routes     []route
+	routes     []local.Route
 	fault      faultnet.Fault
 	hit        int
 
@@ -201,7 +193,7 @@ func plan(seed uint64, rounds int) []*window {
 				}
 				w.fault = faultnet.Fault{Blackhole: true}
 			case stall:
-				w.routes = []route{all[rng.IntN(len(all))]}
+				w.routes = []local.Route{all[rng.IntN(len(all))]}
 				w.fault = faultnet.Fault{Stall: true}
 			case noise:
 				w.routes, w.fault = all, noisy(rng)

@@ -10,7 +10,6 @@ import (
 	"flag"
 	"fmt"
 	"math/rand/v2"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,9 +20,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Demonisreal/dmn-ledger/internal/faultnet"
-	"github.com/Demonisreal/dmn-ledger/internal/notary"
-	"github.com/Demonisreal/dmn-ledger/internal/sim"
+	"github.com/Demonisreal/dmn-ledger/internal/history"
+	"github.com/Demonisreal/dmn-ledger/internal/local"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/internal/workload"
@@ -82,10 +80,7 @@ type harness struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	nodes   []*node
-	keys    [][]byte
-	addrs   []string
-	links   map[route]*faultnet.Link
+	c       *local.Cluster
 	clients []*ledger.Client
 	plan    []*window
 	begun   []time.Time
@@ -93,28 +88,22 @@ type harness struct {
 
 	fmu    sync.Mutex
 	active []*window
-	sets   map[route]int
+	sets   map[local.Route]int
 
 	failMu sync.Mutex
 	found  *finding
 
+	rec      *history.Recorder
+	history  *gob.Encoder
+	checked  chan struct{}
+	receipts int
+
 	mu          sync.Mutex
-	cond        *sync.Cond
 	gen         *workload.Gen
-	calls       []sim.Call
-	first       int
 	open        map[int]uint64
-	started     int
-	hold        bool
-	closed      bool
-	pending     [][]sim.Call
-	windows     int
 	submitted   uint64
 	accountIDs  map[u128.Uint128]bool
 	transferIDs map[u128.Uint128]bool
-	history     *gob.Encoder
-	checked     chan struct{}
-	receipts    int
 }
 
 func newHarness(t *testing.T, seed uint64, bug string) *harness {
@@ -126,100 +115,56 @@ func newHarness(t *testing.T, seed uint64, bug string) *harness {
 		began:       time.Now(),
 		ctx:         ctx,
 		cancel:      cancel,
-		links:       map[route]*faultnet.Link{},
-		sets:        map[route]int{},
+		sets:        map[local.Route]int{},
 		open:        map[int]uint64{},
 		accountIDs:  map[u128.Uint128]bool{},
 		transferIDs: map[u128.Uint128]bool{},
 		checked:     make(chan struct{}),
 	}
-	h.cond = sync.NewCond(&h.mu)
 	hist, err := os.Create(filepath.Join(h.dir, "history.bin"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.history = gob.NewEncoder(hist)
-	context.AfterFunc(ctx, func() {
-		h.mu.Lock()
-		h.cond.Broadcast()
-		h.mu.Unlock()
-	})
+	t.Cleanup(func() { _ = hist.Close() })
 	rng := rand.New(rand.NewPCG(seed, 2))
 	h.gen = workload.New(rand.New(rand.NewPCG(rng.Uint64(), rng.Uint64())))
 	h.gen.MaxBatch = 1 + rng.IntN(8)
-	t.Cleanup(func() {
-		h.teardown()
-		_ = hist.Close()
-	})
 
-	ports := freePorts(t, seed, 2*nodes)
-	peers, addrs := ports[:nodes], ports[nodes:]
-	h.addrs = addrs
-	for i, r := range routes() {
-		target := addrs[r.to-1]
-		if r.from != 0 {
-			target = peers[r.to-1]
-		}
-		l, err := faultnet.Listen(target, rand.New(rand.NewPCG(seed, 100+uint64(i)))) //nolint:gosec // G115: nine routes
-		if err != nil {
-			t.Fatal(err)
-		}
-		h.links[r] = l
-	}
+	var keys []ed25519.PrivateKey
 	for id := 1; id <= nodes; id++ {
-		list := make([]string, nodes)
-		for to := 1; to <= nodes; to++ {
-			list[to-1] = peers[to-1]
-			if to != id {
-				list[to-1] = h.links[route{id, to}].Addr()
-			}
-		}
-		dir := filepath.Join(h.dir, fmt.Sprintf("n%d", id))
-		key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{byte(id)}, ed25519.SeedSize))
-		keyFile := filepath.Join(h.dir, fmt.Sprintf("n%d.key", id))
-		if err := notary.WriteKey(keyFile, key); err != nil {
-			t.Fatal(err)
-		}
-		h.keys = append(h.keys, key.Public().(ed25519.PublicKey))
-		env := []string{
-			"LEDGER_ID=" + strconv.Itoa(id),
-			"LEDGER_CLUSTER=" + strconv.Itoa(clusterID),
-			"LEDGER_PEERS=" + strings.Join(list, ","),
-			"LEDGER_CLIENT_ADDR=" + addrs[id-1],
-			"LEDGER_DIR=" + dir,
-			"LEDGER_SWEEP=off",
-			"LEDGER_SNAPSHOT_EVERY=500",
-			"LEDGER_SEGMENT_SIZE=" + strconv.Itoa(segmentSize),
-			"LEDGER_MAX_SESSIONS=64",
-			"LEDGER_KEY_FILE=" + keyFile,
-		}
-		if bug != "" {
-			env = append(env, "LEDGER_BUG="+bug)
-		}
-		n := &node{h: h, id: id, env: env, dir: dir, log: filepath.Join(h.dir, fmt.Sprintf("n%d.log", id))}
-		h.nodes = append(h.nodes, n)
-		if err := n.start(); err != nil {
-			t.Fatal(err)
-		}
+		keys = append(keys, ed25519.NewKeyFromSeed(bytes.Repeat([]byte{byte(id)}, ed25519.SeedSize)))
 	}
+	env := []string{
+		"LEDGER_SWEEP=off",
+		"LEDGER_SNAPSHOT_EVERY=500",
+		"LEDGER_SEGMENT_SIZE=" + strconv.Itoa(segmentSize),
+		"LEDGER_MAX_SESSIONS=64",
+	}
+	if bug != "" {
+		env = append(env, "LEDGER_BUG="+bug)
+	}
+	c, err := local.Start(local.Config{
+		Bin:     bin,
+		Dir:     h.dir,
+		Cluster: clusterID,
+		Env:     env,
+		Keys:    keys,
+		Clients: true,
+		Seed:    seed,
+		Exited: func(id int, err error) {
+			h.fail("F1", "n%d ended on its own (%v), its log ends with:\n%s", id, err, tail(h.log(id), 20))
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.failMu.Lock()
+	h.c = c
+	h.failMu.Unlock()
+	t.Cleanup(h.teardown)
 	t.Logf("seed %d, data in %s on %s", seed, h.dir, fsName(h.dir))
 	return h
-}
-
-func freePorts(t *testing.T, seed uint64, n int) []string {
-	t.Helper()
-	var addrs []string
-	for port := 20000 + int(seed%10000); len(addrs) < n && port < 32768; port++ {
-		addr := "127.0.0.1:" + strconv.Itoa(port)
-		if l, err := net.Listen("tcp", addr); err == nil {
-			_ = l.Close()
-			addrs = append(addrs, addr)
-		}
-	}
-	if len(addrs) < n {
-		t.Fatalf("found %d free ports below 32768, want %d", len(addrs), n)
-	}
-	return addrs
 }
 
 func fsName(dir string) string {
@@ -247,8 +192,10 @@ func (h *harness) fail(check, format string, args ...any) {
 		return
 	}
 	h.found = &finding{check: check, reason: fmt.Sprintf(format, args...)}
-	for _, n := range h.nodes {
-		n.halt()
+	if h.c != nil {
+		for id := 1; id <= nodes; id++ {
+			h.c.Node(id).Halt()
+		}
 	}
 	h.cancel()
 }
@@ -263,12 +210,7 @@ func (h *harness) teardown() {
 	h.failMu.Lock()
 	h.cancel()
 	h.failMu.Unlock()
-	for _, n := range h.nodes {
-		n.stop()
-	}
-	for _, l := range h.links {
-		_ = l.Close()
-	}
+	_ = h.c.Close()
 	for _, cl := range h.clients {
 		_ = cl.Close()
 	}
@@ -295,137 +237,32 @@ func (h *harness) keep() string {
 }
 
 func (h *harness) statuses() []*ledger.NodeStatus {
-	sts := make([]*ledger.NodeStatus, nodes)
-	var wg sync.WaitGroup
-	for i, addr := range h.addrs {
-		wg.Go(func() {
-			ctx, cancel := context.WithTimeout(h.ctx, 500*time.Millisecond)
-			defer cancel()
-			if st, err := ledger.Status(ctx, clusterID, addr); err == nil {
-				sts[i] = &st
-			}
-		})
-	}
-	wg.Wait()
-	return sts
+	ctx, cancel := context.WithTimeout(h.ctx, 500*time.Millisecond)
+	defer cancel()
+	return h.c.Statuses(ctx)
 }
 
 func (h *harness) leader() int {
-	id, term := 0, uint64(0)
-	for _, st := range h.statuses() {
-		if st != nil && st.Role == ledger.Leader && st.Term >= term {
-			id, term = int(st.ID), st.Term //nolint:gosec // G115: a node ID from 1 to 3
-		}
-	}
-	return id
+	ctx, cancel := context.WithTimeout(h.ctx, 500*time.Millisecond)
+	defer cancel()
+	return h.c.Leader(ctx)
+}
+
+func (h *harness) log(id int) string {
+	return filepath.Join(h.dir, fmt.Sprintf("n%d.log", id))
 }
 
 func (h *harness) logged(line string) int {
 	seen := 0
-	for _, n := range h.nodes {
-		b, _ := os.ReadFile(n.log)
+	for id := 1; id <= nodes; id++ {
+		b, _ := os.ReadFile(h.log(id))
 		seen += bytes.Count(b, []byte(line))
 	}
 	return seen
 }
 
-type node struct {
-	h   *harness
-	id  int
-	env []string
-	dir string
-	log string
-
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	exited chan struct{}
-	ending bool
-	held   bool
-}
-
-func (n *node) start() error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.held {
-		return nil
-	}
-	logf, err := os.OpenFile(n.log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(bin) //nolint:gosec // G204: the binary TestMain built
-	cmd.Env = n.env
-	cmd.Stderr = logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
-	if err := cmd.Start(); err != nil {
-		_ = logf.Close()
-		return err
-	}
-	exited := make(chan struct{})
-	n.cmd, n.exited, n.ending = cmd, exited, false
-	go func() {
-		err := cmd.Wait()
-		_ = logf.Close()
-		n.mu.Lock()
-		ending := n.ending
-		n.mu.Unlock()
-		if !ending {
-			n.h.fail("F1", "n%d ended on its own (%v), its log ends with:\n%s", n.id, err, tail(n.log, 20))
-		}
-		close(exited)
-	}()
-	return nil
-}
-
-func (n *node) running() bool {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.cmd != nil
-}
-
-func (n *node) signal(sig syscall.Signal) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.cmd != nil && !n.held {
-		_ = n.cmd.Process.Signal(sig)
-	}
-}
-
-func (n *node) kill() {
-	n.end(false)
-}
-
-func (n *node) stop() {
-	n.end(true)
-}
-
-func (n *node) end(hold bool) {
-	n.mu.Lock()
-	if n.cmd == nil || n.held && !hold {
-		n.held = n.held || hold
-		n.mu.Unlock()
-		return
-	}
-	n.held = n.held || hold
-	n.ending = true
-	_ = n.cmd.Process.Kill()
-	exited := n.exited
-	n.cmd = nil
-	n.mu.Unlock()
-	<-exited
-}
-
-func (n *node) halt() {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.held = true
-	if n.cmd != nil {
-		_ = n.cmd.Process.Signal(syscall.SIGSTOP)
-	}
-}
-
-func (n *node) segments() (first uint64, tail int64) {
-	segs, _ := os.ReadDir(filepath.Join(n.dir, "wal"))
+func segments(dir string) (first uint64, tail int64) {
+	segs, _ := os.ReadDir(filepath.Join(dir, "wal"))
 	for _, seg := range segs {
 		num, ok := strings.CutPrefix(seg.Name(), wal.SegmentPrefix)
 		num, done := strings.CutSuffix(num, ".log")
