@@ -6,6 +6,7 @@ here is a second palette. Product truth lives in `PRODUCT.md`; what the page say
 in the template.
 
 Files: `internal/demo/web/page.html` (Go `html/template`), `internal/demo/web/page.css`,
+`internal/demo/web/app.js` and `internal/demo/web/proof.js` (behaviour, see below),
 `internal/demo/web/icon.svg` and `internal/demo/web/grain-1.svg` (both copied unchanged from the site).
 
 ## Tokens
@@ -150,11 +151,36 @@ Focus ring everywhere as on the site: 2px `--red`, offset 3px.
 
 Readable at 200 % zoom: at 1366 px that is a 683 px viewport, which gets the one-column layout.
 
+## Behaviour
+
+`internal/demo/web/app.js` reads the stream at `/events` and puts every `state` and `tick` into the page
+that the server rendered; `internal/demo/web/proof.js` fetches `/proof` and shows what `check` from
+`receipt.js` returns. No markup is invented by the scripts: every sentence comes from a `template[data-t]`
+in the page, values are set as text, and an element is rewritten only where its text or attributes change,
+so a selection or a screen reader is not disturbed by values that stay the same. Times are written in the
+browser's zone, counted against `now` of the server, and only change when an event arrives.
+
+| State | What the page shows |
+|---|---|
+| connected | values follow the stream; the stream is not mentioned |
+| no event for three seconds | note in the verdict and in the status line, "Stand `<zeit>`" with the server time of the last event; values in the verdict, the nodes and the books turn `--muted`; fault buttons locked |
+| no room in the stream (503) | the same with the sentence "Gerade sehen zu viele zu"; the page asks again after the server's `retry` |
+| tab was hidden | after one minute in the background the page closes its stream and shows the old-values state; on return it connects again and the first `state` makes everything current |
+| click sent | all fault buttons locked, the pressed one keeps its red border and `aria-busy`; after 202 they stay locked until an event shows the action |
+| refused | the sentence for `limited`, `cooling`, `recovering`, `young`, or "Das hat der Server nicht angenommen (`<status>`)" in place of "Bereit"; with `until` (or `Retry-After`) the buttons stay locked until then |
+| receipt | steps up to the first that fails say "stimmt", that one "stimmt nicht", later ones stay empty and grey; with a changed byte step 3 fails; a receipt that is not a transfer never says it holds |
+
+Step 7 ("denselben Kopf") compares the head that `check` computed with the head the controller sent; it is
+the only comparison outside `receipt.js` and computes nothing. The explanatory text and the command block
+under the steps use the receipt as the server sent it.
+
 ## Motion
 
-None beyond the site's own: colour transitions of 150ms on links and buttons and the press of a button
-(`scale(.97)`, 160ms `--ease`). Under `prefers-reduced-motion: reduce` both are off. No animation shows a
-process; values change because the state changes.
+No motion beyond the site's own: colour transitions of 150ms on links and buttons and the press of a button
+(`scale(.97)`, 160ms `--ease`). Under `prefers-reduced-motion: reduce` both are off. The scripts add no
+motion: values change up to four times a second and the log grows every few seconds, so anything that moves
+would be seen constantly, and a repair of 77 ms or a count that did not change has nothing to show that a
+plain new value does not. No animation shows a process; values change because the state changes.
 
 ## What is new against the site
 

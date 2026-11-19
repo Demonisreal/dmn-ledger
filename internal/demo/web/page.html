@@ -173,7 +173,7 @@
     <h2 id="log-h">Protokoll</h2>
     <p class="intro">Zeilen von n1, n2 und n3 sind die Ausgabe der Knoten, wörtlich, mit deren eigenem Zeitstempel in UTC. Zeilen von demo schreibt das Steuerprogramm, wenn es etwas getan hat. Zeilen von check sind Zählungen und Urteile.</p>
     {{- with latest .Totals.Findings}}
-    <p class="pinned" id="pinned"><span class="src">check</span> <span>Befund <span class="check">{{.Check}}</span>: <span class="said">{{.Reason}}</span></span>{{with .Evidence}} <span>Daten und Logs der Knoten gesichert unter <code>{{.}}</code>.</span>{{end}}</p>
+    <p class="pinned" id="pinned">{{template "pinned" (args "check" .Check "reason" .Reason)}}{{with .Evidence}}{{template "evidence" (args "dir" .)}}{{end}}</p>
     {{- end}}
     <div class="lines" tabindex="0" role="region" aria-label="Protokollzeilen, neueste oben">
       <ol id="lines">
@@ -191,8 +191,8 @@
     <h2 id="books-h">Die Bücher</h2>
     <p class="intro">Vier Clients buchen zusammen etwa zehn Buchungen je Sekunde zwischen sechs Konten. Jedes Konto begann mit 10 000,00 und darf nicht ins Minus.</p>
     <div class="books-in">
-      {{- with .Books.Sum}}{{if .At}}
-      <table class="accounts" id="accounts">
+      {{- with .Books.Sum}}
+      <table class="accounts" id="accounts"{{if not .At}} hidden{{end}}>
         <thead><tr><th scope="col">Konto</th><th scope="col">{{template "accounts-head" (args "at" .At)}}</th></tr></thead>
         <tbody>
           {{- range .Accounts}}
@@ -201,7 +201,7 @@
         </tbody>
         <tfoot><tr><th scope="row">Summe</th><td data-k="sum">{{money .Value}}</td></tr></tfoot>
       </table>
-      {{- end}}{{end}}
+      {{- end}}
       <div class="recent">
         <h3>Die letzten Buchungen</h3>
         {{- if .Recent}}
@@ -260,7 +260,7 @@
           <p class="step-h">Der Controller hat denselben Beleg in Go geprüft und kommt auf denselben Kopf. <span class="verdict-word" data-k="ok"></span></p>
         </li>
       </ol>
-      <p class="result" id="proof-result"></p>
+      <p class="result" id="proof-result" aria-live="polite"></p>
       <div class="acts">
         <button type="button" class="btn" id="tamper">Ein Byte im Beleg ändern</button>
         <p>Ändert nur die Kopie in diesem Browser.</p>
@@ -419,12 +419,15 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <template data-t="w-befunde">{{template "w-befunde"}}</template>
 <template data-t="w-stoerung">{{template "w-stoerung"}}</template>
 <template data-t="w-stoerungen">{{template "w-stoerungen"}}</template>
+<template data-t="pinned">{{template "pinned" (args "check" "{check}" "reason" "{reason}")}}</template>
+<template data-t="evidence">{{template "evidence" (args "dir" "{dir}")}}</template>
 </div>
 
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>
 {{define "t"}}<time datetime="{{iso .}}">{{clock .}}</time>{{end}}
-{{define "d"}}<time datetime="{{iso .}}">{{day .}}</time>{{end}}
+{{define "d"}}<time datetime="{{iso .}}" data-k="day">{{day .}}</time>{{end}}
 
 {{define "caption"}}Summe der sechs Konten. Soll: {{.want}}. Gezählt um {{template "t" .at}}.{{end}}
 {{define "sum-wrong"}}Die Summe stimmt nicht: {{.sum}} statt {{.want}}. Das ist ein Befund.{{end}}
@@ -516,6 +519,8 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "w-befunde"}}Befunde{{end}}
 {{define "w-stoerung"}}Störung{{end}}
 {{define "w-stoerungen"}}Störungen{{end}}
+{{define "pinned"}}<span class="src">check</span> <span>Befund <span class="check">{{.check}}</span>: <span class="said">{{.reason}}</span></span>{{end}}
+{{define "evidence"}} <span>Daten und Logs der Knoten gesichert unter <code>{{.dir}}</code>.</span>{{end}}
 
 {{define "kind-was"}}{{$a := .a}}{{$s := left .now $a.LiftAt}}{{if eq $a.Kind.String "kill"}}{{template "was-kill" (args "n" $a.Node "s" $s)}}{{else if eq $a.Kind.String "freeze"}}{{template "was-freeze" (args "n" $a.Node "s" $s)}}{{else if eq $a.Kind.String "cut"}}{{template "was-cut" (args "n" $a.Node "s" $s)}}{{else}}{{template "was-flip" (args "n" $a.Node)}}{{end}}{{end}}
 {{define "kind-war"}}{{if eq .Kind.String "kill"}}{{template "war-kill" (args "n" .Node)}}{{else if eq .Kind.String "freeze"}}{{template "war-freeze" (args "n" .Node)}}{{else if eq .Kind.String "cut"}}{{template "war-cut" (args "n" .Node)}}{{else}}{{template "war-flip" (args "n" .Node)}}{{end}}{{end}}

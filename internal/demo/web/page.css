@@ -217,6 +217,12 @@ code {
 
 .tally { min-width: 0; }
 
+main[data-stale] :is(.tally, .trio, .accord, .books-in) {
+  --white: var(--muted);
+  --text: var(--muted);
+  color: var(--muted);
+}
+
 .big {
   margin: 0;
   color: var(--white);
@@ -517,6 +523,13 @@ fieldset {
   color: var(--red-hi);
 }
 
+.btn[aria-busy="true"] {
+  color: var(--muted);
+  cursor: progress;
+}
+
+.btn.warn[aria-busy="true"] { border-color: var(--red); }
+
 .kinds .btn { width: 100%; }
 
 @media (hover: hover) and (pointer: fine) {
@@ -786,6 +799,8 @@ fieldset {
 }
 
 .step-h { color: var(--white); }
+
+.steps > li:not([data-ok]) > .step-h { color: var(--muted); }
 
 .verdict-word {
   margin-inline-start: .375rem;

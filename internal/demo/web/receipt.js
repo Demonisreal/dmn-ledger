@@ -126,6 +126,8 @@ export async function check(proof, cluster, keys) {
   return seen
 }
 
+export const agrees = (head, seq, hash) => head.seq === BigInt(seq) && toHex(head.hash) === hash
+
 export async function verify(proof, cluster, key) {
   const seen = await check(proof, cluster, [key])
   return seen.ok ? seen.head : null
