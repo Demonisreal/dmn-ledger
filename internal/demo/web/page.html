@@ -4,107 +4,518 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>dmn-ledger: drei Knoten, ein Hauptbuch</title>
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0b0d">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/page.css">
 </head>
 <body>
-<h1>Drei Server führen gemeinsam ein Hauptbuch. Einer darf ausfallen.</h1>
-<dl>
-<dt>now</dt><dd>{{.Now}}</dd>
-<dt>started</dt><dd>{{.Started}}</dd>
-<dt>phase</dt><dd>{{.Phase}}</dd>
-<dt>load</dt><dd>{{.Load}}</dd>
-<dt>rest</dt><dd>{{.Rest.Since}} {{.Rest.Until}}</dd>
-<dt>viewers</dt><dd>{{.Viewers}}</dd>
-<dt>next</dt><dd>{{.Next}}</dd>
-</dl>
-<h2>cluster</h2>
-<dl>
-{{with .Cluster}}<dt>n</dt><dd>{{.N}}</dd>
-<dt>id</dt><dd>{{.ID}}</dd>
-<dt>since</dt><dd>{{.Since}}</dd>
-<dt>why</dt><dd>{{.Why}}</dd>
-<dt>limit</dt><dd>{{.Limit}}</dd>
-<dt>failed</dt><dd>{{.Failed}}</dd>{{end}}
-</dl>
-<h2>nodes</h2>
-{{range .Nodes}}<dl>
-<dt>id</dt><dd>{{.ID}}</dd>
-<dt>pid</dt><dd>{{.Pid}}</dd>
-<dt>since</dt><dd>{{.Since}}</dd>
-<dt>proc</dt><dd>{{.Proc}}</dd>
-<dt>answers</dt><dd>{{.Answers}}</dd>
-<dt>role</dt><dd>{{.Role}}</dd>
-<dt>term</dt><dd>{{.Term}}</dd>
-<dt>leader</dt><dd>{{.Leader}}</dd>
-<dt>commit</dt><dd>{{.Commit}}</dd>
-<dt>applied</dt><dd>{{.Applied}}</dd>
-<dt>last</dt><dd>{{.Last}}</dd>
-<dt>apply</dt><dd>{{.Apply}}</dd>
-<dt>headhash</dt><dd>{{.HeadHash}}</dd>
-<dt>head</dt><dd>{{.Head}}</dd>
-<dt>repair</dt><dd>{{.Repair}}</dd>
-<dt>key</dt><dd>{{.Key}}</dd>
-<dt>note</dt><dd>{{.Note.At}} {{.Note.Text}}</dd>
-</dl>
-{{end}}<h2>links</h2>
-<ul>
-{{range .Links}}<li>{{.From}} {{.To}} {{.Cut}}</li>
-{{end}}</ul>
-<h2>books</h2>
-{{with .Books}}<dl>
-<dt>confirmed</dt><dd>{{.Confirmed}}</dd>
-<dt>refused</dt><dd>{{.Refused}}</dd>
-<dt>open</dt><dd>{{.Open}}</dd>
-<dt>opensince</dt><dd>{{.OpenSince}}</dd>
-<dt>sum</dt><dd>{{.Sum.At}} {{.Sum.Value}} {{.Sum.Want}}</dd>
-<dt>accounts</dt><dd>{{range .Sum.Accounts}}{{.ID}} {{.Balance}}; {{end}}</dd>
-{{with .Recount}}<dt>recount</dt><dd>{{.At}} {{.After}} {{.Confirmed}} {{.Found}} {{.Refused}} {{.Strays}} {{.Index}} {{.Hash}}</dd>{{end}}
-{{with .Judged}}<dt>judged</dt><dd>{{.Windows}} {{.Calls}} {{.Upto}} {{.At}}</dd>{{end}}
-</dl>{{end}}
-<h2>action</h2>
-{{with .Action}}<dl>
-<dt>kind</dt><dd>{{.Kind}}</dd>
-<dt>target</dt><dd>{{.Target}}</dd>
-<dt>node</dt><dd>{{.Node}}</dd>
-<dt>role</dt><dd>{{.Role}}</dd>
-<dt>term</dt><dd>{{.Term}}</dd>
-<dt>phase</dt><dd>{{.Phase}}</dd>
-<dt>began</dt><dd>{{.Began}}</dd>
-<dt>liftat</dt><dd>{{.LiftAt}}</dd>
-<dt>ended</dt><dd>{{.Ended}}</dd>
-<dt>file</dt><dd>{{.File}}</dd>
-<dt>size</dt><dd>{{.Size}}</dd>
-<dt>offset</dt><dd>{{.Offset}}</dd>
-<dt>bit</dt><dd>{{.Bit}}</dd>
-<dt>before</dt><dd>{{.Before}}</dd>
-<dt>after</dt><dd>{{.After}}</dd>
-<dt>repair</dt><dd>{{.Repair}}</dd>
-<dt>nonvoter</dt><dd>{{.NonVoter}}</dd>
-</dl>{{end}}
-<h2>finding</h2>
-{{with .Finding}}<dl>
-<dt>at</dt><dd>{{.At}}</dd>
-<dt>check</dt><dd>{{.Check}}</dd>
-<dt>reason</dt><dd>{{.Reason}}</dd>
-<dt>resetat</dt><dd>{{.ResetAt}}</dd>
-<dt>evidence</dt><dd>{{.Evidence}}</dd>
-</dl>{{end}}
-<h2>totals</h2>
-{{with .Totals}}<dl>
-<dt>clusters</dt><dd>{{.Clusters}}</dd>
-<dt>confirmed</dt><dd>{{.Confirmed}}</dd>
-<dt>windows</dt><dd>{{.Windows}}</dd>
-<dt>actions</dt><dd>{{.Actions.Kill}} {{.Actions.Freeze}} {{.Actions.Cut}} {{.Actions.Flip}}</dd>
-<dt>healed</dt><dd>{{.Healed}}</dd>
-<dt>found</dt><dd>{{.Found}}</dd>
-<dt>findings</dt><dd>{{range .Findings}}{{.At}} {{.Check}} {{.Reason}} {{.ResetAt}} {{.Evidence}}; {{end}}</dd>
-</dl>{{end}}
-<h2>recent</h2>
-<ul>
-{{range .Recent}}<li>{{.ID}} {{.Debit}} {{.Credit}} {{.Amount}} {{.At}} {{.Refused}}</li>
-{{end}}</ul>
-<h2>lines</h2>
-<ol>
-{{range .Lines}}<li>{{.N}} {{.At}} {{.Src}} {{.Text}}</li>
-{{end}}</ol>
+
+<a class="skip" href="#inhalt">Zum Inhalt</a>
+
+<header class="top">
+  <div class="wrap top-in">
+    <a class="brand" href="https://dmn-software.com/">
+      <img src="/static/icon.svg" alt="" width="28" height="28">
+      <span>DMN<span class="slash">/</span><span class="soft">Software</span></span>
+    </a>
+    <p class="crumb"><a href="https://dmn-software.com/#projekte">Projekte</a><span class="sep" aria-hidden="true">/</span><span>dmn-ledger</span></p>
+  </div>
+</header>
+
+<main id="inhalt" class="wrap page" tabindex="-1" data-now="{{.Now}}" data-phase="{{.Phase}}" data-load="{{.Load}}">
+
+  <div class="board">
+
+  <section class="verdict" aria-labelledby="verdict-h">
+    <div class="claim">
+      <h1 id="verdict-h">Drei Server führen gemeinsam ein Hauptbuch. Einer darf ausfallen.</h1>
+      <p class="lead">Das sind drei laufende Prozesse, keine Animation. Die Knöpfe schießen einen ab, frieren ihn ein, trennen ihn vom Netz oder kippen ein Bit in seinen Daten. Die Summe darf sich dabei nicht ändern.</p>
+      <noscript><p class="note">{{template "nojs" (args "at" .Now)}}</p></noscript>
+      <p class="note" id="conn" hidden></p>
+      {{- if and .Rest.Since (or (eq .Load "resting") (ge .Rest.Until .Books.Sum.At))}}
+      <p class="note" id="rested">{{template "resting" (args "since" .Rest.Since)}}</p>
+      {{- end}}
+    </div>
+
+    <div class="tally" id="tally">
+      {{- if and (eq .Phase "finding") .Finding}}{{with .Finding}}
+      <p class="alarm" id="standing">{{template "finding" (args "at" .At "check" .Check "reason" .Reason "reset" .ResetAt)}}</p>
+      {{- end}}
+      {{- else if eq .Phase "setup"}}
+      <p class="alarm quiet" id="setup">{{template "setup" (args "st" .)}}</p>
+      {{- else}}{{with .Books.Sum}}
+      <p class="big{{if ne .Value .Want}} off{{end}}"><data id="sum" value="{{.Value}}">{{money .Value}}</data></p>
+      <p class="cap" id="sum-cap">{{if ne .Value .Want}}{{template "sum-wrong" (args "sum" (money .Value) "want" (money .Want))}}{{else}}{{template "caption" (args "want" (money .Want) "at" .At)}}{{end}}</p>
+      {{- end}}{{end}}
+      <ul class="facts">
+        <li id="booked">{{with .Books}}{{if not .Recount.At}}{{template "booked-none" (args "n" (num .Confirmed))}}{{else if .Recount.After}}{{template "booked-after" (args "n" (num .Confirmed) "at" .Recount.At "found" (num .Recount.Found))}}{{else}}{{template "booked" (args "n" (num .Confirmed) "at" .Recount.At "found" (num .Recount.Found))}}{{end}}{{end}}</li>
+        <li id="judged">{{if .Totals.Found}}{{with latest .Totals.Findings}}{{template "judged-found" (args "n" (num $.Totals.Found) "word" (plural $.Totals.Found "Befund" "Befunde") "at" .At)}}{{end}}{{else if .Books.Judged.Upto}}{{template "judged" (args "upto" .Books.Judged.Upto)}}{{end}}</li>
+      </ul>
+      <p class="since" id="since">{{$acts := total .Totals.Actions}}{{template "since" (args "at" .Started "actions" (num $acts) "actword" (plural $acts "Störung" "Störungen") "healed" (num .Totals.Healed) "found" (num .Totals.Found) "foundword" (plural .Totals.Found "Befund" "Befunde"))}}</p>
+    </div>
+  </section>
+
+  <section class="nodes" aria-labelledby="nodes-h">
+    <h2 id="nodes-h">Die drei Knoten</h2>
+    {{- $st := .}}{{$commit := commit .Nodes}}
+    <ol class="trio">
+      {{- range .Nodes}}{{$n := .}}
+      <li data-node="{{.ID}}" data-proc="{{.Proc}}" data-role="{{.Role}}"{{if not .Answers}} data-silent{{end}}>
+        <h3><span class="nid">n{{.ID}}</span> <span data-k="role">{{if .Answers}}{{template "role" .Role}}{{else if eq $st.Phase "setup"}}{{template "starting"}}{{else}}{{template "silent"}}{{end}}</span>{{if .Answers}} <span class="term" data-k="term">{{template "term" (args "term" (num .Term))}}</span>{{end}}</h3>
+        {{- with $st.Action}}{{$hit := and (eq .Node $n.ID) (or (eq .Phase "") (eq .Phase "struck"))}}
+        {{- if and (eq $n.Proc "down") $hit (eq .Kind.String "kill")}}
+        <p class="hurt" data-k="hurt">{{template "killed" (args "s" (left $st.Now .LiftAt))}}</p>
+        {{- else if and (eq $n.Proc "down") (eq .Kind.String "flip") (eq .Node $n.ID)}}
+        <p class="hurt" data-k="hurt">{{template "flipped"}}</p>
+        {{- else if and (eq $n.Proc "frozen") $hit}}
+        <p class="hurt" data-k="hurt">{{template "frozen" (args "s" (left $st.Now .LiftAt))}}</p>
+        {{- else if and $hit (eq .Kind.String "cut")}}
+        <p class="hurt" data-k="hurt">{{template "cut" (args "s" (left $st.Now .LiftAt))}}</p>
+        {{- end}}
+        {{- else}}
+        {{- if eq $n.Proc "down"}}
+        <p class="hurt" data-k="hurt">{{template "down"}}</p>
+        {{- end}}
+        {{- end}}
+        {{- if and (eq .Proc "frozen") (eq $st.Phase "finding")}}
+        <p class="hurt" data-k="hurt">{{template "halted"}}</p>
+        {{- end}}
+        {{- if .Repair}}
+        <p class="hurt" data-k="repair">{{template "repair"}}</p>
+        {{- end}}
+        {{- if .Answers}}
+        <p data-k="applied">{{if behind .Applied $commit}}{{template "behind" (args "i" (num .Applied) "c" (num $commit))}}{{else}}{{template "applied" (args "i" (num .Applied))}}{{end}}</p>
+        <p data-k="apply">{{template "apply" (args "h" .Apply)}}</p>
+        {{- end}}
+        {{- if .Pid}}
+        <p data-k="proc">{{template "proc" (args "pid" .Pid "at" .Since)}}</p>
+        {{- end}}
+        {{- $a := 1}}{{$b := 2}}{{if eq .ID 1}}{{$a = 2}}{{$b = 3}}{{else if eq .ID 2}}{{$b = 3}}{{end}}
+        {{- if or (severed $st.Links .ID $a) (severed $st.Links .ID $b)}}
+        <p class="hurt" data-k="net">{{if severed $st.Links .ID $a}}{{template "link-cut" (args "n" $a)}}{{else}}{{template "link-open" (args "n" $a)}}{{end}}, {{if severed $st.Links .ID $b}}{{template "link-cut" (args "n" $b)}}{{else}}{{template "link-open" (args "n" $b)}}{{end}}</p>
+        {{- end}}
+        {{- if .Note.At}}
+        <p class="last" data-k="note">{{template "note" (args "at" .Note.At "text" .Note.Text)}}</p>
+        {{- end}}
+      </li>
+      {{- end}}
+    </ol>
+    {{- $ag := accord .Nodes}}
+    <p class="accord" id="accord">{{if not $ag.Pair}}{{template "apart"}}{{else if $ag.Differ}}{{template "differ" (args "i" (num $ag.Index))}}{{else if not $ag.Odd}}{{template "agree3" (args "i" (num $ag.Index) "h" $ag.Hash)}}{{else}}{{template "agree2" (args "a" (index $ag.Pair 0) "b" (index $ag.Pair 1) "i" (num $ag.Index) "c" $ag.Odd "odd" $ag.Other)}}{{end}}</p>
+    {{- if ge $ag.Leaders 2}}
+    <p class="accord hurt" id="leaders">{{template "leaders"}}</p>
+    {{- end}}
+  </section>
+
+  <section class="faults" aria-labelledby="faults-h">
+    <div class="sec-head">
+      <h2 id="faults-h">Eine Störung auslösen</h2>
+      <p id="viewers">{{if eq .Viewers 1}}{{template "viewers-1" (args "n" .Viewers)}}{{else}}{{template "viewers" (args "n" (num .Viewers))}}{{end}}</p>
+    </div>
+    <fieldset class="aim" data-js hidden>
+      <legend>Ziel</legend>
+      <label><input type="radio" name="target" value="leader" checked> der Leader</label>
+      <label><input type="radio" name="target" value="1"> n1</label>
+      <label><input type="radio" name="target" value="2"> n2</label>
+      <label><input type="radio" name="target" value="3"> n3</label>
+    </fieldset>
+    {{- $off := locked .}}
+    <ul class="kinds">
+      <li>
+        <button type="button" class="btn warn" data-kind="kill" data-js hidden{{if $off}} disabled{{end}} aria-describedby="kill-d fault-state">Abschießen</button>
+        <noscript><b>Abschießen</b></noscript>
+        <p id="kill-d">SIGKILL ohne Vorwarnung. Nach 2 Sekunden startet der Prozess neu.</p>
+      </li>
+      <li>
+        <button type="button" class="btn warn" data-kind="freeze" data-js hidden{{if $off}} disabled{{end}} aria-describedby="freeze-d fault-state">Einfrieren</button>
+        <noscript><b>Einfrieren</b></noscript>
+        <p id="freeze-d">SIGSTOP für 5 Sekunden. Der Prozess lebt, rechnet nicht und merkt nicht, dass Zeit vergeht.</p>
+      </li>
+      <li>
+        <button type="button" class="btn warn" data-kind="cut" data-js hidden{{if $off}} disabled{{end}} aria-describedby="cut-d fault-state">Abtrennen</button>
+        <noscript><b>Abtrennen</b></noscript>
+        <p id="cut-d">6 Sekunden lang erreicht der Knoten die beiden anderen nicht und sie ihn nicht.</p>
+      </li>
+      <li>
+        <button type="button" class="btn warn" data-kind="flip" data-js hidden{{if $off}} disabled{{end}} aria-describedby="flip-d fault-state">Bit kippen</button>
+        <noscript><b>Bit kippen</b></noscript>
+        <p id="flip-d">Der Knoten wird beendet. In seinem Log kippt ein Bit in einem Eintrag, den er schon bestätigt hat. Dann startet er.</p>
+      </li>
+    </ul>
+    <div class="state" id="fault-state" aria-live="polite">
+      {{- $a := .Action}}
+      {{- if eq .Phase "finding"}}
+      <p class="now">{{template "standing"}}</p>
+      {{- else if eq .Phase "setup"}}
+      <p class="now">{{template "recovering"}}</p>
+      {{- else if and $a (or (eq $a.Phase "") (eq $a.Phase "struck") (and (eq $a.Phase "lifted") (eq $a.Kind.String "flip")))}}
+      <p class="now">{{template "running" (args "a" $a "now" .Now)}}</p>
+      {{- else if and $a (or (eq $a.Phase "lifted") (eq $a.Phase "settling"))}}
+      <p class="now">{{template "settling"}}</p>
+      {{- else}}
+      {{- if $a}}
+      <p class="was">{{if eq $a.Phase "failed"}}{{template "failed" (args "a" $a)}}{{else}}{{template "done" (args "a" $a "s" (tenths (sub $a.Ended $a.Began)) "at" .Books.Recount.At)}}{{end}}</p>
+      {{- end}}
+      {{- if gt .Next .Now}}
+      <p class="now">{{template "pause" (args "s" (left .Now .Next))}}</p>
+      {{- else}}
+      <p class="now">{{template "ready"}}</p>
+      {{- end}}
+      {{- end}}
+    </div>
+    {{- with $a}}{{if ne .Kind.String "kill"}}
+    <p class="why" id="fault-why">{{if eq .Kind.String "freeze"}}{{template "why-freeze"}}{{else if eq .Kind.String "cut"}}{{template "why-cut"}}{{else}}{{template "why-flip"}}{{end}}</p>
+    {{- end}}{{end}}
+  </section>
+
+  <section class="log" aria-labelledby="log-h">
+    <h2 id="log-h">Protokoll</h2>
+    <p class="intro">Zeilen von n1, n2 und n3 sind die Ausgabe der Knoten, wörtlich, mit deren eigenem Zeitstempel in UTC. Zeilen von demo schreibt das Steuerprogramm, wenn es etwas getan hat. Zeilen von check sind Zählungen und Urteile.</p>
+    {{- with latest .Totals.Findings}}
+    <p class="pinned" id="pinned"><span class="src">check</span> <span>Befund <span class="check">{{.Check}}</span>: <span class="said">{{.Reason}}</span></span>{{with .Evidence}} <span>Daten und Logs der Knoten gesichert unter <code>{{.}}</code>.</span>{{end}}</p>
+    {{- end}}
+    <div class="lines" tabindex="0" role="region" aria-label="Protokollzeilen, neueste oben">
+      <ol id="lines">
+        {{- range lately .Lines}}
+        <li data-n="{{.N}}" data-src="{{.Src}}"{{if and (ne .Src "demo") (ne .Src "check")}} lang="en"{{end}}><time datetime="{{iso .At}}">{{clockms .At}}</time><b class="src">{{.Src}}</b><span class="said">{{.Text}}</span></li>
+        {{- end}}
+      </ol>
+    </div>
+    <div class="vh" id="said" aria-live="polite"></div>
+  </section>
+
+  </div>
+
+  <section class="books blk" aria-labelledby="books-h">
+    <h2 id="books-h">Die Bücher</h2>
+    <p class="intro">Vier Clients buchen zusammen etwa zehn Buchungen je Sekunde zwischen sechs Konten. Jedes Konto begann mit 10 000,00 und darf nicht ins Minus.</p>
+    <div class="books-in">
+      {{- with .Books.Sum}}{{if .At}}
+      <table class="accounts" id="accounts">
+        <thead><tr><th scope="col">Konto</th><th scope="col">{{template "accounts-head" (args "at" .At)}}</th></tr></thead>
+        <tbody>
+          {{- range .Accounts}}
+          <tr><th scope="row">{{.ID}}</th><td data-k="balance">{{money .Balance}}</td></tr>
+          {{- end}}
+        </tbody>
+        <tfoot><tr><th scope="row">Summe</th><td data-k="sum">{{money .Value}}</td></tr></tfoot>
+      </table>
+      {{- end}}{{end}}
+      <div class="recent">
+        <h3>Die letzten Buchungen</h3>
+        {{- if .Recent}}
+        <ol id="recent">
+          {{- range .Recent}}
+          <li{{if .Refused}} class="refused"{{end}}><time datetime="{{iso .At}}">{{clock .At}}</time> <span>{{if .Refused}}{{template "booking-refused" (args "id" .ID "amount" (money .Amount) "debit" .Debit "credit" .Credit "why" .Refused)}}{{else}}{{template "booking" (args "id" .ID "amount" (money .Amount) "debit" .Debit "credit" .Credit)}}{{end}}</span></li>
+          {{- end}}
+        </ol>
+        {{- else}}
+        <p class="none" id="recent-none">{{template "empty"}}</p>
+        {{- end}}
+      </div>
+    </div>
+  </section>
+
+  <section class="proof blk" aria-labelledby="proof-h">
+    <h2 id="proof-h">Eine Buchung beweisen</h2>
+    <p class="intro">Der Leader gibt zu jeder Buchung einen Beleg heraus. Dieser Browser rechnet ihn nach, ohne Bibliothek, mit <code>crypto.subtle</code>.</p>
+    <div class="acts" data-js hidden>
+      <button type="button" class="btn" id="prove">Jüngste Buchung beweisen</button>
+      <p class="status" id="proof-state" aria-live="polite"></p>
+    </div>
+    <div class="proof-out" id="proof-out" hidden>
+      <ol class="steps" id="steps">
+        <li data-step="transfer">
+          <p class="step-h">Die Buchung, wie sie im Beleg steht <span class="verdict-word" data-k="ok"></span></p>
+          <dl class="vals">
+            <div><dt>Nummer</dt><dd data-k="id"></dd></div>
+            <div><dt>Betrag</dt><dd data-k="amount"></dd></div>
+            <div><dt>Sollkonto</dt><dd data-k="debit"></dd></div>
+            <div><dt>Habenkonto</dt><dd data-k="credit"></dd></div>
+            <div><dt>Zeitstempel</dt><dd data-k="at"></dd></div>
+          </dl>
+        </li>
+        <li data-step="leaf">
+          <p class="step-h">Das Blatt: <code>SHA-256(00 02 | Satz)</code> <span class="verdict-word" data-k="ok"></span></p>
+          <p class="hex" data-k="leaf"></p>
+        </li>
+        <li data-step="path">
+          <p class="step-h">Der Pfad: <span data-k="path"></span> <span class="verdict-word" data-k="ok"></span></p>
+          <ol class="hexes" data-k="hashes"></ol>
+          <p>Errechnete Wurzel <span class="hex" data-k="root"></span>, die Wurzel im Kettenglied.</p>
+        </li>
+        <li data-step="head">
+          <p class="step-h">Der Kopf: <code>SHA-256(02 | voriger Kopf | Nummer | Glied)</code>, Glied <span data-k="seq"></span> <span class="verdict-word" data-k="ok"></span></p>
+          <p class="hex" data-k="head"></p>
+        </li>
+        <li data-step="stamp">
+          <p class="step-h">Der Stempel: Die Ed25519-Signatur über Cluster-ID, Nummer und Kopf gilt für diesen Schlüssel. <span class="verdict-word" data-k="ok"></span></p>
+          <p class="hex" data-k="key"></p>
+        </li>
+        <li data-step="owner">
+          <p class="step-h">Wem der Schlüssel gehört: Knoten <span data-k="signer"></span> dieser Demo <span class="verdict-word" data-k="ok"></span></p>
+        </li>
+        <li data-step="go">
+          <p class="step-h">Der Controller hat denselben Beleg in Go geprüft und kommt auf denselben Kopf. <span class="verdict-word" data-k="ok"></span></p>
+        </li>
+      </ol>
+      <p class="result" id="proof-result"></p>
+      <div class="acts">
+        <button type="button" class="btn" id="tamper">Ein Byte im Beleg ändern</button>
+        <p>Ändert nur die Kopie in diesem Browser.</p>
+      </div>
+      <div class="proof-text">
+        <p><b>Was dieser Beleg zeigt:</b> Knoten <span data-k="signer"></span> hat erklärt, dass die Kette dieses Clusters bei Glied <span data-k="seq"></span> diesen Kopf hat. Dass genau diese Buchung unter diesem Kopf liegt, folgt aus SHA-256 und nicht aus dem Wort des Knotens.</p>
+        <p><b>Was er nicht zeigt:</b> dass eine Mehrheit zugestimmt hat, dass dieser Kopf der neueste ist, wie das Konto heute steht, oder dass etwas nicht gebucht wurde. Und: Die Schlüssel der Knoten kommen von dieser Seite, wie der Beleg. Wer dieser Seite nicht traut, hat damit nichts in der Hand. Unabhängig wird die Prüfung erst, wenn man die Schlüssel auf einem eigenen Weg bekommen hat. Der Cluster selbst bietet dafür nur den Status-Frame an (Vertrauen beim ersten Kontakt, ADR-011 und ADR-015).</p>
+        <p>Diese Demo setzt ihren Cluster nach 20 000 Buchungen neu auf, mit neuer Cluster-ID und neuen Schlüsseln. Ein Beleg von vorher bleibt in sich gültig, lässt sich aber mit keinem späteren Kopf verbinden.</p>
+      </div>
+      <pre class="code" id="proof-cmd"><code>echo '<span data-k="base64"></span>' | base64 -d &gt; buchung-<span data-k="id"></span>.proof
+printf '%s node 1\n%s node 2\n%s node 3\n' <span data-k="key1"></span> <span data-k="key2"></span> <span data-k="key3"></span> &gt; demo.keys
+LEDGER_CLUSTER=0x<span data-k="cluster"></span> ledgerctl verify proof buchung-<span data-k="id"></span>.proof -keys demo.keys</code></pre>
+    </div>
+  </section>
+
+  <section class="limits blk" aria-labelledby="limits-h">
+    <h2 id="limits-h">Was die Demo nicht zeigt</h2>
+    <ul class="ticks">
+      <li><b>Keinen Stromausfall.</b> <code>kill -9</code> lässt stehen, was das Betriebssystem noch nicht auf die Platte geschrieben hat. Ein fehlendes fsync fiele hier nicht auf. Das prüft der Simulator, mit einem Stromausfall an jeder Stelle, an der ein Knoten auf die Platte zugreift.</li>
+      <li><b>Keine zwei Fehler zugleich.</b> Es läuft immer nur eine Störung. Mit drei Knoten können zwei beschädigte den Cluster anhalten; er gibt dann keine Antwort mehr, aber nie eine falsche.</li>
+      <li><b>Kein echtes Netz.</b> Die drei Prozesse laufen auf einer Maschine und sprechen über Loopback. Das Abtrennen macht ein Proxy zwischen ihnen.</li>
+      <li><b>Keine falsche Uhr, keine Platte, die Lesefehler meldet, keine böswilligen Knoten.</b></li>
+      <li><b>Keinen Dauerbetrieb.</b> Nach 20 000 Buchungen wird der Cluster neu aufgesetzt, mit leeren Büchern, weil der Zustand sonst wächst und der Prüfer eine zweite Kopie davon hält.</li>
+      <li><b>Kein Urteil über die Zeit.</b> Wie schnell das ist, steht im README, gemessen auf anderer Hardware.</li>
+    </ul>
+    <p class="close">Was hier vier Mal von Hand geht, laufen Simulator und Chaos-Test viele tausend Mal mit Zufall durch. Die Demo zeigt, dass es die Abläufe gibt. Dass sie halten, zeigen die Tests.</p>
+  </section>
+
+  <section class="again blk" aria-labelledby="again-h">
+    <h2 id="again-h">Selbst nachstellen, weiterlesen</h2>
+    <div class="again-in">
+      <div>
+        <p>Die Seite ist ein Programm im Repo. Mit Go 1.27 auf Linux:</p>
+        <pre class="code"><code>{{with repo}}git clone {{.}} &amp;&amp; cd dmn-ledger
+{{end}}go build -o /tmp/demo/ ./cmd/ledgerd ./cmd/demo ./cmd/ledgerctl
+DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
+        <p>Dann <code>http://127.0.0.1:8080</code>. Derselbe Ablauf ohne Seite und mit Zufall:</p>
+        <pre class="code"><code>go test -tags chaos ./internal/chaos -run '^TestChaos$' -chaos.duration 2m</code></pre>
+      </div>
+      {{- with repo}}
+      <ul class="reads">
+        <li><a href="{{.}}">Quelltext</a></li>
+        <li><a href="{{.}}/blob/main/docs/ARCHITECTURE.md"><code>docs/ARCHITECTURE.md</code></a></li>
+        <li><a href="{{.}}/blob/main/docs/adr/009-disk-corruption-seal-and-repair.md">ADR-009</a> Plattenfehler, Siegel, Reparatur</li>
+        <li><a href="{{.}}/blob/main/docs/adr/011-audit-trail.md">ADR-011</a> Prüfspur, was ein Beleg beweist</li>
+        <li><a href="{{.}}/tree/main/docs/adr">ADR-014</a> diese Demo und ihr Bedrohungsmodell</li>
+        <li><a href="{{.}}/blob/main/docs/adr/015-binary-protocol-over-plain-tcp.md">ADR-015</a> Protokoll, kein TLS</li>
+        <li><a href="{{.}}#the-simulator">The simulator</a> im README</li>
+      </ul>
+      {{- end}}
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p class="privacy">Diese Seite setzt keine Cookies, speichert nichts im Browser und lädt nichts von anderen Servern. Damit niemand die Knöpfe dauernd drückt, merkt sich der Server die IP-Adresse 30 Sekunden lang im Arbeitsspeicher. Sie wird nicht gespeichert und nicht protokolliert.</p>
+    <div class="foot-in">
+      <p>© <a href="https://dmn-software.com/">DMN Software</a> · Leon</p>
+      <nav aria-label="Rechtliches">
+        <ul>
+          <li><a href="https://dmn-software.com/impressum.html">Impressum</a></li>
+          <li><a href="https://dmn-software.com/datenschutz.html">Datenschutz</a></li>
+          <li><a href="https://dmn-software.com/rechtliches.html">Rechtliche Hinweise</a></li>
+        </ul>
+      </nav>
+    </div>
+  </div>
+</footer>
+
+<div id="texts" hidden>
+<template data-t="caption">{{template "caption" (args "want" "{want}" "at" "{at}")}}</template>
+<template data-t="sum-wrong">{{template "sum-wrong" (args "sum" "{sum}" "want" "{want}")}}</template>
+<template data-t="booked-none">{{template "booked-none" (args "n" "{n}")}}</template>
+<template data-t="booked">{{template "booked" (args "n" "{n}" "at" "{at}" "found" "{found}")}}</template>
+<template data-t="booked-after">{{template "booked-after" (args "n" "{n}" "at" "{at}" "found" "{found}")}}</template>
+<template data-t="judged">{{template "judged" (args "upto" "{upto}")}}</template>
+<template data-t="judged-found">{{template "judged-found" (args "n" "{n}" "word" "{word}" "at" "{at}")}}</template>
+<template data-t="since">{{template "since" (args "at" "{at}" "actions" "{actions}" "actword" "{actword}" "healed" "{healed}" "found" "{found}" "foundword" "{foundword}")}}</template>
+<template data-t="setup">{{template "setup" (args "why" "{why}")}}</template>
+<template data-t="why-start">{{template "why-start"}}</template>
+<template data-t="why-limit">{{template "why-limit" (args "limit" "{limit}")}}</template>
+<template data-t="why-finding">{{template "why-finding"}}</template>
+<template data-t="finding">{{template "finding" (args "at" "{at}" "check" "{check}" "reason" "{reason}" "reset" "{reset}")}}</template>
+<template data-t="resting">{{template "resting" (args "since" "{since}")}}</template>
+<template data-t="stale">{{template "stale" (args "at" "{at}")}}</template>
+<template data-t="crowded">{{template "crowded" (args "at" "{at}")}}</template>
+<template data-t="role-leader">{{template "role" "leader"}}</template>
+<template data-t="role-follower">{{template "role" "follower"}}</template>
+<template data-t="role-candidate">{{template "role" "candidate"}}</template>
+<template data-t="role-precandidate">{{template "role" "precandidate"}}</template>
+<template data-t="term">{{template "term" (args "term" "{term}")}}</template>
+<template data-t="silent">{{template "silent"}}</template>
+<template data-t="starting">{{template "starting"}}</template>
+<template data-t="applied">{{template "applied" (args "i" "{i}")}}</template>
+<template data-t="behind">{{template "behind" (args "i" "{i}" "c" "{c}")}}</template>
+<template data-t="apply">{{template "apply" (args "h" "{h}")}}</template>
+<template data-t="proc">{{template "proc" (args "pid" "{pid}" "at" "{at}")}}</template>
+<template data-t="killed">{{template "killed" (args "s" "{s}")}}</template>
+<template data-t="flipped">{{template "flipped"}}</template>
+<template data-t="down">{{template "down"}}</template>
+<template data-t="frozen">{{template "frozen" (args "s" "{s}")}}</template>
+<template data-t="halted">{{template "halted"}}</template>
+<template data-t="cut">{{template "cut" (args "s" "{s}")}}</template>
+<template data-t="repair">{{template "repair"}}</template>
+<template data-t="link-open">{{template "link-open" (args "n" "{n}")}}</template>
+<template data-t="link-cut">{{template "link-cut" (args "n" "{n}")}}</template>
+<template data-t="note">{{template "note" (args "at" "{at}" "text" "{text}")}}</template>
+<template data-t="agree3">{{template "agree3" (args "i" "{i}" "h" "{h}")}}</template>
+<template data-t="agree2">{{template "agree2" (args "a" "{a}" "b" "{b}" "i" "{i}" "c" "{c}" "what" "{what}")}}</template>
+<template data-t="odd-at">{{template "odd-at" (args "i" "{i}")}}</template>
+<template data-t="differ">{{template "differ" (args "i" "{i}")}}</template>
+<template data-t="apart">{{template "apart"}}</template>
+<template data-t="leaders">{{template "leaders"}}</template>
+<template data-t="ready">{{template "ready"}}</template>
+<template data-t="running">{{template "running" (args "was" "{was}")}}</template>
+<template data-t="was-kill">{{template "was-kill" (args "n" "{n}" "s" "{s}")}}</template>
+<template data-t="was-freeze">{{template "was-freeze" (args "n" "{n}" "s" "{s}")}}</template>
+<template data-t="was-cut">{{template "was-cut" (args "n" "{n}" "s" "{s}")}}</template>
+<template data-t="was-flip">{{template "was-flip" (args "n" "{n}")}}</template>
+<template data-t="settling">{{template "settling"}}</template>
+<template data-t="war-kill">{{template "war-kill" (args "n" "{n}")}}</template>
+<template data-t="war-freeze">{{template "war-freeze" (args "n" "{n}")}}</template>
+<template data-t="war-cut">{{template "war-cut" (args "n" "{n}")}}</template>
+<template data-t="war-flip">{{template "war-flip" (args "n" "{n}")}}</template>
+<template data-t="done">{{template "done" (args "war" "{war}" "s" "{s}" "at" "{at}")}}</template>
+<template data-t="failed">{{template "failed" (args "war" "{war}")}}</template>
+<template data-t="pause">{{template "pause" (args "s" "{s}")}}</template>
+<template data-t="limited">{{template "limited" (args "s" "{s}")}}</template>
+<template data-t="recovering">{{template "recovering"}}</template>
+<template data-t="young">{{template "young"}}</template>
+<template data-t="refused">{{template "refused" (args "status" "{status}")}}</template>
+<template data-t="standing">{{template "standing"}}</template>
+<template data-t="why-freeze">{{template "why-freeze"}}</template>
+<template data-t="why-cut">{{template "why-cut"}}</template>
+<template data-t="why-flip">{{template "why-flip"}}</template>
+<template data-t="viewers">{{template "viewers" (args "n" "{n}")}}</template>
+<template data-t="viewers-1">{{template "viewers-1" (args "n" "{n}")}}</template>
+<template data-t="accounts-head">{{template "accounts-head" (args "at" "{at}")}}</template>
+<template data-t="booking">{{template "booking" (args "id" "{id}" "amount" "{amount}" "debit" "{debit}" "credit" "{credit}")}}</template>
+<template data-t="booking-refused">{{template "booking-refused" (args "id" "{id}" "amount" "{amount}" "debit" "{debit}" "credit" "{credit}" "why" "{why}")}}</template>
+<template data-t="empty">{{template "empty"}}</template>
+<template data-t="proof-loading">{{template "proof-loading"}}</template>
+<template data-t="proof-noleader">{{template "proof-noleader"}}</template>
+<template data-t="proof-finding">{{template "proof-finding"}}</template>
+<template data-t="proof-ok">{{template "proof-ok" (args "n" "{n}")}}</template>
+<template data-t="proof-changed">{{template "proof-changed"}}</template>
+<template data-t="proof-unsupported">{{template "proof-unsupported"}}</template>
+<template data-t="holds">{{template "holds"}}</template>
+<template data-t="fails">{{template "fails"}}</template>
+<template data-t="path">{{template "path" (args "leaf" "{leaf}" "leaves" "{leaves}" "n" "{n}" "word" "{word}")}}</template>
+<template data-t="w-hash">{{template "w-hash"}}</template>
+<template data-t="w-hashes">{{template "w-hashes"}}</template>
+<template data-t="w-befund">{{template "w-befund"}}</template>
+<template data-t="w-befunde">{{template "w-befunde"}}</template>
+<template data-t="w-stoerung">{{template "w-stoerung"}}</template>
+<template data-t="w-stoerungen">{{template "w-stoerungen"}}</template>
+</div>
+
 </body>
 </html>
+{{define "t"}}<time datetime="{{iso .}}">{{clock .}}</time>{{end}}
+{{define "d"}}<time datetime="{{iso .}}">{{day .}}</time>{{end}}
+
+{{define "caption"}}Summe der sechs Konten. Soll: {{.want}}. Gezählt um {{template "t" .at}}.{{end}}
+{{define "sum-wrong"}}Die Summe stimmt nicht: {{.sum}} statt {{.want}}. Das ist ein Befund.{{end}}
+{{define "booked-none"}}{{.n}} Buchungen bestätigt.{{end}}
+{{define "booked"}}{{.n}} Buchungen bestätigt. Bei der letzten vollen Zählung um {{template "t" .at}} alle {{.found}} wiedergefunden.{{end}}
+{{define "booked-after"}}{{.n}} Buchungen bestätigt. Bei der Zählung nach der letzten Störung um {{template "t" .at}} alle {{.found}} wiedergefunden.{{end}}
+{{define "judged"}}Jede Antwort wird gegen ein zweites, unabhängiges Hauptbuch nachgespielt: kein Verstoß bis Buchung {{.upto}}.{{end}}
+{{define "judged-found"}}{{.n}} {{.word}} seit dem Start des Steuerprogramms, zuletzt um {{template "t" .at}}. Unten steht er im Wortlaut.{{end}}
+{{define "since"}}Seit dem Start am {{template "d" .at}} um {{template "t" .at}}: {{.actions}} {{.actword}} ausgelöst, {{.healed}}-mal erholt, {{.found}} {{.foundword}}.{{end}}
+{{define "setup"}}Der Cluster wird gerade neu aufgesetzt ({{if .st}}{{template "why" .st}}{{else}}{{.why}}{{end}}). In wenigen Sekunden geht es weiter.{{end}}
+{{define "why"}}{{if or .Finding (eq .Cluster.Why "finding")}}{{template "why-finding"}}{{else if or (eq .Cluster.Why "limit") (and .Cluster.Limit (ge .Books.Confirmed .Cluster.Limit))}}{{template "why-limit" (args "limit" (num .Cluster.Limit))}}{{else}}{{template "why-start"}}{{end}}{{end}}
+{{define "why-start"}}nach dem Start{{end}}
+{{define "why-limit"}}{{.limit}} Buchungen erreicht{{end}}
+{{define "why-finding"}}nach einem Befund{{end}}
+{{define "finding"}}Befund um {{template "t" .at}}: <span class="check">{{.check}}</span>, <span class="said">{{.reason}}</span>. Der Cluster steht und wird um {{template "t" .reset}} neu aufgesetzt. Die Daten der Knoten sind gesichert.{{end}}
+{{define "resting"}}Es hat niemand zugesehen, deshalb ruhte die Last seit {{template "t" .since}}. Sie läuft wieder an.{{end}}
+{{define "stale"}}Stand {{template "t" .at}}. Die Verbindung ist unterbrochen, ein neuer Versuch läuft.{{end}}
+{{define "crowded"}}Gerade sehen zu viele zu. Das ist der Stand von {{template "t" .at}}; die Seite versucht es weiter.{{end}}
+{{define "nojs"}}Das ist der Stand von {{template "t" .at}} (UTC). Mit JavaScript läuft die Seite mit, und die Knöpfe erscheinen.{{end}}
+
+{{define "role"}}{{if eq . "leader"}}Leader{{else if eq . "follower"}}Follower{{else if eq . "candidate"}}Kandidat{{else if eq . "precandidate"}}bittet um Stimmen (Pre-Vote){{end}}{{end}}
+{{define "term"}}Term {{.term}}{{end}}
+{{define "silent"}}antwortet nicht{{end}}
+{{define "starting"}}startet{{end}}
+{{define "applied"}}angewendet bis Eintrag {{.i}}{{end}}
+{{define "behind"}}holt auf: {{.i}} von {{.c}}{{end}}
+{{define "apply"}}Zustand <span class="hex">{{.h}}</span>{{end}}
+{{define "proc"}}PID {{.pid}}, läuft seit {{template "t" .at}}{{end}}
+{{define "killed"}}beendet mit SIGKILL, startet in {{.s}} s{{end}}
+{{define "flipped"}}beendet mit SIGKILL{{end}}
+{{define "down"}}beendet{{end}}
+{{define "frozen"}}eingefroren mit SIGSTOP, läuft in {{.s}} s weiter{{end}}
+{{define "halted"}}angehalten, solange der Befund steht{{end}}
+{{define "cut"}}von den beiden anderen getrennt, noch {{.s}} s{{end}}
+{{define "repair"}}hat einen Schaden in seinen Daten erkannt und stimmt nicht ab, bis er aufgefüllt ist{{end}}
+{{define "link-open"}}zu n{{.n}} offen{{end}}
+{{define "link-cut"}}zu n{{.n}} getrennt{{end}}
+{{define "note"}}{{template "t" .at}} {{.text}}{{end}}
+{{define "agree3"}}Alle drei haben Eintrag {{.i}} angewendet und denselben Zustand: <span class="hex">{{.h}}</span>.{{end}}
+{{define "agree2"}}n{{.a}} und n{{.b}} stimmen bei Eintrag {{.i}} überein. n{{.c}} {{if .odd}}{{template "odd" .odd}}{{else}}{{.what}}{{end}}.{{end}}
+{{define "odd-at"}}ist bei Eintrag {{.i}}{{end}}
+{{define "odd"}}{{if .Answers}}{{template "odd-at" (args "i" (num .Applied))}}{{else}}{{template "silent"}}{{end}}{{end}}
+{{define "differ"}}Bei Eintrag {{.i}} melden die Knoten verschiedene Zustände.{{end}}
+{{define "apart"}}Gerade stehen keine zwei Knoten beim selben Eintrag.{{end}}
+{{define "leaders"}}Zwei Knoten melden sich als Leader, in verschiedenen Terms. Festschreiben kann nur der mit der Mehrheit.{{end}}
+
+{{define "ready"}}Bereit. Jede Störung endet von selbst. Es läuft immer nur eine, und alle Besucher sehen dieselbe.{{end}}
+{{define "running"}}Läuft: {{if .a}}{{template "kind-was" .}}{{else}}{{.was}}{{end}}.{{end}}
+{{define "was-kill"}}n{{.n}} ist beendet und startet in {{.s}} s{{end}}
+{{define "was-freeze"}}n{{.n}} ist eingefroren, noch {{.s}} s{{end}}
+{{define "was-cut"}}n{{.n}} ist abgetrennt, noch {{.s}} s{{end}}
+{{define "was-flip"}}in n{{.n}} ist ein Bit gekippt, n{{.n}} startet{{end}}
+{{define "settling"}}Die Störung ist vorbei. Jetzt wird nachgezählt.{{end}}
+{{define "war-kill"}}n{{.n}} abgeschossen{{end}}
+{{define "war-freeze"}}n{{.n}} eingefroren{{end}}
+{{define "war-cut"}}n{{.n}} abgetrennt{{end}}
+{{define "war-flip"}}In n{{.n}} ein Bit gekippt{{end}}
+{{define "done"}}{{if .a}}{{template "kind-war" .a}}{{else}}{{.war}}{{end}}. Erholt nach {{.s}} s. Nachgezählt um {{template "t" .at}}: Summe und Buchungen stimmen.{{end}}
+{{define "failed"}}{{if .a}}{{template "kind-war" .a}}{{else}}{{.war}}{{end}}. Danach stand der Cluster nicht wie vorher und wird neu aufgesetzt.{{end}}
+{{define "pause"}}Die nächste Störung geht in {{.s}} s.{{end}}
+{{define "limited"}}Von dieser Adresse geht die nächste Störung in {{.s}} s.{{end}}
+{{define "recovering"}}Der Cluster ist gerade nicht vollständig. Gleich wieder.{{end}}
+{{define "young"}}Dieser Cluster ist zu jung für einen Bitfehler in bestätigten Einträgen. In einigen Sekunden geht es.{{end}}
+{{define "refused"}}Das hat der Server nicht angenommen ({{.status}}).{{end}}
+{{define "standing"}}Gesperrt, solange der Befund steht.{{end}}
+{{define "why-freeze"}}Ein eingefrorener Leader hält sich beim Aufwachen noch für den Leader. Er hört dann vom neuen Term und tritt zurück, bevor er etwas bestätigt.{{end}}
+{{define "why-cut"}}Der abgetrennte Knoten kann nichts festschreiben, weil ihm die Mehrheit fehlt. Clients, die ihn fragen, bekommen keine Bestätigung und wenden sich an den neuen Leader.{{end}}
+{{define "why-flip"}}Eine Prüfsumme findet das kaputte Stück. Ein Siegel in einer zweiten Datei sagt, dass der Knoten es schon bestätigt hatte. Deshalb stimmt er nicht mehr ab, bis der Leader ihm das Log neu geschickt hat. Die Stelle des Bits kennt hier das Steuerprogramm, weil es das Bit gekippt hat; der Knoten meldet nur, dass er Schaden gefunden hat.{{end}}
+{{define "viewers"}}Gerade sehen {{.n}} zu.{{end}}
+{{define "viewers-1"}}Gerade sieht {{.n}} zu.{{end}}
+
+{{define "accounts-head"}}Stand bei der Zählung um {{template "t" .at}}{{end}}
+{{define "booking"}}Buchung {{.id}}: {{.amount}} von Konto {{.debit}} an Konto {{.credit}}{{end}}
+{{define "booking-refused"}}Buchung {{.id}}: {{.amount}} von Konto {{.debit}} an Konto {{.credit}}. Abgelehnt, das Konto hätte nicht gereicht (<code>{{.why}}</code>).{{end}}
+{{define "empty"}}In diesem Cluster ist noch nichts gebucht.{{end}}
+
+{{define "proof-loading"}}Beleg wird geholt.{{end}}
+{{define "proof-noleader"}}Gerade gibt es keinen Leader, der einen Beleg ausstellen kann. Nach der Wahl geht es wieder.{{end}}
+{{define "proof-finding"}}Solange ein Befund steht, gibt es keinen Beleg.{{end}}
+{{define "proof-ok"}}Der Beleg ist in sich schlüssig und trägt den Stempel von Knoten {{.n}}.{{end}}
+{{define "proof-changed"}}Der geänderte Beleg fällt durch: Der Pfad führt nicht mehr zur Wurzel im Kettenglied.{{end}}
+{{define "proof-unsupported"}}Dieser Browser kann Ed25519 nicht prüfen. Pfad und Kopf stimmen; über den Stempel sagt diese Seite hier nichts.{{end}}
+{{define "holds"}}stimmt{{end}}
+{{define "fails"}}stimmt nicht{{end}}
+{{define "path"}}Blatt {{.leaf}} von {{.leaves}}, {{.n}} {{.word}} bis zur Wurzel{{end}}
+{{define "w-hash"}}Hash{{end}}
+{{define "w-hashes"}}Hashes{{end}}
+{{define "w-befund"}}Befund{{end}}
+{{define "w-befunde"}}Befunde{{end}}
+{{define "w-stoerung"}}Störung{{end}}
+{{define "w-stoerungen"}}Störungen{{end}}
+
+{{define "kind-was"}}{{$a := .a}}{{$s := left .now $a.LiftAt}}{{if eq $a.Kind.String "kill"}}{{template "was-kill" (args "n" $a.Node "s" $s)}}{{else if eq $a.Kind.String "freeze"}}{{template "was-freeze" (args "n" $a.Node "s" $s)}}{{else if eq $a.Kind.String "cut"}}{{template "was-cut" (args "n" $a.Node "s" $s)}}{{else}}{{template "was-flip" (args "n" $a.Node)}}{{end}}{{end}}
+{{define "kind-war"}}{{if eq .Kind.String "kill"}}{{template "war-kill" (args "n" .Node)}}{{else if eq .Kind.String "freeze"}}{{template "war-freeze" (args "n" .Node)}}{{else if eq .Kind.String "cut"}}{{template "war-cut" (args "n" .Node)}}{{else}}{{template "war-flip" (args "n" .Node)}}{{end}}{{end}}

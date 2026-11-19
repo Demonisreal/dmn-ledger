@@ -277,13 +277,13 @@ func TestNoRequestDataInState(t *testing.T) {
 		}
 		bodies = append(bodies, page, proof, greeting.data, string(st), journal.String(), logs.String())
 		for _, body := range bodies {
-			for _, bad := range []string{"zq7x", "<script", visitor} {
+			for _, bad := range []string{"zq7x", visitor} {
 				if strings.Contains(body, bad) {
 					t.Errorf("%q in %.300s", bad, body)
 				}
 			}
 		}
-		if !strings.Contains(page, "<dt>phase</dt>") || !strings.Contains(journal.String(), "SIGKILL an n1") {
+		if !strings.Contains(page, `data-phase="`) || !strings.Contains(journal.String(), "SIGKILL an n1") {
 			t.Error("the page was not rendered, or the kill is not in the journal")
 		}
 	})

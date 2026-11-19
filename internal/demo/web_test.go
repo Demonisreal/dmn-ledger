@@ -134,8 +134,8 @@ func TestNoCookies(t *testing.T) {
 	if found := storage.FindString(page); found != "" {
 		t.Errorf("the page uses %s", found)
 	}
-	if loads := regexp.MustCompile(`(?i)\s(src|href)\s*=\s*["']?(https?:)?//`).FindAllString(page, -1); len(loads) > 0 {
-		t.Errorf("the page names another origin: %q", loads)
+	if loads := regexp.MustCompile(`(?is)<(script|link|img|iframe|source|video|audio|object|embed)\b[^>]*\s(src|href|data)\s*=\s*["']?(https?:)?//`).FindAllString(page, -1); len(loads) > 0 {
+		t.Errorf("the page loads from another origin: %q", loads)
 	}
 }
 
@@ -493,13 +493,13 @@ func noRequestDataInFake(t *testing.T) {
 		greeting := s.event(t)
 		bodies = append(bodies, page, proof, greeting.data)
 		for _, body := range bodies {
-			for _, bad := range []string{marker, "<script", "203.0.113.77"} {
+			for _, bad := range []string{marker, "203.0.113.77"} {
 				if strings.Contains(body, bad) {
 					t.Errorf("an answer contains %q: %.200s", bad, body)
 				}
 			}
 		}
-		if !strings.Contains(page, "<dt>phase</dt>") {
+		if !strings.Contains(page, `data-phase="`) {
 			t.Error("the page was not rendered")
 		}
 		acts := show.calls()

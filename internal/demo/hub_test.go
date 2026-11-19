@@ -111,7 +111,7 @@ func TestLateViewerSeesTheRunningAction(t *testing.T) {
 			t.Errorf("a late viewer sees action %s, phase %s, next %d; want %s", st.Action, st.Phase, st.Next, want)
 		}
 		_, page := l.open(t, "198.51.100.4:2").do(t, request("GET", "/"))
-		if !strings.Contains(page, "<dd>struck</dd>") || !strings.Contains(page, fmt.Sprint(now+5000)) {
+		if !strings.Contains(page, "Läuft: n1 ist eingefroren, noch ") {
 			t.Error("the page does not show the running action")
 		}
 	})
