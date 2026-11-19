@@ -52,6 +52,9 @@ func flipBit(path string, rng *rand.Rand) (tipped, error) {
 		return t, err
 	}
 	t.size = fi.Size()
+	if t.size < youngLog {
+		return t, fmt.Errorf("%s holds %d bytes, a flip wants %d", filepath.Base(path), t.size, youngLog)
+	}
 	t.offset, t.bit = pick(rng, t.size)
 	b := make([]byte, 1)
 	if _, err := file.ReadAt(b, t.offset); err != nil {
@@ -69,6 +72,9 @@ func flipBit(path string, rng *rand.Rand) (tipped, error) {
 
 func (s *Stage) mend(r *run, f *fault) {
 	n := r.c.Node(f.node)
+	if s.finding(r) != nil {
+		return
+	}
 	s.mu.Lock()
 	mark := r.ears[f.node-1].total
 	r.flipping = f.node
@@ -80,6 +86,9 @@ func (s *Stage) mend(r *run, f *fault) {
 	}()
 	err := n.Start()
 	pid := n.Pid()
+	if err == nil && pid == 0 {
+		return
+	}
 	s.lifted(r, f, "", func() { r.pids[f.node-1], r.up[f.node-1] = pid, f.lifted })
 	if err != nil {
 		s.fail(r, "fault", fmt.Sprintf(failStart, f.node, err))

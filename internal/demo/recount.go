@@ -31,9 +31,12 @@ const (
 func (s *Stage) count(r *run, full bool, after Kind) bool {
 	s.change(func(st *State) { st.Load = "held" })
 	defer s.change(func(st *State) {
-		st.Load = "running"
-		if s.resting {
+		switch {
+		case r.found != nil || r.last:
+		case s.resting:
 			st.Load = "resting"
+		default:
+			st.Load = "running"
 		}
 	})
 	if err := r.rec.Hold(r.ctx, holdWithin); err != nil {
@@ -45,7 +48,9 @@ func (s *Stage) count(r *run, full bool, after Kind) bool {
 		}
 		return false
 	}
-	defer r.rec.Resume()
+	if !r.last {
+		defer r.rec.Resume()
+	}
 	var sts []*ledger.NodeStatus
 	if full {
 		var ok bool

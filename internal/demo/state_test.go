@@ -157,3 +157,16 @@ func TestTipChangesTheNamedBit(t *testing.T) {
 		t.Fatalf("tip %+v, the file had %#x and has %#x at byte %d", tp, before[tp.offset], after[tp.offset], tp.offset)
 	}
 }
+
+func TestTipRefusesAShortFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal-00000000000000000001.log")
+	if err := os.WriteFile(path, []byte{7}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := flipBit(path, rand.New(rand.NewPCG(5, 6))); err == nil {
+		t.Fatal("a flip in a file of one byte")
+	}
+	if after, err := os.ReadFile(path); err != nil || len(after) != 1 || after[0] != 7 {
+		t.Fatalf("the file holds %v after the refusal: %v", after, err)
+	}
+}

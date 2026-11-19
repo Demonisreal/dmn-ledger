@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"net/url"
 	"os"
@@ -22,6 +23,8 @@ type config struct {
 }
 
 var defaultPorts = map[string]uint64{"http": 80, "https": 443}
+
+var runFiles = []string{"n1", "n2", "n3", "n1.key", "n2.key", "n3.key"}
 
 func parse(environ []string, exe string) (config, error) {
 	vars := make(map[string]string)
@@ -137,12 +140,31 @@ func (cfg config) prepare() error {
 	if err := os.MkdirAll(cfg.dir, 0o700); err != nil {
 		return err
 	}
+	if err := ownRun(filepath.Join(cfg.dir, "run")); err != nil {
+		return err
+	}
 	probe, err := os.CreateTemp(cfg.dir, ".probe-")
 	if err != nil {
 		return err
 	}
 	_ = probe.Close()
 	return os.Remove(probe.Name())
+}
+
+func ownRun(run string) error {
+	left, err := os.ReadDir(run)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range left {
+		if !slices.Contains(runFiles, e.Name()) {
+			return fmt.Errorf("%s holds %s, which no demo wrote; DEMO_DIR must be a directory of its own", run, e.Name())
+		}
+	}
+	return nil
 }
 
 func greeting(cfg config) string {

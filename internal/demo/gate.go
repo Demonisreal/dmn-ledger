@@ -55,11 +55,15 @@ func (s *Stage) Act(kind Kind, target int, from netip.Prefix) (time.Time, error)
 			return time.Time{}, ErrYoung
 		}
 	}
-	s.visits = slices.DeleteFunc(s.visits, func(v visit) bool { return !now.Before(v.at.Add(s.pace.per)) })
+	s.forget(now)
 	s.visits = append(s.visits, visit{from, now})
 	s.began, s.acting = now, true
 	s.wishes <- wish{kind, target, s.sight.leader}
 	return time.Time{}, nil
+}
+
+func (s *Stage) forget(now time.Time) {
+	s.visits = slices.DeleteFunc(s.visits, func(v visit) bool { return !now.Before(v.at.Add(s.pace.per)) })
 }
 
 func (s *Stage) cooled() time.Time {

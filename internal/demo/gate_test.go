@@ -271,3 +271,23 @@ func TestNoFlipOnAYoungLog(t *testing.T) {
 		}
 	})
 }
+
+func TestAddressIsForgottenWithoutAnotherAction(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := steady()
+		if _, err := act(s, Kill, 1, addr(1)); err != nil {
+			t.Fatal(err)
+		}
+		done(t, s)
+		time.Sleep(s.pace.per - time.Second)
+		s.look(t.Context(), false)
+		if len(s.visits) != 1 {
+			t.Fatalf("%d addresses kept %v after the action, want the one still limited", len(s.visits), s.pace.per-time.Second)
+		}
+		time.Sleep(time.Second)
+		s.look(t.Context(), false)
+		if len(s.visits) != 0 {
+			t.Fatalf("%d addresses kept %v after the action and no action since; want none", len(s.visits), s.pace.per)
+		}
+	})
+}

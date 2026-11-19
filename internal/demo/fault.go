@@ -101,8 +101,11 @@ func (s *Stage) strike(r *run, f *fault) func() {
 		s.struck(r, f, func() { r.frozen[f.node-1], r.asked[f.node-1] = true, time.Time{} })
 		s.say("demo", fmt.Sprintf(sayFreeze, f.node, f.pid, was))
 		return func() {
+			if s.finding(r) != nil {
+				return
+			}
 			n.Signal(syscall.SIGCONT)
-			s.lifted(r, f, noteFreeze, func() { r.frozen[f.node-1] = false })
+			s.lifted(r, f, noteFreeze, func() { r.frozen[f.node-1] = r.found != nil })
 			s.say("demo", fmt.Sprintf(sayThawed, f.node, secs(f.lifted.Sub(f.struck))))
 		}
 	case Cut:
@@ -126,14 +129,23 @@ func (s *Stage) strike(r *run, f *fault) func() {
 		}
 	}
 	n.Kill()
+	if n.Running() {
+		return func() {}
+	}
 	s.struck(r, f, func() { r.pids[f.node-1] = 0 })
 	s.say("demo", fmt.Sprintf(sayKill, f.node, f.pid, was))
 	if f.kind == Flip {
 		return func() { s.mend(r, f) }
 	}
 	return func() {
+		if s.finding(r) != nil {
+			return
+		}
 		err := n.Start()
 		pid := n.Pid()
+		if err == nil && pid == 0 {
+			return
+		}
 		s.lifted(r, f, noteKill, func() { r.pids[f.node-1], r.up[f.node-1] = pid, f.lifted })
 		if err != nil {
 			s.fail(r, "fault", fmt.Sprintf(failStart, f.node, err))
@@ -185,7 +197,7 @@ func (s *Stage) hold(r *run, f *fault) {
 	}
 	if f.kind != Flip {
 		sleep(r.ctx, s.pace.holds[f.kind])
-	} else if r.ctx.Err() == nil {
+	} else if r.ctx.Err() == nil && !r.c.Node(f.node).Running() {
 		s.tip(r, f)
 	}
 }

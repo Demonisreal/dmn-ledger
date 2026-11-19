@@ -1,12 +1,16 @@
 package demo
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -561,5 +565,43 @@ func TestNoInlineScriptOrStyle(t *testing.T) {
 	}
 	if found := inlineCode(`<script type="module" src="/static/app.js"></script>`); len(found) > 0 {
 		t.Errorf("the check refuses an external script: %q", found)
+	}
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestServerLogsNoRequest(t *testing.T) {
+	var out lockedBuffer
+	log.SetOutput(&out)
+	defer log.SetOutput(os.Stderr)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("handler broke") }))
+	go func() { _ = srv.Serve(l) }()
+	defer srv.Close()
+	res, err := http.Get("http://" + l.Addr().String() + "/")
+	if err == nil {
+		_ = res.Body.Close()
+		t.Fatalf("a handler that panics answered %s", res.Status)
+	}
+	if line := out.String(); line != "" {
+		t.Fatalf("net/http wrote a line with the address of the caller: %q", line)
 	}
 }

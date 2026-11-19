@@ -53,7 +53,7 @@ func (s *Stage) record(r *run, now time.Time, check, reason string) Finding {
 	f := Finding{At: now.UnixMilli(), Check: check, Reason: reason}
 	r.found = &f
 	r.frozen = [3]bool{true, true, true}
-	s.st.Phase = "finding"
+	s.st.Phase, s.st.Load = "finding", "held"
 	s.st.Finding = &f
 	s.st.Totals.Found++
 	s.st.Totals.Findings = append(s.st.Totals.Findings, f)

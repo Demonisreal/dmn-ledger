@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -149,6 +151,7 @@ func newServer(h http.Handler) *http.Server {
 		ReadTimeout:       10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    8 << 10,
+		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 }
 

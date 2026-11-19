@@ -54,6 +54,7 @@ func (s *Stage) look(ctx context.Context, measure bool) {
 	if r == nil {
 		s.mu.Lock()
 		s.beats.sight = time.Now()
+		s.forget(s.beats.sight)
 		s.mu.Unlock()
 		return
 	}
@@ -73,6 +74,7 @@ func (s *Stage) look(ctx context.Context, measure bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.beats.sight = now
+	s.forget(now)
 	if s.cur != r {
 		return
 	}

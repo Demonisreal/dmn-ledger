@@ -137,6 +137,7 @@ type run struct {
 	cut      map[local.Route]bool
 	notes    [3]Note
 	flipping int
+	last     bool
 	asked    [3]time.Time
 }
 
@@ -419,6 +420,7 @@ func (s *Stage) stage(ctx context.Context, r *run) string {
 		case <-r.limit:
 			s.change(func(st *State) { st.Phase = "setup" })
 			s.say("check", fmt.Sprintf(sayLimit, num(s.pace.limit)))
+			r.last = true
 			if s.count(r, true, 0) {
 				return "limit"
 			}
@@ -463,6 +465,7 @@ func (s *Stage) tires(r *run) bool {
 }
 
 func (s *Stage) quiet(r *run) {
+	s.beat()
 	r.cancel()
 	r.wg.Wait()
 	r.rec.Close()
@@ -487,6 +490,7 @@ func (s *Stage) lower(r *run) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.earlier = s.st.Totals.Windows
+	s.st.Load = "held"
 	r.pids = [3]int{}
 	s.draw(r)
 	if s.acting {
