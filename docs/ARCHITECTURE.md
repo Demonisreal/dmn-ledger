@@ -2,7 +2,7 @@
 
 This file describes what is built today: the consensus core and the contract with its driver, the
 node, the audit trail, the client sessions, the wire format, the server, the SDK, the simulator and
-its checkers, and the chaos test with real processes.
+its checkers, the chaos test with real processes, and the demo.
 
 ## Layers
 
@@ -27,8 +27,13 @@ internal/check       checkers that watch a simulated run, porcupine per window
 internal/simbug      switch for the planted bugs, only in builds with -tags simbug
 internal/workload    batch generator for the model test, the simulator and the chaos test
 internal/faultnet    TCP proxy that delays, drops, swallows, stalls or corrupts whole frames
+internal/local       three ledgerd as children on loopback, a faultnet link per direction, on Linux
+internal/history     calls of real clients in windows, each closed window handed to check.Replayer
 internal/chaos       three ledgerd processes under faults, only with -tags chaos on Linux
+internal/demo        controller of the demo: cluster, load, counts, four faults, HTTP, the page
 cmd/sim              runs seeds on all cores and prints the command that replays a failure
+cmd/demo             the demo as a process, configured from DEMO_ variables
+bench/               a module of its own: open load on ledgerd and on Postgres, raw files, reports
 ```
 
 `raft`, `state`, `sim`, `replica`, `client`, `workload`, `wire` and `audit` use no clock, network,
@@ -1284,10 +1289,11 @@ The search is bounded by the input, not by a timeout: windows of at most 32 requ
 clients, few accounts.
 
 S8, S9 and S13 run window by window through `check.Replayer`, which has three callers: the
-simulator, the chaos test and the demo in `internal/demo`. A window holds calls that all ended with `OK`, and no call was open
-when it began or ended. The SDK returns no time for a lookup, so for the chaos test a read
-without a time is judged by its content alone (`TestReplayerAcceptsReadsWithoutTime`); in the
-simulator every read keeps its time (`TestSimulatorReadsNeedTheirTime`).
+simulator, the chaos test and the demo in `internal/demo`. A window holds calls that all ended
+with `OK`, and no call was open when it began or ended. The SDK returns no time for a lookup, so
+for the chaos test and the demo a read without a time is judged by its content alone
+(`TestReplayerAcceptsReadsWithoutTime`); in the simulator every read keeps its time
+(`TestSimulatorReadsNeedTheirTime`).
 
 ### Planted bugs
 
@@ -1450,6 +1456,12 @@ test process
   not be in the history; the load sends empty batches itself.
 - Each client calls one at a time, so the SDK does not bundle and every call is one batch, as in
   the model. Windows close as in the simulator, after 32 started calls.
+- The processes and their proxies are `internal/local` (`Start`, `Node.Kill`, `Stop`, `Halt`,
+  `Signal`, `Link`, `Statuses`), and the windows are `internal/history`: a `Recorder` that admits
+  calls, holds the load, seals windows and hands them to the replayer in a goroutine of its own,
+  and `Issue`, which turns an SDK call into the reply the replayer expects. Both are packages of
+  their own, not test files of this one, because the demo starts and judges its cluster with the
+  same code.
 
 A seed (`-chaos.seed`, by default from the clock, and printed) plans the run in rounds of 30
 seconds: a storm of 20 seconds with up to six windows, then 10 quiet seconds.
@@ -1503,3 +1515,380 @@ What the test cannot do:
 - Lost packets under TCP. The proxy acknowledges everything it reads on the TCP level, so the path
   through `TCP_USER_TIMEOUT` is never taken.
 - Clock jumps. All processes share one clock.
+
+## Demo (`internal/demo`, `cmd/demo`)
+
+The demo is one program that runs a cluster and shows it on a page: three `ledgerd` as its
+children, a small load, a verdict on every answer, four faults a visitor can trigger, and a
+receipt checked in the browser. Why it is built this way, what a stranger can do to it and what it
+does not show is in [ADR-014](adr/014-public-demo-fixed-faults-no-docker-socket.md). It needs
+Linux. The page and the lines the controller writes into its journal are German; the lines of the
+nodes stay as the nodes wrote them.
+
+```
+browser ── HTTP ── cmd/demo  (one process)
+                     ├─ demo.Web      page, /events, POST /act, GET /proof, static files
+                     ├─ demo.Stage    set up, load, counts, faults, findings, new cluster
+                     ├─ internal/history   windows ─→ check.Replayer (oracle, porcupine)
+                     └─ internal/local
+                          ├─ 3 ledgerd as child processes on 127.0.0.1
+                          ├─ 6 faultnet links from node to peer, one per direction
+                          └─ <DEMO_DIR>/run/n1..n3, n1.key..n3.key
+```
+
+- **`Stage` owns the cluster.** Only its loop starts, ends and signals nodes, sets links, flips
+  bits and replaces the cluster. Nothing in that list runs at the same time as anything else in
+  it.
+- **`Web` asks and never acts.** It sees the stage through the interface `Show`: `Act` puts a wish
+  into a queue of length one or refuses, `State` and `Lines` return copies, `Proof` fetches a
+  receipt, `Watching` tells the stage how many streams are open, `Alive` is what the watchdog
+  asks. The stage knows nothing of `Web` and never calls anything that could wait for a reader.
+  The tests of the web half run against a fake `Show`, those of the stage against real processes.
+- **The page is drawn from one value.** Loop, load, the look at the nodes and the checker write
+  into one `State` behind a mutex. The rendered page, the first event of a stream and every tick
+  come from it. `State.Rev` goes up with every change and is not part of the JSON.
+- **Two ways to the nodes.** The load, the counts and the receipts go through the SDK to the
+  client ports, without a proxy. The nodes talk to each other through the six links, so a node
+  can be cut off. The look at the status goes to each client port directly, past a cut: the page
+  shows what a cut-off node thinks of itself.
+
+### A cluster from start to end
+
+`Stage.Run` sets up a cluster, serves it until it has to be replaced, and starts over. Setting
+up:
+
+1. Delete `<DEMO_DIR>/run` and create it empty.
+2. Draw a cluster ID of 64 bits and three Ed25519 keys from `crypto/rand`. The ID separates this
+   cluster from every earlier one; the keys exist in this process and in three files.
+3. `local.Start`: six ports for the nodes on `127.0.0.1`, searched upwards from a random point
+   between 20000 and 29999 and always below 32768, where Linux by default begins to hand out
+   ports for outgoing connections, so a node that was killed finds its port free. Every node
+   gets its environment listed (`LEDGER_ID`, `LEDGER_CLUSTER`, `LEDGER_PEERS` with the link
+   addresses of its peers, `LEDGER_CLIENT_ADDR`, `LEDGER_DIR`, `LEDGER_KEY_FILE`,
+   `LEDGER_MAX_CLIENTS=16`, `GOMEMLIMIT=64MiB`) and nothing from the environment of the
+   controller, no arguments, and `Pdeathsig: SIGKILL`, so the kernel ends it when the controller
+   dies. Everything else stays at the defaults of `ledgerd`.
+4. Wait up to 10 s until all three answer and agree on leader and term.
+5. Dial five clients: four for the load, one, the teller, for counts and receipts.
+6. Through the recorder: create seven accounts in one call, accounts 1 to 6 with
+   `DebitsMustNotExceedCredits` and account 9 without a rule, then six transfers of 1 000 000
+   from account 9 to each of the six. Amounts are hundredths. The six accounts together hold
+   6 000 000 from then on, and that sum is what the page shows.
+7. A full count (below). After it the phase is `steady`, the load starts and faults are accepted.
+
+A setup that fails is torn down and tried again after 1, 2, 4 and 8 s. After the fifth failure
+`Run` returns the error and the program exits with 1. Whatever goes wrong before the first count
+has passed is a failed attempt with its reason on the page, not a finding.
+
+A cluster is replaced for three reasons: the start, a finding, and the limit of 20 000 confirmed
+transfers. At the limit the load stops for good, a last full count judges the whole cluster, the
+recorder is closed and the checker gets up to 30 s for the windows that are left. Then the
+clients and the cluster are closed and the next one is set up with a new ID and new keys.
+`State.Cluster` names the reason (`start`, `limit`, `finding`), and `State.Totals` runs on across
+clusters.
+
+### Load and books
+
+Four goroutines, each with its own client and one call at a time. A call is `CreateTransfers`
+with one to four transfers, so a batch has a Merkle tree and a receipt a path. Debit and credit
+account are different and uniform from 1 to 6, the amount is uniform from 100 to 25 000, the IDs
+count up from 1. Between two calls of one client lie 0.75 to 1.25 s. A transfer that would
+overdraw its account is refused by the cluster with `exceeds_credits`; that happens by itself
+when an account runs low, and the reply with its failures goes to the checker like any other. An
+error from a call, other than at the end of the cluster, is a finding.
+
+Every call goes through a `history.Recorder` with windows of 16 started calls. A closed window
+goes to `Replayer.Window` in a goroutine of its own; when four windows wait, the load waits. The
+state says how many windows and calls are judged and up to which transfer that reaches, so the
+page states its verdict with its extent.
+
+The controller keeps, per cluster, what it sent and whether each transfer was confirmed or
+refused. Those are tallies over replies, not a model: what the accounts must hold only the oracle
+in the checker knows. A count holds the load (`Recorder.Hold`, open calls get 15 s), asks through
+the teller and pushes its lookups into the history as a window of their own, so the checker
+compares them with the oracle as well.
+
+| Count | When | What it asks |
+|---|---|---|
+| light | every 5 s while the load runs and no fault does | `LookupAccounts` for the seven accounts |
+| full | after the setup, after every fault, every 60 s while the load runs, at the limit, when the load goes to rest | first agreement of the nodes, then the accounts, then `LookupTransfers` for every ID the load ever sent, 10 485 IDs per call |
+
+Agreement before a full count, polled every 50 ms for up to 10 s: all three nodes answer, exactly
+one leads, all have the same commit index, have applied it, and show the same head; none is in
+repair; every node shows the key it was started with. From the answers the controller requires:
+
+- the six accounts sum up to 6 000 000, account 9 has 6 000 000 posted as debits, debits and
+  credits over all seven are equal, and nothing is pending;
+- in a full count, every confirmed transfer is found exactly once, and nothing is found that was
+  refused or never sent.
+
+**Rest.** `Web` reports the number of open streams four times a second. When none has been open
+for 30 s the stage makes a full count and the load waits; light and periodic counts stop, the
+nodes run on. With the first stream the load continues after its current pause.
+
+### The look at the nodes and the journal
+
+Every 100 ms the stage asks all three nodes for their status, with 300 ms for the answers, and
+once a second it reads the size of each node's newest WAL segment. A node the controller has
+frozen itself is asked once a second only, so status connections do not pile up at a process
+that cannot accept them. `State.Nodes` holds per node what the status frame says (role, term,
+leader, commit, applied and last index, the first eight bytes of apply hash and head, head
+number, repair, key) and what only the controller knows: the PID, since when the process runs,
+whether the controller has it down or frozen, and a note on the last fault that hit it.
+`State.Links` holds the six links and which of them the controller has cut.
+
+The stderr of every node is read line by line. A line, cut to 400 bytes, goes into a ring of 200
+lines per node and into the journal; the counter line a node writes at its end is left out, and
+beyond 20 lines per node and second the rest is counted instead of shown. The journal is a ring of
+200 lines, each with a running number, the controller's time, a source (`demo`, `n1` to `n3`,
+`check`) and the text. The controller writes into it what it does at the moment it does it:
+signal and PID, file, byte and bit, the links, every count with its numbers, every finding.
+
+### The four faults
+
+`Stage.Act(kind, target, from)` decides under the stage's lock and touches no node. It refuses
+with the first that fails:
+
+| Condition | Otherwise |
+|---|---|
+| a cluster is set up and no finding stands (phase `steady` or `action`) | `ErrRecovering` |
+| no fault is running, its count included | `ErrBusy` |
+| 10 s since the previous fault was accepted and 4 s since it ended | `ErrCooling` with the time |
+| no fault accepted from `from` in the last 30 s | `ErrLimited` with the time |
+| the last look is at most 300 ms old and shows three answering nodes, one leader, none in repair | `ErrRecovering` |
+| for `flip`: the newest segment of the target holds at least 8 KiB | `ErrYoung` |
+
+Only then are address and time noted and the wish queued. `from` is the visitor's address as a
+prefix, /32 for IPv4 and /64 for IPv6; an entry is dropped 30 s after its fault. The target is a
+node or 0 for the leader, which the loop resolves from fresh statuses when the fault runs.
+
+The loop then runs `aim` (resolve the target, note role and term), `strike` (trigger, and return
+the function that undoes it), a hold, the undo as a deferred call, and a full count:
+
+| Kind | `strike` | Hold | Undo |
+|---|---|---|---|
+| `kill` | `Node.Kill` | 2 s | `Node.Start` |
+| `freeze` | `SIGSTOP` | 5 s | `SIGCONT` |
+| `cut` | `Fault{Cut: true}` on the four routes of `Cluster.Around(node)` | 6 s | `Fault{}` on the same |
+| `flip` | `Node.Kill`, then one bit in the newest segment | none | `Node.Start`, then up to 10 s for the repair |
+
+The load runs on through strike, hold and undo; it is held only for the count. The count has the
+deadlines from above (15 s for open calls, 10 s for agreement, 5 s for the lookups); when it
+passes, the action ends as `done` and `Totals.Healed` goes up.
+
+For a `flip` the node has to be down, because a running node does not read data at rest again
+(ADR-009). The controller takes the newest segment under `<node>/wal`, reads its size and picks
+an offset in `[size/4, size/2)` and a bit. In a file of at least 8 KiB that range holds frames
+the node acknowledged long before it was killed, so the bit counts as damage and not as a torn
+write at the end. The controller reads the byte, flips the bit, writes and syncs, and puts file,
+size, offset, bit and both byte values into the state. After the start it reads the node's own
+lines: `started: … repair yes`, then `repair flag cleared`. The time the node spent as a
+non-voter is the difference between the stamps of those two lines, not a reading of the
+controller's clock. A start with `repair no` would mean that the bit fell into a write the node
+had not acknowledged and cut off as a torn write; the journal has a line for that case. Neither
+line within 10 s is a finding.
+
+Once a finding stands, an undo opens links but neither starts nor continues a node: all three
+stay stopped for the evidence.
+
+### Findings
+
+A finding is whatever ends a run of the chaos test, with the same names where they exist:
+
+| Check | What happened |
+|---|---|
+| `S8`, `S9`, `S13` | a violation from `Replayer.Window`, with its wording |
+| `replay` | the checker ended with another error |
+| `call` | a call of the load or of a count returned an error |
+| `L1` | calls still open 15 s after the load was held |
+| `L2` | the nodes do not agree 10 s after the load was held |
+| `S7` | two nodes at the same applied index with different apply hashes |
+| `L4` | a node in repair, or a log line about a repair, without a `flip` on that node |
+| `key` | a node shows another key than the one it was started with |
+| `books` | sums or the set of transfers are not what was confirmed |
+| `F1` | a node ended without the controller ending it; with its exit and the end of its log |
+| `fault` | a fault did not end as planned: a node did not start, no bit could be flipped, no word on the repair |
+| `proof` | a receipt did not verify, or names another transfer than the one sent |
+
+On a finding the state gets it with time, check and wording (cut to 300 bytes), all three nodes
+are stopped with `SIGSTOP` and locked, and the stage copies the evidence to
+`<DEMO_DIR>/befund-<unix time>-<number>`: the three data directories, `n1.log` to `n3.log` with
+the last 200 lines of each node, `journal.txt`, `state.json` and `calls.json` with the windows
+not judged yet and the calls of the open one. At most three such folders are kept; a fourth
+finding is counted and shown, not copied. The cluster stands for 30 s with the finding first on
+the page and no fault accepted, then a new one is set up. `Totals.Findings` keeps the last 20 and
+`Totals.Found` the number, until the process ends.
+
+A watchdog covers the case that the loop itself hangs: `Alive` is false when the loop has not
+reported for 60 s or the look at the nodes for 10 s, `/healthz` then answers 503, and `cmd/demo`,
+which asks once a second, ends with 1.
+
+### HTTP
+
+`net/http` with one `ServeMux` and these routes; anything else is 404, a wrong method 405.
+
+| Route | Answer | Cost |
+|---|---|---|
+| `GET /` | the page, rendered from the state with `html/template` | one rendering a second however many ask; the same bytes in between |
+| `GET /events` | the event stream | a seat in the hub, limited |
+| `POST /act/{kind}/{node}` | 202 without a body, or a refusal | a check in memory |
+| `GET /proof` | a receipt with the keys, as JSON | one `Prove` a second at the cluster however many ask |
+| `GET /static/{name}` | an embedded file from `web/` | none; `ETag` from the content, `Cache-Control: no-cache` |
+| `GET /healthz` | `ok`, or 503 | none |
+| `GET /robots.txt` | disallows everything | none |
+
+Refusals of `POST /act` are JSON, `{"error": …, "until": <ms>}`; the sentence for each is in the
+page, not in the server:
+
+| Case | Status | `error` |
+|---|---|---|
+| the request has a body, on any route | 400, `Connection: close` | `body` |
+| `Origin` is missing, sent twice or not `DEMO_ORIGIN`; or `Sec-Fetch-Site` is sent and not `same-origin` | 403 | `origin` |
+| unknown kind or target | 404 | |
+| `ErrBusy`, `ErrYoung` | 409 | `busy`, `young` |
+| `ErrCooling`, `ErrLimited` | 429 with `Retry-After` | `cooling`, `limited`, with `until` |
+| `ErrRecovering` | 503 with `Retry-After: 2` | `recovering` |
+
+Rules of the server:
+
+- **No body is read.** Kind and target are in the path and are looked up in fixed tables (`kill`,
+  `freeze`, `cut`, `flip`; `1`, `2`, `3`, `leader`). There is no decoder for input and no query
+  parameter with a meaning.
+- **Origin.** `POST /act` as in the table. `GET /events` and `GET /proof` answer a request without
+  `Origin` and `Sec-Fetch-Site`, and refuse with 403 an `Origin` that is not `DEMO_ORIGIN` and a
+  `Sec-Fetch-Site` other than `same-origin` or `none`. No answer carries a CORS header.
+- **The visitor's address.** If the connection does not come from a network in `DEMO_PROXIES`, its
+  address counts and `X-Forwarded-For` is not looked at. If it does, the rightmost entry of all
+  `X-Forwarded-For` lines that is not in `DEMO_PROXIES` counts; an entry on the way from the right
+  that is not an IP address ends the search, and the address of the connection counts. The key
+  for every limit is the IPv4 address, unwrapped if it came inside IPv6, or the IPv6 /64. It is
+  in no state, no journal, no log and no file.
+- **Deadlines and sizes.** 5 s for the request header, 10 s for the request, 60 s idle, 8 KiB
+  `MaxHeaderBytes`, at most 512 connections accepted at a time. There is no `WriteTimeout`,
+  because it would cut the stream; every handler sets a write deadline of 10 s, the stream 5 s
+  before each write.
+- **Headers on every answer of the handler:** a `Content-Security-Policy` that allows scripts,
+  styles, images, fonts and connections from the own origin only, nothing inline, no base URI, no
+  form target and no frame; `X-Content-Type-Options: nosniff`; `Referrer-Policy: no-referrer`;
+  `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy: same-origin`;
+  `X-Robots-Tag: noindex`; a `Permissions-Policy` without camera, geolocation and microphone;
+  and `Cache-Control: no-store` except on static files. HSTS is left to the proxy that
+  terminates TLS.
+- **No cookies, no storage in the browser, nothing from another origin, no access log.** The
+  error log of `net/http` is discarded.
+
+### The event stream
+
+`GET /events` is a stream of server-sent events. It begins with `retry: 3000`; each event is an
+`event:` line and one `data:` line with JSON, without an `id:`.
+
+| Event | When | Content |
+|---|---|---|
+| `state` | first on every stream, and to all streams when a new cluster was set up | the whole state with the last 60 lines of the journal |
+| `tick` | on the hub's beat of 250 ms if the state changed, otherwise once a second | the state without lines |
+| `line` | for every new line of the journal | the line |
+
+There is no resuming: every stream starts with `state`, so a late visitor, a reconnect and a
+restart of the controller are the same case. Lines carry their number, and the page appends only
+numbers above the last one it shows. The hub encodes an event once for all streams and never
+waits: each stream has a buffer of 32 events, and a stream whose buffer is full is closed. At
+most 4 streams per address and 200 in all are open, beyond that the answer is 503 without a
+body; a stream ends after 10 minutes and the page connects again. `HEAD /events` is answered
+with 405.
+
+Times in the state are Unix milliseconds, amounts are decimal strings in hundredths, hashes and
+keys are lower-case hex, transfer IDs are decimal strings. The fields are the Go type
+`demo.State` in `state.go`.
+
+### The page
+
+`web/page.html` is a Go template, and the server renders every state with it: steady, a running
+fault, a finding, a cluster being set up. Without JavaScript the page is the state at the time of
+the request and says so; the buttons are not there. The same template renders the sentences the
+script needs for roles, phases and refusals into `<template>` elements, and the script takes them
+from there.
+
+Three ES modules, no library and no build step. `app.js` reads the stream with `fetch` (so it
+can tell a 503 for a full hub from a lost connection), writes the values into the rendered HTML
+as text, appends lines and sends the four requests. After 3 s without an event it marks every
+value as old, with the time of the last one, and locks the buttons; when its tab has been hidden
+for 60 s it closes the stream. `proof.js` fetches `/proof`, shows each step of the check and can
+change one byte of its copy of the receipt to show the check fail. `receipt.js` is the verifier
+and nothing else: `check` returns every value it computed and the first step that failed,
+`verify` is the form `scripts/vectors.mjs` runs the test vectors through. No hash is computed
+outside this module.
+
+`Stage.Proof` picks the newest confirmed transfer from a call with more than one transfer, so the
+path is not empty, or else the newest confirmed one. It fetches the receipt through the teller
+with 2 s, verifies it with `ledger.VerifyProof` against the keys it generated, and compares the
+record with what the load sent; a mismatch is a finding and nothing goes out. The answer holds
+the cluster ID, the three keys, the transfer, the receipt in hex and in base64, and the head and
+signer as Go computed them. Without a leader in time the answer is 503 with `noleader`, before
+the first confirmed transfer `empty`, while a finding stands `finding`.
+
+### Configuration and exit codes
+
+`cmd/demo` takes its configuration from the environment only and refuses any `DEMO_` variable it
+does not know, as `ledgerd` does with `LEDGER_`. Rates, durations and limits are constants in the
+code.
+
+| Variable | Range | Default |
+|---|---|---|
+| `DEMO_DIR` | absolute path of a directory of its own; created with mode 0700 if missing | required |
+| `DEMO_ADDR` | `IP:port`, no host name, no port 0 | `127.0.0.1:8080` |
+| `DEMO_ORIGIN` | `http://` or `https://`, a host and an optional port, written as a browser sends it: lower case, no default port, no path | `http://` and `DEMO_ADDR` |
+| `DEMO_PROXIES` | networks in CIDR form, separated by commas | empty: no proxy, the address of the connection counts |
+| `DEMO_LEDGERD` | absolute path | `ledgerd` in the directory of the demo's own executable |
+
+Before it listens, the program checks that `ledgerd` is there, that `DEMO_DIR` is writable and
+that `<DEMO_DIR>/run`, which every setup deletes, holds nothing a demo did not write. Its first
+line on stderr names what it read: address, origin, proxy networks, the path of `ledgerd` and
+the directory. It writes a line per setup or failed attempt, per count after a fault and per
+finding, never a line per request and never an address of a visitor.
+
+| Exit | When |
+|---|---|
+| 0 | `SIGTERM` or `SIGINT`: the HTTP server closes within 2 s, then the stage undoes a running fault and closes the cluster. If the stage needs more than 8 s the program ends anyway and the kernel ends the nodes |
+| 1 | the stage gave up after five failed setups, the HTTP server ended, or the watchdog found the stage silent |
+| 2 | a configuration error, or an argument |
+| 3 | it cannot start: `ledgerd` is missing, `DEMO_DIR` cannot be used, the port is taken |
+
+`demo -check` is the only flag. It asks `/healthz` at `DEMO_ADDR`, over loopback if the address
+is unspecified, and exits with 0 or 1; the container image has no shell and no `curl` for a
+health check.
+
+`deploy/demo` holds the `Dockerfile` (both binaries, built without cgo, in a distroless image
+as user 65532), a `compose.yml` and a site block for a reverse proxy. What they restrict and
+what of that has run is in ADR-014.
+
+### Tests
+
+The tests without processes run in a `testing/synctest` bubble with the real durations and
+limits. Those with processes build `ledgerd` once, need Linux, and shorten holds and pauses
+through an unexported field of the stage, never through the environment. Four tests drive a
+headless Chrome if one is installed and skip otherwise: `TestVectorsInChrome` runs the test
+vectors of the audit trail through `receipt.js`, `TestProofInChrome`, `TestPageInChrome` and
+`TestRefusalsInChrome` run the page against a fake `Show`.
+
+`TestSoak` is the long run, behind the build tag `soak` and not in CI:
+
+```
+go test -tags soak ./internal/demo -run '^TestSoak$' -soak.duration 10m -timeout 15m -v
+```
+
+It starts the real stage and the real server on loopback and does everything over HTTP with the
+real durations: a random fault on a random target every 3 to 12 s from one of 64 addresses in
+`X-Forwarded-For`, one request in ten without `Origin`, with an unknown kind or with a body; a
+reader of the whole stream, one that reads 1 KB a second and one that leaves every 20 s; and
+every second the page and a receipt, each receipt verified. With `-soak.target` it drives a demo
+that runs elsewhere, a container for example. It fails on a finding, on a phase `action` longer
+than 45 s, on a sum other than 6 000 000 in any event, on a new cluster for another reason than
+the limit, on fewer healed faults than ended ones, on a wrong answer to one of the crooked
+requests, on fewer accepted faults than half of what the 10 s rule allows, on a heap above
+96 MiB, and on a `ledgerd` or more than ten extra goroutines left after the end. Its last line
+gives clusters, transfers, windows, faults by kind and outcome, refusals by reason, the longest
+fault and setup, what the readers saw, receipts verified, heap and CPU. The runs made so far
+and what they do not cover are in ADR-014.
+
+What the demo cannot do is what the chaos test cannot do either: power loss, lost packets under
+TCP, clock jumps. Its one disk fault is a flipped bit in a file of a node that is down.

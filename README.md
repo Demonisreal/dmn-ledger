@@ -52,6 +52,11 @@ Works today:
 - Chaos test with three real processes under `SIGKILL`, `SIGSTOP`, cut, stalled and lossy links,
   judged by the same replay and linearizability check as the simulator. It needs Linux, the build
   tag `chaos` and real time, so it runs by hand or from `scripts/nightly-chaos.sh`, not in CI.
+- A demo, `cmd/demo`: one program that runs three `ledgerd` as its children with a small load and
+  serves a page that shows them. A visitor can kill a node, freeze it, cut it off or flip a bit
+  in its log; the program takes every fault back itself, counts the whole ledger afterwards and
+  has every answer judged by the checker of the chaos test. A receipt is checked in the browser.
+  It runs locally and in a local container (see "The demo" below).
 
 Not built yet:
 
@@ -59,7 +64,9 @@ Not built yet:
 - Published benchmark numbers. The plan that measures a cluster of processes on a real disk, with
   Postgres next to it, is in `bench/`; its results are not in the repository yet, and a real
   network is not measured.
-- A public demo. Its controller is in `internal/demo`, the page is not finished.
+- A public instance of the demo. It is not deployed anywhere, and the files for that in
+  `deploy/demo` have only run in part; see "The container" in
+  [ADR-014](docs/adr/014-public-demo-fixed-faults-no-docker-socket.md).
 - Membership changes, leadership transfer and reads from followers.
 - Signatures of a majority, revocation of keys, a witness outside the cluster.
 
@@ -287,6 +294,44 @@ simulator and one by the tests of the core. The chaos test runs with
 `go test -tags chaos ./internal/chaos -run '^TestChaos$' -chaos.duration 2m`; set `TMPDIR` to a
 directory on a real disk for real fsyncs.
 
+### The demo
+
+The demo is one program that starts the three nodes itself, books a small load on them and
+serves a page with four buttons: kill a node, freeze it, cut it off from the others, or flip a
+bit in its log. It needs Linux. Build it next to `ledgerd`, which it looks for in its own
+directory, and give it a data directory of its own:
+
+```
+$ dir=$(mktemp -d)
+$ go build -o "$dir" ./cmd/demo ./cmd/ledgerd
+$ DEMO_DIR=$dir/data "$dir"/demo
+```
+
+Its first line on stderr names what it read: the address it listens on, the origin it accepts,
+the path of `ledgerd` and the data directory. A line follows for every cluster it sets up. Open
+`http://127.0.0.1:8080`, with exactly that address: the buttons answer only to the origin the
+program was started for, and without `DEMO_ORIGIN` that is `http://` followed by `DEMO_ADDR`. The
+page is in German.
+
+The page shows the sum of the accounts, confirmed against found transfers, the verdict of the
+checker, the three nodes with what each reports about itself, and a journal with the lines of
+the nodes and what the program did. Each fault ends by itself after a few seconds, and a count
+of the whole ledger follows. One more button fetches a receipt for a recent transfer and checks
+it in the browser; the page prints the `ledgerctl verify proof` command for the same receipt.
+When nobody has had the page open for 30 seconds, the load rests. Ctrl-C stops the program and
+its three nodes.
+
+Like `ledgerd`, the program takes its configuration from the environment only, here from `DEMO_`
+variables, and refuses any it does not know. The variables, the routes and the rules of its
+server are under "Demo" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What a stranger can and
+cannot do to a public instance, and what the demo does not show, is in
+[ADR-014](docs/adr/014-public-demo-fixed-faults-no-docker-socket.md). A long run that presses
+the buttons at random over HTTP and fails on any finding:
+
+```
+$ go test -tags soak ./internal/demo -run '^TestSoak$' -soak.duration 2m -v
+```
+
 ## Limits
 
 There is no TLS and no authentication. The client port is a database port without a password,
@@ -311,19 +356,22 @@ packages. The benchmarks are a module of their own: `cd bench && go test ./...`,
 Go 1.27.4 or newer, as set in `go.mod`. The main module has one dependency,
 [porcupine](https://github.com/anishathalye/porcupine) for the linearizability check; `bench/`
 adds [pgx](https://github.com/jackc/pgx) and needs Docker for Postgres. The tests
-with real processes and the chaos test need Linux; `scripts/vectors.mjs` needs Node.
+with real processes, the chaos test and the demo need Linux; `scripts/vectors.mjs` needs Node.
 
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): layers, the contract between the Raft core and its
   driver, the core's rules, the node, the audit trail, the wire format, the server, the SDK, the
-  simulator, the checkers, the planted bugs and the chaos test.
+  simulator, the checkers, the planted bugs, the chaos test and the demo.
 - [docs/adr/](docs/adr/): the decisions and what they cost.
   [ADR-009](docs/adr/009-disk-corruption-seal-and-repair.md) covers disk corruption,
   [ADR-011](docs/adr/011-audit-trail.md) the audit trail and what a receipt proves,
-  [ADR-015](docs/adr/015-binary-protocol-over-plain-tcp.md) the protocol and the network.
+  [ADR-014](docs/adr/014-public-demo-fixed-faults-no-docker-socket.md) the demo and its threat
+  model, [ADR-015](docs/adr/015-binary-protocol-over-plain-tcp.md) the protocol and the network.
 - [docs/ledger-rules.md](docs/ledger-rules.md): fields, check order, time, chains, the audit
   trail, invariants and the snapshot format of the state machine.
+- [PRODUCT.md](PRODUCT.md) and [DESIGN.md](DESIGN.md): who the demo page is for and what it has
+  to say, and the tokens and components it is built from.
 
 ## License
 
