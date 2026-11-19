@@ -2,8 +2,7 @@
 
 The demo page belongs to dmn-software.com. It takes the site's tokens, type, spacing, link style, focus ring
 and footer, and the component language of the site's own live tool page (status.dmn-software.com). Nothing
-here is a second palette. Product truth lives in `PRODUCT.md`; what the page says, and in which order, is fixed
-in the template.
+here is a second palette. What the page says, and in which order, is fixed in the template.
 
 Files: `internal/demo/web/page.html` (Go `html/template`), `internal/demo/web/page.css`,
 `internal/demo/web/app.js` and `internal/demo/web/proof.js` (behaviour, see below),
@@ -39,9 +38,7 @@ Spacing, radii and type sizes are the site's values, not a new scale: `.wrap` 72
 The h1 starts like the status page's `.now h1` (1.75rem) but stops at 2rem from 48rem, where the status page goes to
 2.5rem: there the h1 is a service name, here it is a sentence of two clauses, and at 2.5rem it takes three lines in
 the left column and pushes the nodes below the fold at 1366 x 768. The steps at 1366 are 16, 26, 32 and 48px (body,
-h2, h1, the sum), at 360 they are 16, 22, 28 and 44px. The design hook reports `flat-type-hierarchy` on the template
-because it cannot resolve `/static/page.css` and reads every role as 16px; on the rendered page with the stylesheet the
-detector reports nothing of the kind.
+h2, h1, the sum), at 360 they are 16, 22, 28 and 44px.
 
 ## Contrast
 
@@ -95,9 +92,9 @@ nodes    | log
 
 The columns flow independently: the left reads verdict then nodes, the right reads faults then the log, and a
 long finding in the verdict does not push the log down. At 1366 x 768 the verdict, the three nodes, the faults
-with status line and explanation, and the first lines of the log stand without scrolling (screenshots
-`fotos/nachher/steady-1366x768`, `kill-`, `freeze-`, `cut-`, `flip-1366x768` of P10-S4; the first log line
-stands at 669px in every one of them). While a node is cut off its column grows and the agreement line drops
+with status line and explanation, and the first lines of the log stand without scrolling (measured in
+headless Chrome while idle and during each of the four faults; the first log line stands at 669px in every
+one of them). While a node is cut off its column grows and the agreement line drops
 below the fold; that is accepted.
 
 The fault column has a minimum height of 32.5rem, the measured height of its longest state (after a bit flip:

@@ -370,8 +370,8 @@ with real processes, the chaos test and the demo need Linux; `scripts/vectors.mj
   model, [ADR-015](docs/adr/015-binary-protocol-over-plain-tcp.md) the protocol and the network.
 - [docs/ledger-rules.md](docs/ledger-rules.md): fields, check order, time, chains, the audit
   trail, invariants and the snapshot format of the state machine.
-- [PRODUCT.md](PRODUCT.md) and [DESIGN.md](DESIGN.md): who the demo page is for and what it has
-  to say, and the tokens and components it is built from.
+- [DESIGN.md](DESIGN.md): the tokens and components the demo page is built from, its states and
+  its contrast figures.
 
 ## License
 

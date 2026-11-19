@@ -246,7 +246,7 @@ func TestKillHealsItself(t *testing.T) {
 				t.Fatalf("n%d runs as PID %d, before %d, note %q", n, st.Nodes[n-1].Pid, before.Nodes[n-1].Pid, st.Nodes[n-1].Note.Text)
 			}
 			inOrder(t, lines(s, mark, "demo", "check"), fmt.Sprintf("SIGKILL an n%d (PID %d)", n, before.Nodes[n-1].Pid), fmt.Sprintf("n%d startet nach ", n), "Zählung nach der Störung: alle drei Knoten")
-			inOrder(t, lines(s, mark, fmt.Sprintf("n%d", n)), "2026/")
+			inOrder(t, lines(s, mark, fmt.Sprintf("n%d", n)), time.Now().UTC().Format("2006/"))
 			if id == 0 {
 				elected := slices.ContainsFunc(lines(s, mark, "n1", "n2", "n3"), func(l Line) bool { return strings.Contains(l.Text, " leader in term ") })
 				if !elected {
@@ -641,7 +641,7 @@ func TestNodeThatDiesIsAFinding(t *testing.T) {
 	}
 	await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
 	st := s.State()
-	if f := st.Finding; f.Check != "F1" || !strings.Contains(f.Reason, "n2 hat sich selbst beendet (signal: killed)") || !strings.Contains(f.Reason, "2026/") {
+	if f := st.Finding; f.Check != "F1" || !strings.Contains(f.Reason, "n2 hat sich selbst beendet (signal: killed)") || !strings.Contains(f.Reason, time.Now().UTC().Format("2006/")) {
 		t.Fatalf("finding %s: %s", f.Check, f.Reason)
 	}
 	if _, err := s.Act(Kill, 1, addr(1)); !errors.Is(err, ErrRecovering) {

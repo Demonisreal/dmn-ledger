@@ -108,7 +108,7 @@ func TestPageStates(t *testing.T) {
 			"Stand bei der Zählung um "+hm(1795036491000),
 			"Keinen Stromausfall.", "Kein Urteil über die Zeit.",
 			"go build -o /tmp/demo/ ./cmd/ledgerd ./cmd/demo ./cmd/ledgerctl",
-			"Damit niemand die Knöpfe dauernd drückt, merkt sich der Server die IP-Adresse 30 Sekunden lang im Arbeitsspeicher.",
+			"merkt sich der Server die IP-Adresse im Arbeitsspeicher: 30 Sekunden nach einer ausgelösten Störung, und solange diese Seite geöffnet ist.",
 			"© DMN Software · Leon", "Impressum", "Datenschutz",
 		)
 		r.hides(t, "git clone", "Quelltext")
