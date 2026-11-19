@@ -40,12 +40,13 @@ one fsync cover all of them.
   compare. There is nothing to reason about in terms of interleavings.
 - A node applies on one core, however many it has. Lookups are answered in the same loop, so a
   large lookup delays the writes behind it.
-- `Apply` does not allocate in steady state. On an otherwise idle i5-12500H laptop, against a ledger
-  with 1000 accounts and 100 000 stored transfers,
-  `go test -run '^$' -bench Apply -cpu 1 -count 3 ./internal/state/` reports 130 to 160 ns per
+- `Apply` does not allocate in steady state. Before the audit trail, on an otherwise idle i5-12500H
+  laptop, against a ledger with 1000 accounts and 100 000 stored transfers,
+  `go test -run '^$' -bench Apply -cpu 1 -count 3 ./internal/state/` reported 130 to 160 ns per
   transfer for batches of 1, 128 and 8000, with 0 allocations per batch. Under load from other
   processes the same command gave up to three times as much. These are numbers for the state machine
-  alone, without log, disk or network.
+  alone, without log, disk or network. With the chain a batch also hashes its records: 424 to 683 ns
+  per transfer and one block for every 256 links ([ADR-011](011-audit-trail.md)).
 - The full invariant check (`CheckInvariants`) recomputes every balance from the transfers. It is
   too slow for the write path and runs only in tests, in the simulator and when a snapshot is read.
 

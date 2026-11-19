@@ -56,7 +56,10 @@ Works today:
 Not built yet:
 
 - TLS and authentication.
-- Benchmarks of a cluster on real disks and a real network, and a demo.
+- Published benchmark numbers. The plan that measures a cluster of processes on a real disk, with
+  Postgres next to it, is in `bench/`; its results are not in the repository yet, and a real
+  network is not measured.
+- A public demo. Its controller is in `internal/demo`, the page is not finished.
 - Membership changes, leadership transfer and reads from followers.
 - Signatures of a majority, revocation of keys, a witness outside the cluster.
 
@@ -124,7 +127,7 @@ no two nodes at the same index
 
 Node 2 won the election in term 2, and the client found the new leader on its own. Node 1 had not
 applied the last transfer yet when it was asked, so no two nodes could be compared;
-`ledgerctl status` exits with 1 here. Start node 3 again on its old directory:
+`ledgerctl status` exits with 1 here because node 3 does not answer. Start node 3 again on its old directory:
 
 ```
 $ env -u LEDGER_NODES LEDGER_ID=$leader LEDGER_PEERS=$peers LEDGER_CLIENT_ADDR=127.0.0.1:710$leader \
@@ -278,7 +281,7 @@ planted bug it asked for votes.
 `all`, `evict`, `leaders`, `split`, `rot` and `beyond`. Built with `go build -o sim ./cmd/sim`, it
 exits with 0 when every seed passed, 1 for a finding, 2 for a usage error and 3 when a run failed
 without a finding; `go run` prints the real code as "exit status N" and itself exits with 1.
-`go test ./...` runs all tests, three `ledgerd` processes included, and
+`go test ./...` runs all tests of the main module, three `ledgerd` processes included, and
 `go test -tags simbug ./...` also checks that the planted bugs are found, twenty-one of them by the
 simulator and one by the tests of the core. The chaos test runs with
 `go test -tags chaos ./internal/chaos -run '^TestChaos$' -chaos.duration 2m`; set `TMPDIR` to a
@@ -299,12 +302,15 @@ whoever can write to a node's files can rewrite a record together with its link,
 node or an earlier head shows it. The full account is in
 [ADR-011](docs/adr/011-audit-trail.md).
 
-There are no benchmark numbers yet.
+There are no benchmark numbers for a cluster yet; the ADRs quote micro-benchmarks of single
+packages. The benchmarks are a module of their own: `cd bench && go test ./...`, and with
+`-tags pg` and Docker also the tests against Postgres.
 
 ## Requirements
 
-Go 1.27.4 or newer, as set in `go.mod`. The only dependency is
-[porcupine](https://github.com/anishathalye/porcupine) for the linearizability check. The tests
+Go 1.27.4 or newer, as set in `go.mod`. The main module has one dependency,
+[porcupine](https://github.com/anishathalye/porcupine) for the linearizability check; `bench/`
+adds [pgx](https://github.com/jackc/pgx) and needs Docker for Postgres. The tests
 with real processes and the chaos test need Linux; `scripts/vectors.mjs` needs Node.
 
 ## Documentation

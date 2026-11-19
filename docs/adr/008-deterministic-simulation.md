@@ -27,10 +27,10 @@ confirmed write, a replay of the committed log against every call and every node
 per window with porcupine, and progress after the faults have healed. `cmd/sim` prints the first
 failing seed and the command that replays it with the full trace.
 
-Eighteen bugs can be planted with the build tag `simbug`, one at a time: three where the disk
+Twenty-two bugs can be planted with the build tag `simbug`, one at a time: three where the disk
 lies, four in the order of disk, seal and network, one in the order of a start on a damaged disk,
-eight in the consensus core and two in the sessions and the clock. Without the tag the code paths
-do not exist.
+eight in the consensus core, two in the sessions and the clock and four in the audit trail.
+Without the tag the code paths do not exist.
 
 ## Consequences
 
@@ -50,8 +50,9 @@ do not exist.
   table is under "Planted bugs" in [ARCHITECTURE.md](../ARCHITECTURE.md).
 - Finding the planted bugs does not mean finding every bug in the core. Three other mutations of
   the core, two in replication and reads and one in the repair rules, passed between 4 000 and
-  20 000 seeds of the profiles made for them and were caught only by the tests of the core. The
-  numbers are under "Planted bugs" in [ARCHITECTURE.md](../ARCHITECTURE.md).
+  20 000 seeds of the profiles made for them and were caught only by the tests of the core. These
+  three were counted before the audit trail changed the trace of every seed and have not been run
+  again since. The numbers are under "Planted bugs" in [ARCHITECTURE.md](../ARCHITECTURE.md).
 - The simulator checks, it does not prove. It knows disks only as well as `disk.Sim` models them,
   and a run is only as good as the faults its plan contains.
 - porcupine's search can grow exponentially. It is bounded by the input, not by a timeout: few
@@ -60,7 +61,8 @@ do not exist.
 ## Rejected alternatives
 
 - **Jepsen-style tests with real processes only.** Find real bugs, but are slow and cannot replay
-  a failure. Planned as a second line once there is a network server.
+  a failure. Built since as the second line: the chaos test runs three `ledgerd` processes under
+  kills, freezes and a faulty network ("Chaos test" in [ARCHITECTURE.md](../ARCHITECTURE.md)).
 - **Simulating only the consensus core.** Would miss the bugs in the code between the core and
   the disk: the write order of hard state and entries, fsync and directory sync, torn writes. The
   planted bugs B1 to B5 are of that kind.

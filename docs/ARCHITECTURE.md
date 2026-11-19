@@ -996,9 +996,9 @@ Addresses are IP and port, never host names. A node listens for peers on its own
 `LEDGER_PEERS`. It exits with 0 after `SIGTERM` or `SIGINT`, 1 when the node halted (the reason is
 in the log), 2 for a configuration error, a `LEDGER_MAX_SESSIONS` that does not fit the data
 directory included, and 3 when it cannot start: directory locked, port taken, `replica.Open`
-failed. It logs to stderr one line at start and at the end, on changes of role, leader and repair
-flag, around every snapshot transfer, and for refused connections at most once a second per
-reason; nothing per request.
+failed. It logs to stderr one line at start, a line of counters and one line at the end, a line of
+counters on `SIGUSR1`, on changes of role, leader and repair flag, around every snapshot transfer,
+and for refused connections at most once a second per reason; nothing per request.
 
 `ledgerctl` is a program over the SDK. `LEDGER_CLUSTER` names the cluster and `LEDGER_NODES` the
 client addresses of its nodes in the order of their IDs. `ledgerd` does not know `LEDGER_NODES`
@@ -1283,8 +1283,8 @@ with the same set of linearized operations are equal, which keeps porcupine's ca
 The search is bounded by the input, not by a timeout: windows of at most 32 requests, a handful of
 clients, few accounts.
 
-S8, S9 and S13 run window by window through `check.Replayer`, which has two callers: the
-simulator and the chaos test. A window holds calls that all ended with `OK`, and no call was open
+S8, S9 and S13 run window by window through `check.Replayer`, which has three callers: the
+simulator, the chaos test and the demo in `internal/demo`. A window holds calls that all ended with `OK`, and no call was open
 when it began or ended. The SDK returns no time for a lookup, so for the chaos test a read
 without a time is judged by its content alone (`TestReplayerAcceptsReadsWithoutTime`); in the
 simulator every read keeps its time (`TestSimulatorReadsNeedTheirTime`).

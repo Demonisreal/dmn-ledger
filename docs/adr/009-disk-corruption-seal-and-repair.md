@@ -130,7 +130,8 @@ cores.
 - Six planted bugs break the seal, the order of a start on a damaged disk and the repair rules
   (B13 to B18). The simulator finds five of them within 144 seeds from seed 0. The sixth, the
   commit index as the goal of a repair, it finds only after thousands of seeds, and a nonce that
-  is not checked not at all; the tests of the core catch both at once. The table is under
+  is not checked not at all (counted before the audit trail changed the trace of every seed, not
+  run again since); the tests of the core catch both at once. The table is under
   "Planted bugs" in [ARCHITECTURE.md](../ARCHITECTURE.md).
 - Two of the repair rules are there for the argument, not because a failure is known without
   them: that a goal counts only in its term, and that the acknowledged index is forgotten on a
