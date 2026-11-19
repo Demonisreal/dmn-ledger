@@ -123,7 +123,7 @@ export function prove() {
     note.textContent = say('proof-loading')
     const res = await fetch('/proof', { cache: 'no-store' }).catch(() => null)
     if (!res) {
-      note.textContent = ''
+      note.textContent = say('proof-lost')
       return
     }
     if (!res.ok) {

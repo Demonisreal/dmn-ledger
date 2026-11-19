@@ -35,8 +35,13 @@ System fonts, so nothing is loaded and there is no licence question.
 
 Spacing, radii and type sizes are the site's values, not a new scale: `.wrap` 72rem with
 `clamp(1.25rem, 4vw, 2.5rem)` (site.css 60), radius 8px for buttons and panels (status page `.btn`, site
-`.flow`, `.cite`), 6px for the skip link, h1 1.75rem/2rem like the status page's `.now h1`, h2 1.25rem/1.375rem
-like its `.blk h2`, body 1rem/1.65.
+`.flow`, `.cite`), 6px for the skip link, h2 1.375rem/1.625rem like the status page's `.blk h2`, body 1rem/1.65.
+The h1 starts like the status page's `.now h1` (1.75rem) but stops at 2rem from 48rem, where the status page goes to
+2.5rem: there the h1 is a service name, here it is a sentence of two clauses, and at 2.5rem it takes three lines in
+the left column and pushes the nodes below the fold at 1366 x 768. The steps at 1366 are 16, 26, 32 and 48px (body,
+h2, h1, the sum), at 360 they are 16, 22, 28 and 44px. The design hook reports `flat-type-hierarchy` on the template
+because it cannot resolve `/static/page.css` and reads every role as 16px; on the rendered page with the stylesheet the
+detector reports nothing of the kind.
 
 ## Contrast
 
@@ -56,7 +61,7 @@ lightens the bare page ground; the column "with grain" is the worst case of a fu
 | `--muted` | `--card` | 5.92 | | label of a disabled button (exempt, still above 4.5) | pass |
 | `--white` | `--ink` | 18.88 | | log lines of demo and check, code | pass |
 | `--text` | `--ink` | 9.94 | | node log lines, hashes | pass |
-| `--muted` | `--ink` | 6.13 | | log times and sources | pass |
+| `--muted` | `--ink` | 6.13 | | log times and sources, a line that repeats the one above | pass |
 | `--green` | `--ink` | 7.09 | | "stimmt" | pass |
 | `--red-hi` | `--ink` | 5.01 | | "stimmt nicht" | pass |
 | `--dark` | `--white` | 19.66 | | skip link | pass |
@@ -81,18 +86,26 @@ The nine sections come in this order: verdict, nodes, faults, log, books, receip
 run it yourself, footer. Above them the site's header bar, without the section nav: brand linking back to
 dmn-software.com, and the crumb "Projekte / dmn-ledger".
 
-From 64rem the first four sections form one grid of two columns, 6fr and 5fr:
+From 64rem the first four sections stand in two columns, 6fr and 5fr, each a `div.col` of its own:
 
 ```
 verdict  | faults
-nodes    | faults
 nodes    | log
 ```
 
-The columns flow independently, so the left reads verdict then nodes, the right reads faults then the log.
-At 1366 x 768 the verdict, the three nodes with their agreement line, the faults with status line and
-explanation, and the heading and intro of the log stand without scrolling (screenshot `steady-1366x768`).
-The fault column has a minimum height of 32rem so the log does not jump when the status text changes length.
+The columns flow independently: the left reads verdict then nodes, the right reads faults then the log, and a
+long finding in the verdict does not push the log down. At 1366 x 768 the verdict, the three nodes, the faults
+with status line and explanation, and the first lines of the log stand without scrolling (screenshots
+`fotos/nachher/steady-1366x768`, `kill-`, `freeze-`, `cut-`, `flip-1366x768` of P10-S4; the first log line
+stands at 669px in every one of them). While a node is cut off its column grows and the agreement line drops
+below the fold; that is accepted.
+
+The fault column has a minimum height of 32.5rem, the measured height of its longest state (after a bit flip:
+what was, "Bereit", and the explanation of the flip, 520px with the system fonts of the build machine). The
+space under the status line is empty while nothing has happened; it is kept so the log does not move when the
+status text or the explanation changes length. The explanation of the log stands under its lines and is tied
+to the scrollable region with `aria-describedby`, so the lines start right under the heading.
+
 Below 64rem everything stacks in the order of the sections; the three nodes stand side by side from 40rem
 and below each other under it.
 
@@ -116,8 +129,9 @@ next to a list; steps on a rail; a list with square marks; prose with code.
 | node column | new, lines like status page `.svc-s` | answers, catching up, silent, down, frozen, cut, repair, halted by a finding, starting; the leader carries the site's 5px red square (site.css 413), only while it answers |
 | target choice | status page `.opts input`, `fieldset` with `legend` | checked label in white; focus ring offset 3px |
 | fault button | status page `.btn.warn` (app.css 1269) | normal, hover (white), focus ring, pressed (`scale(.97)`), disabled (`--line` border, `--muted` text, reason in the status line right under it), hidden without JavaScript with the name shown as text instead |
-| status line | new | ready, running with seconds left, counting, done, failed, pause, finding, setup; the script adds address limit, young log, refused |
-| log | site `.pipe`/`.stage` panel in `--ink`, mono .75rem | newest line on top; demo and check lines in white, node lines `lang="en"`; long lines and line breaks wrap anywhere; pinned finding above in a red-bordered row |
+| status line | new | ready, running with seconds left, counting, done, failed, pause, finding, setup; the script adds address limit, young log, refused; takes the focus (`tabindex="-1"`, ring as everywhere) when the focused fault button is locked |
+| log | site `.pipe`/`.stage` panel in `--ink`, mono .75rem | newest line on top; demo and check lines in white, node lines `lang="en"`; a line whose source and text equal the line above (the newer one) in `--muted`, so a quiet minute of identical counts does not read as twelve news; long lines and line breaks wrap anywhere; pinned finding above in a red-bordered row; explanation under the panel |
+| viewer count | status page `.sec-head p` | with scripting it stays invisible (`visibility: hidden`, `@media (scripting: enabled)`) until the first `tick`, because the count in the served page and in the first `state` does not yet include this visitor; without scripting it shows the count of the served page |
 | accounts table | site.css 2809 (`.sum`) | sum row with a `--line` rule and weight 600; empty state sentence when nothing is booked |
 | receipt steps | site.css 1001 (`.flow`) | dot `--muted` until checked, `--green` with "stimmt", `--red-hi` with "stimmt nicht" |
 | code block | site `.stage pre` in an `--ink` panel | wraps, `user-select: all` |
@@ -132,7 +146,8 @@ State is never carried by colour alone: every red or green element carries its w
 1. "Zum Inhalt" (skip link)
 2. brand, "Projekte"
 3. the four targets (one radio group, arrow keys inside)
-4. Abschießen, Einfrieren, Abtrennen, Bit kippen
+4. Abschießen, Einfrieren, Abtrennen, Bit kippen; when the focused one is locked (pressed, or another visitor
+   started a fault), the focus goes to the status line, which says why, and Tab goes on to the log
 5. the log panel (scrollable region)
 6. "Jüngste Buchung beweisen", then "Ein Byte im Beleg ändern" once a receipt is shown
 7. the repository links (only once the repository is public)
@@ -169,6 +184,8 @@ browser's zone, counted against `now` of the server, and only change when an eve
 | click sent | all fault buttons locked, the pressed one keeps its red border and `aria-busy`; after 202 they stay locked until an event shows the action |
 | refused | the sentence for `limited`, `cooling`, `recovering`, `young`, or "Das hat der Server nicht angenommen (`<status>`)" in place of "Bereit"; with `until` (or `Retry-After`) the buttons stay locked until then |
 | receipt | steps up to the first that fails say "stimmt", that one "stimmt nicht", later ones stay empty and grey; with a changed byte step 3 fails; a receipt that is not a transfer never says it holds |
+| receipt, no answer | "Der Beleg kam nicht an, der Server war nicht zu erreichen." next to the button; a receipt shown before stays |
+| first count of a cluster | while the last full count found no booking (right after the setup), the line says only "`<n>` Buchungen bestätigt." instead of "alle 0 wiedergefunden" |
 
 Step 7 ("denselben Kopf") compares the head that `check` computed with the head the controller sent; it is
 the only comparison outside `receipt.js` and computes nothing. The explanatory text and the command block

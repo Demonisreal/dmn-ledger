@@ -21,6 +21,8 @@ try {
   shot('tampered')
   await prove()
   shot('account')
+  await prove()
+  shot('lost')
 } catch (err) {
   shots.textContent = `error ${err}`
 }

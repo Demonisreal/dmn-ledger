@@ -124,7 +124,7 @@ function reason() {
 function booked() {
   const { books } = st
   const n = grouped(books.confirmed)
-  if (!books.recount.at) return fill('booked-none', { n })
+  if (!books.recount.at || !books.recount.found) return fill('booked-none', { n })
   return fill(books.recount.after ? 'booked-after' : 'booked', { n, at: books.recount.at, found: grouped(books.recount.found) })
 }
 
@@ -280,7 +280,7 @@ function faults() {
 
 function pinned() {
   const last = findings().at(-1)
-  const pin = optional('pinned', last, () => el('p', { class: 'pinned', id: 'pinned' }), page.querySelector('.log .intro'))
+  const pin = optional('pinned', last, () => el('p', { class: 'pinned', id: 'pinned' }), document.getElementById('log-h'))
   if (pin) patch(pin, box(fill('pinned', { check: last.check, reason: last.reason }), last.evidence ? fill('evidence', { dir: last.evidence }) : ''))
 }
 
@@ -315,6 +315,8 @@ function row(line) {
 }
 
 function add(line) {
+  const prev = list.firstElementChild
+  if (prev?.dataset.src === line.src && prev.lastElementChild.textContent === line.text) prev.dataset.again = ''
   top = line.n
   list.prepend(row(line))
   while (list.children.length > KEEP) list.lastElementChild.remove()
@@ -343,11 +345,13 @@ const mark = () => (st ? [st.phase, st.next, st.action?.began, st.action?.phase]
 function lock() {
   const off = st ? st.phase !== 'steady' || st.next > st.now : initial
   const held = hold !== null && hold.until > seen
+  const focused = kinds.find((btn) => btn === document.activeElement)
   for (const btn of kinds) {
     btn.disabled = off || held || lost !== '' || pending !== null || sent !== null
     if (btn === pending) btn.setAttribute('aria-busy', 'true')
     else btn.removeAttribute('aria-busy')
   }
+  if (focused?.disabled) document.getElementById('fault-state').focus({ preventScroll: true })
 }
 
 function show(next, full) {
@@ -371,6 +375,7 @@ function show(next, full) {
   pinned()
   books()
   if (full) relog(st.lines ?? [])
+  else document.getElementById('viewers').dataset.counted = ''
   lock()
   page.dataset.now = st.now
 }

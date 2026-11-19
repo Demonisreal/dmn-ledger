@@ -270,7 +270,8 @@ func TestPageStates(t *testing.T) {
 			"Gerade gibt es keinen Leader, der einen Beleg ausstellen kann. Nach der Wahl geht es wieder.",
 			"Dieser Browser kann Ed25519 nicht prüfen. Pfad und Kopf stimmen; über den Stempel sagt diese Seite hier nichts.",
 			"Der geänderte Beleg fällt durch: Der Pfad führt nicht mehr zur Wurzel im Kettenglied.",
-			"Der Beleg ist in sich schlüssig und trägt den Stempel von Knoten {n}.", "stimmt nicht")
+			"Der Beleg ist in sich schlüssig und trägt den Stempel von Knoten {n}.", "stimmt nicht",
+			"Der Beleg kam nicht an, der Server war nicht zu erreichen.")
 		r.shows(t, "Jüngste Buchung beweisen", "Ein Byte im Beleg ändern", "Ändert nur die Kopie in diesem Browser.",
 			"Was dieser Beleg zeigt:", "Was er nicht zeigt:", "ledgerctl verify proof")
 	})
@@ -291,6 +292,30 @@ func TestPageStates(t *testing.T) {
 		if !strings.Contains(said, "white-space: pre-wrap") || !strings.Contains(said, "overflow-wrap: anywhere") {
 			t.Errorf("long texts do not wrap: %q", said)
 		}
+	})
+
+	t.Run("repeated lines", func(t *testing.T) {
+		show := newFake()
+		show.write("node 2 of 3 in cluster 13911521510627622913 stopped")
+		raw := hit(NewWeb(show, testOrigin, nil), "GET", "/").Body.String()
+		lines := regexp.MustCompile(`<li data-n="\d+" data-src="n2"( data-again)?`).FindAllStringSubmatch(raw, -1)
+		if len(lines) != logTail {
+			t.Fatalf("%d lines in the log, want %d", len(lines), logTail)
+		}
+		for i, l := range lines {
+			if again := l[1] != ""; again != (i >= 2) {
+				t.Errorf("line %d from the top: marked as a repetition %v", i+1, again)
+			}
+		}
+		if strings.Index(raw, `id="log-about"`) < strings.Index(raw, `<ol id="lines">`) {
+			t.Error("the explanation of the log stands above its lines")
+		}
+	})
+
+	t.Run("nothing to find yet", func(t *testing.T) {
+		r := render(t, func(st *State) { st.Books.Recount.Found = 0 })
+		r.shows(t, "18'734 Buchungen bestätigt.")
+		r.hides(t, "alle 0 wiedergefunden")
 	})
 
 	t.Run("large numbers", func(t *testing.T) {
@@ -388,7 +413,7 @@ func TestPageIsAccessible(t *testing.T) {
 	if regexp.MustCompile(`\b(transition|animation)\s*:`).Match(css) && !strings.Contains(string(css), "@media (prefers-reduced-motion: reduce)") {
 		t.Error("the stylesheet moves things and has no rule for prefers-reduced-motion")
 	}
-	for _, focus := range []string{"a:focus-visible", ".btn:focus-visible", ".aim input:focus-visible", ".lines:focus-visible"} {
+	for _, focus := range []string{"a:focus-visible", ".btn:focus-visible", ".aim input:focus-visible", ".lines:focus-visible", ".state:focus-visible"} {
 		rule := regexp.MustCompile(`(?s)` + regexp.QuoteMeta(focus) + ` \{[^}]*\}`).FindString(string(css))
 		if !strings.Contains(rule, "outline: 2px solid var(--red)") || !strings.Contains(rule, "outline-offset: 3px") {
 			t.Errorf("%s has no visible focus like the site: %q", focus, rule)

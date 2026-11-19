@@ -26,6 +26,7 @@
 <main id="inhalt" class="wrap page" tabindex="-1" data-now="{{.Now}}" data-phase="{{.Phase}}" data-load="{{.Load}}">
 
   <div class="board">
+  <div class="col">
 
   <section class="verdict" aria-labelledby="verdict-h">
     <div class="claim">
@@ -49,7 +50,7 @@
       <p class="cap" id="sum-cap">{{if ne .Value .Want}}{{template "sum-wrong" (args "sum" (money .Value) "want" (money .Want))}}{{else}}{{template "caption" (args "want" (money .Want) "at" .At)}}{{end}}</p>
       {{- end}}{{end}}
       <ul class="facts">
-        <li id="booked">{{with .Books}}{{if not .Recount.At}}{{template "booked-none" (args "n" (num .Confirmed))}}{{else if .Recount.After}}{{template "booked-after" (args "n" (num .Confirmed) "at" .Recount.At "found" (num .Recount.Found))}}{{else}}{{template "booked" (args "n" (num .Confirmed) "at" .Recount.At "found" (num .Recount.Found))}}{{end}}{{end}}</li>
+        <li id="booked">{{with .Books}}{{if or (not .Recount.At) (not .Recount.Found)}}{{template "booked-none" (args "n" (num .Confirmed))}}{{else if .Recount.After}}{{template "booked-after" (args "n" (num .Confirmed) "at" .Recount.At "found" (num .Recount.Found))}}{{else}}{{template "booked" (args "n" (num .Confirmed) "at" .Recount.At "found" (num .Recount.Found))}}{{end}}{{end}}</li>
         <li id="judged">{{if .Totals.Found}}{{with latest .Totals.Findings}}{{template "judged-found" (args "n" (num $.Totals.Found) "word" (plural $.Totals.Found "Befund" "Befunde") "at" .At)}}{{end}}{{else if .Books.Judged.Upto}}{{template "judged" (args "upto" .Books.Judged.Upto)}}{{end}}</li>
       </ul>
       <p class="since" id="since">{{$acts := total .Totals.Actions}}{{template "since" (args "at" .Started "actions" (num $acts) "actword" (plural $acts "Störung" "Störungen") "healed" (num .Totals.Healed) "found" (num .Totals.Found) "foundword" (plural .Totals.Found "Befund" "Befunde"))}}</p>
@@ -108,6 +109,9 @@
     {{- end}}
   </section>
 
+  </div>
+  <div class="col">
+
   <section class="faults" aria-labelledby="faults-h">
     <div class="sec-head">
       <h2 id="faults-h">Eine Störung auslösen</h2>
@@ -143,7 +147,7 @@
         <p id="flip-d">Der Knoten wird beendet. In seinem Log kippt ein Bit in einem Eintrag, den er schon bestätigt hat. Dann startet er.</p>
       </li>
     </ul>
-    <div class="state" id="fault-state" aria-live="polite">
+    <div class="state" id="fault-state" aria-live="polite" tabindex="-1">
       {{- $a := .Action}}
       {{- if eq .Phase "finding"}}
       <p class="now">{{template "standing"}}</p>
@@ -171,20 +175,23 @@
 
   <section class="log" aria-labelledby="log-h">
     <h2 id="log-h">Protokoll</h2>
-    <p class="intro">Zeilen von n1, n2 und n3 sind die Ausgabe der Knoten, wörtlich, mit deren eigenem Zeitstempel in UTC. Zeilen von demo schreibt das Steuerprogramm, wenn es etwas getan hat. Zeilen von check sind Zählungen und Urteile.</p>
     {{- with latest .Totals.Findings}}
     <p class="pinned" id="pinned">{{template "pinned" (args "check" .Check "reason" .Reason)}}{{with .Evidence}}{{template "evidence" (args "dir" .)}}{{end}}</p>
     {{- end}}
-    <div class="lines" tabindex="0" role="region" aria-label="Protokollzeilen, neueste oben">
+    <div class="lines" tabindex="0" role="region" aria-label="Protokollzeilen, neueste oben" aria-describedby="log-about">
       <ol id="lines">
+        {{- $newer := ""}}{{$from := ""}}
         {{- range lately .Lines}}
-        <li data-n="{{.N}}" data-src="{{.Src}}"{{if and (ne .Src "demo") (ne .Src "check")}} lang="en"{{end}}><time datetime="{{iso .At}}">{{clockms .At}}</time><b class="src">{{.Src}}</b><span class="said">{{.Text}}</span></li>
+        <li data-n="{{.N}}" data-src="{{.Src}}"{{if and (eq .Text $newer) (eq .Src $from)}} data-again{{end}}{{if and (ne .Src "demo") (ne .Src "check")}} lang="en"{{end}}><time datetime="{{iso .At}}">{{clockms .At}}</time><b class="src">{{.Src}}</b><span class="said">{{.Text}}</span></li>
+        {{- $newer = .Text}}{{$from = .Src}}
         {{- end}}
       </ol>
     </div>
+    <p class="intro" id="log-about">Zeilen von n1, n2 und n3 sind die Ausgabe der Knoten, wörtlich, mit deren eigenem Zeitstempel in UTC. Zeilen von demo schreibt das Steuerprogramm, wenn es etwas getan hat. Zeilen von check sind Zählungen und Urteile. Wiederholt eine Zeile die darüber wörtlich, steht sie grau.</p>
     <div class="vh" id="said" aria-live="polite"></div>
   </section>
 
+  </div>
   </div>
 
   <section class="books blk" aria-labelledby="books-h">
@@ -284,7 +291,7 @@ LEDGER_CLUSTER=0x<span data-k="cluster"></span> ledgerctl verify proof buchung-<
       <li><b>Kein echtes Netz.</b> Die drei Prozesse laufen auf einer Maschine und sprechen über Loopback. Das Abtrennen macht ein Proxy zwischen ihnen.</li>
       <li><b>Keine falsche Uhr, keine Platte, die Lesefehler meldet, keine böswilligen Knoten.</b></li>
       <li><b>Keinen Dauerbetrieb.</b> Nach 20 000 Buchungen wird der Cluster neu aufgesetzt, mit leeren Büchern, weil der Zustand sonst wächst und der Prüfer eine zweite Kopie davon hält.</li>
-      <li><b>Kein Urteil über die Zeit.</b> Wie schnell das ist, steht im README, gemessen auf anderer Hardware.</li>
+      <li><b>Kein Urteil über die Zeit.</b> Wie schnell das ist, messen die Benchmarks in <code>bench/</code> auf anderer Hardware; ihre Zahlen stehen noch nicht im README.</li>
     </ul>
     <p class="close">Was hier vier Mal von Hand geht, laufen Simulator und Chaos-Test viele tausend Mal mit Zufall durch. Die Demo zeigt, dass es die Abläufe gibt. Dass sie halten, zeigen die Tests.</p>
   </section>
@@ -306,7 +313,7 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
         <li><a href="{{.}}/blob/main/docs/ARCHITECTURE.md"><code>docs/ARCHITECTURE.md</code></a></li>
         <li><a href="{{.}}/blob/main/docs/adr/009-disk-corruption-seal-and-repair.md">ADR-009</a> Plattenfehler, Siegel, Reparatur</li>
         <li><a href="{{.}}/blob/main/docs/adr/011-audit-trail.md">ADR-011</a> Prüfspur, was ein Beleg beweist</li>
-        <li><a href="{{.}}/tree/main/docs/adr">ADR-014</a> diese Demo und ihr Bedrohungsmodell</li>
+        <li><a href="{{.}}/blob/main/docs/adr/014-public-demo-fixed-faults-no-docker-socket.md">ADR-014</a> diese Demo und ihr Bedrohungsmodell</li>
         <li><a href="{{.}}/blob/main/docs/adr/015-binary-protocol-over-plain-tcp.md">ADR-015</a> Protokoll, kein TLS</li>
         <li><a href="{{.}}#the-simulator">The simulator</a> im README</li>
       </ul>
@@ -407,6 +414,7 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <template data-t="proof-loading">{{template "proof-loading"}}</template>
 <template data-t="proof-noleader">{{template "proof-noleader"}}</template>
 <template data-t="proof-finding">{{template "proof-finding"}}</template>
+<template data-t="proof-lost">{{template "proof-lost"}}</template>
 <template data-t="proof-ok">{{template "proof-ok" (args "n" "{n}")}}</template>
 <template data-t="proof-changed">{{template "proof-changed"}}</template>
 <template data-t="proof-unsupported">{{template "proof-unsupported"}}</template>
@@ -442,7 +450,7 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "why-start"}}nach dem Start{{end}}
 {{define "why-limit"}}{{.limit}} Buchungen erreicht{{end}}
 {{define "why-finding"}}nach einem Befund{{end}}
-{{define "finding"}}Befund um {{template "t" .at}}: <span class="check">{{.check}}</span>, <span class="said">{{.reason}}</span>. Der Cluster steht und wird um {{template "t" .reset}} neu aufgesetzt. Die Daten der Knoten sind gesichert.{{end}}
+{{define "finding"}}Befund um {{template "t" .at}}: <span class="check">{{.check}}</span>, <span class="said">{{.reason}}.</span> Der Cluster steht und wird um {{template "t" .reset}} neu aufgesetzt. Die Daten der Knoten sind gesichert.{{end}}
 {{define "resting"}}Es hat niemand zugesehen, deshalb ruhte die Last seit {{template "t" .since}}. Sie läuft wieder an.{{end}}
 {{define "stale"}}Stand {{template "t" .at}}. Die Verbindung ist unterbrochen, ein neuer Versuch läuft.{{end}}
 {{define "crowded"}}Gerade sehen zu viele zu. Das ist der Stand von {{template "t" .at}}; die Seite versucht es weiter.{{end}}
@@ -507,6 +515,7 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "proof-loading"}}Beleg wird geholt.{{end}}
 {{define "proof-noleader"}}Gerade gibt es keinen Leader, der einen Beleg ausstellen kann. Nach der Wahl geht es wieder.{{end}}
 {{define "proof-finding"}}Solange ein Befund steht, gibt es keinen Beleg.{{end}}
+{{define "proof-lost"}}Der Beleg kam nicht an, der Server war nicht zu erreichen.{{end}}
 {{define "proof-ok"}}Der Beleg ist in sich schlüssig und trägt den Stempel von Knoten {{.n}}.{{end}}
 {{define "proof-changed"}}Der geänderte Beleg fällt durch: Der Pfad führt nicht mehr zur Wurzel im Kettenglied.{{end}}
 {{define "proof-unsupported"}}Dieser Browser kann Ed25519 nicht prüfen. Pfad und Kopf stimmen; über den Stempel sagt diese Seite hier nichts.{{end}}

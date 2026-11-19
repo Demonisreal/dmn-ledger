@@ -170,6 +170,7 @@ var (
 	stepPattern     = regexp.MustCompile(`(?s)<li data-step="([a-z]+)"(?: data-ok="(true|false)")?>\s*<p class="step-h">.*?<span class="verdict-word" data-k="ok">([^<]*)</span>`)
 	proofShot       = regexp.MustCompile(`(?s)<section class="proof blk"[^>]*data-shot="([a-z]+)">(.*?)</section>`)
 	proofResult     = regexp.MustCompile(`<p class="result" id="proof-result" aria-live="polite">([^<]*)</p>`)
+	proofState      = regexp.MustCompile(`<p class="status" id="proof-state" aria-live="polite">[^<]*</p>`)
 )
 
 func section(t *testing.T, html, class string) string {
@@ -287,8 +288,9 @@ func TestPageInChrome(t *testing.T) {
 		{N: 101, At: now + 4100, Src: "demo", Text: "SIGKILL an n2 (PID 41231), Follower in Term 7."},
 		{N: 101, At: now + 4100, Src: "demo", Text: "SIGKILL an n2 (PID 41231), Follower in Term 7."},
 		{N: 102, At: now + 4200, Src: "check", Text: "Zählung: Summe 60 000,00."},
+		{N: 103, At: now + 4300, Src: "check", Text: "Zählung: Summe 60 000,00."},
 	}
-	ms := moments(lines, tail(append(show.Lines(0), news[0], news[2]), logTail))
+	ms := moments(lines, tail(append(show.Lines(0), news[0], news[2], news[3]), logTail))
 	stream := [][]byte{retryLine}
 	for i, m := range ms {
 		stream = append(stream, event(m.event, m.st))
@@ -408,8 +410,17 @@ func TestPageInChrome(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(live, `<ol id="lines"><li data-n="102" data-src="check">`) {
-		t.Error("line 102 is not the first line of the log")
+	if !strings.Contains(live, `<ol id="lines"><li data-n="103" data-src="check">`) {
+		t.Error("line 103 is not the first line of the log")
+	}
+	if !strings.Contains(live, `<li data-n="102" data-src="check" data-again="">`) {
+		t.Error("line 102 repeats line 103 and is not marked as a repetition")
+	}
+	if strings.Contains(live, `data-n="101" data-src="demo" data-again`) {
+		t.Error("line 101 repeats nothing and is marked as a repetition")
+	}
+	if !strings.Contains(live, `<p id="viewers" data-counted="">`) {
+		t.Error("the number of viewers is not shown after the first tick")
 	}
 	if n := strings.Count(live, `data-n="101"`); n != 1 {
 		t.Errorf("line 101 stands %d times, want once", n)
@@ -510,6 +521,9 @@ func TestRefusalsInChrome(t *testing.T) {
 			defer srv.Close()
 			dom, stderr := chrome(t, "--dump-dom", srv.URL+"/")
 			clean(t, stderr)
+			if !strings.Contains(dom, `data-focus="fault-state"`) {
+				t.Error("the pressed button was locked and the focus did not go to the status line")
+			}
 			mains := mainPattern.FindAllStringSubmatch(dom, -1)
 			if len(mains) < 2 {
 				t.Fatal("no snapshot of the page")
@@ -615,8 +629,17 @@ func TestProofInChrome(t *testing.T) {
 	mux.HandleFunc("GET /run.js", file("testdata/proof.js", "text/javascript; charset=utf-8"))
 	mux.HandleFunc("GET /proof", func(w http.ResponseWriter, _ *http.Request) {
 		n := int(asked.Add(1)) - 1
+		if n >= len(receipts) {
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(receipts[min(n, len(receipts)-1)])
+		_, _ = w.Write(receipts[n])
 	})
 	srv := httptest.NewServer(guarded(mux))
 	defer srv.Close()
@@ -687,5 +710,8 @@ func TestProofInChrome(t *testing.T) {
 		if c.shot != "fetched" && strings.Contains(shot, "schlüssig") {
 			t.Errorf("%s: the page calls the receipt sound", c.shot)
 		}
+	}
+	if lost := plain(proofState.FindString(shots["lost"])); lost != "Der Beleg kam nicht an, der Server war nicht zu erreichen." {
+		t.Errorf("a receipt that never came says %q", lost)
 	}
 }

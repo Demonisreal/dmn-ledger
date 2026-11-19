@@ -267,6 +267,8 @@ main[data-stale] :is(.tally, .trio, .accord, .books-in) {
 }
 
 .alarm .said {
+  display: block;
+  margin-block: .25rem;
   font-family: var(--mono);
   font-size: .8125rem;
 }
@@ -290,16 +292,22 @@ main[data-stale] :is(.tally, .trio, .accord, .books-in) {
 
 .facts li:empty { display: none; }
 
-.board {
+.board,
+.col {
   display: grid;
   gap: 2rem;
+}
+
+.col {
+  align-content: start;
+  min-width: 0;
 }
 
 .board h2,
 .blk h2 {
   margin: 0 0 .625rem;
   color: var(--white);
-  font-size: 1.25rem;
+  font-size: 1.375rem;
   font-weight: 700;
   line-height: 1.2;
   letter-spacing: -.02em;
@@ -407,6 +415,10 @@ main[data-phase="setup"] [data-silent] [data-k="role"] { color: var(--muted); }
   color: var(--muted);
   font-size: .8125rem;
   font-variant-numeric: tabular-nums;
+}
+
+@media (scripting: enabled) {
+  .sec-head p:not([data-counted]) { visibility: hidden; }
 }
 
 fieldset {
@@ -553,6 +565,11 @@ fieldset {
   font-variant-numeric: tabular-nums;
 }
 
+.state:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 3px;
+}
+
 .state p { margin: 0; }
 
 .state .was { margin-bottom: .25rem; }
@@ -577,7 +594,7 @@ fieldset {
 }
 
 .log .intro {
-  margin-bottom: .625rem;
+  margin: .625rem 0 0;
   color: var(--muted);
   font-size: .8125rem;
   line-height: 1.5;
@@ -640,6 +657,8 @@ fieldset {
 [data-src="check"] .src { color: var(--white); }
 
 [data-src="check"] .said { color: var(--white); }
+
+.lines [data-again] :is(.src, .said) { color: var(--muted); }
 
 .blk {
   padding-block: 2.75rem 0;
@@ -1025,25 +1044,16 @@ fieldset {
 
   .board {
     grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
-    grid-template-areas:
-      "verdict faults"
-      "nodes faults"
-      "nodes log";
-    grid-template-rows: auto auto 1fr;
     align-items: start;
-    gap: 1.75rem 2.5rem;
+    gap: 2.5rem;
   }
 
-  .verdict { grid-area: verdict; }
-  .nodes { grid-area: nodes; }
-  .faults {
-    grid-area: faults;
-    min-height: 32rem;
-  }
-  .log { grid-area: log; }
+  .col { gap: 1.75rem; }
+
+  .faults { min-height: 32.5rem; }
 
   .board h2,
-  .blk h2 { font-size: 1.375rem; }
+  .blk h2 { font-size: 1.625rem; }
 
   .blk { padding-top: 3.5rem; }
 
