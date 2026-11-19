@@ -130,7 +130,7 @@ next to a list; steps on a rail; a list with square marks; prose with code.
 | log | site `.pipe`/`.stage` panel in `--ink`, mono .75rem | newest line on top; demo and check lines in white, node lines `lang="en"`; a line whose source and text equal the line above (the newer one) in `--muted`, so a quiet minute of identical counts does not read as twelve news; long lines and line breaks wrap anywhere; pinned finding above in a red-bordered row; explanation under the panel |
 | viewer count | status page `.sec-head p` | with scripting it stays invisible (`visibility: hidden`, `@media (scripting: enabled)`) until the first `tick`, because the count in the served page and in the first `state` does not yet include this visitor; without scripting it shows the count of the served page |
 | accounts table | site.css 2809 (`.sum`) | sum row with a `--line` rule and weight 600; empty state sentence when nothing is booked |
-| receipt steps | site.css 1001 (`.flow`) | dot `--muted` until checked, `--green` with "stimmt", `--red-hi` with "stimmt nicht" |
+| receipt steps | site.css 1001 (`.flow`) | dot `--muted` until the comparison that covers the step has held, `--green` with "stimmt", `--red-hi` with "stimmt nicht" |
 | code block | site `.stage pre` in an `--ink` panel | wraps, `user-select: all` |
 | limits list | site.css 2518 (`.ticks`) | |
 | footer | site.css 3171 | privacy sentence, "© DMN Software · Leon", imprint, privacy, legal notes on the site |

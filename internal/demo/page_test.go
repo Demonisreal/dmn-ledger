@@ -167,6 +167,13 @@ func TestPageStates(t *testing.T) {
 			"In diesem Cluster ist noch nichts gebucht.")
 		r.hides(t, "Summe der sechs Konten")
 		r.locked(t, true)
+		render(t, func(st *State) {
+			st.Phase, st.Books, st.Cluster.Why = "setup", Books{Confirmed: 20000}, "finding"
+		}).shows(t, "Der Cluster wird gerade neu aufgesetzt (20'000 Buchungen erreicht).")
+		render(t, func(st *State) {
+			st.Phase, st.Books, st.Cluster.Why = "setup", Books{Confirmed: 20000}, "limit"
+			st.Finding = &Finding{At: st.Now - 31000, Check: "F1", Reason: "node 3 exited", ResetAt: st.Now - 1000}
+		}).shows(t, "Der Cluster wird gerade neu aufgesetzt (nach einem Befund).")
 		for why, want := range map[string]string{"start": "nach dem Start", "finding": "nach einem Befund"} {
 			render(t, func(st *State) {
 				st.Phase, st.Books, st.Cluster.Why = "setup", Books{}, why
@@ -180,7 +187,7 @@ func TestPageStates(t *testing.T) {
 		r := render(t, func(st *State) {
 			at, reset = st.Now-2000, st.Now+28000
 			st.Phase, st.Load = "finding", "held"
-			st.Finding = &Finding{At: at, Check: "replay", Reason: reason, ResetAt: reset}
+			st.Finding = &Finding{At: at, Check: "replay", Reason: reason, ResetAt: reset, Evidence: "befund-1795036490-2"}
 		})
 		r.shows(t, "Befund um "+hm(at)+": replay, ", "Der Cluster steht und wird um "+hm(reset)+" neu aufgesetzt. Die Daten der Knoten sind gesichert.",
 			"Gesperrt, solange der Befund steht.")
@@ -268,7 +275,7 @@ func TestPageStates(t *testing.T) {
 		r := render(t, nil)
 		r.knows(t, "Beleg wird geholt.",
 			"Gerade gibt es keinen Leader, der einen Beleg ausstellen kann. Nach der Wahl geht es wieder.",
-			"Dieser Browser kann Ed25519 nicht prüfen. Pfad und Kopf stimmen; über den Stempel sagt diese Seite hier nichts.",
+			"Dieser Browser kann Ed25519 nicht prüfen. Der Pfad stimmt, und der Kopf ist der, den der Controller errechnet hat; über den Stempel sagt diese Seite hier nichts.",
 			"Der geänderte Beleg fällt durch: Der Pfad führt nicht mehr zur Wurzel im Kettenglied.",
 			"Der Beleg ist in sich schlüssig und trägt den Stempel von Knoten {n}.", "stimmt nicht",
 			"Der Beleg kam nicht an, der Server war nicht zu erreichen.")
@@ -346,6 +353,78 @@ func TestPageStates(t *testing.T) {
 		defer func() { repo = "" }()
 		render(t, nil).shows(t, "git clone https://example.org/dmn-ledger && cd dmn-ledger", "Quelltext", "ADR-009", "ADR-014", "The simulator")
 	})
+}
+
+func TestDownNodeSaysOnlyWhatIsKnown(t *testing.T) {
+	down := func(st *State, n int) {
+		st.Nodes[n-1].Proc, st.Nodes[n-1].Answers, st.Nodes[n-1].Pid = "down", false, 0
+	}
+	node := func(r rendered, n int) rendered {
+		lis := regexp.MustCompile(`(?s)<li data-node="\d".*?</li>`).FindAllString(r.page, -1)
+		if len(lis) != 3 {
+			t.Fatalf("%d nodes on the page", len(lis))
+		}
+		return rendered{page: lis[n-1]}
+	}
+	r := render(t, func(st *State) {
+		st.Phase, st.Load = "finding", "held"
+		st.Finding = &Finding{At: st.Now - 500, Check: "S8", Reason: "lost"}
+		st.Action = &Action{Kind: Kill, Node: 2, Phase: "struck", Began: st.Now - 900, LiftAt: st.Now + 1100}
+		down(st, 2)
+	})
+	node(r, 2).shows(t, "n2 antwortet nicht beendet")
+	node(r, 2).hides(t, "startet in", "SIGKILL")
+	r = render(t, func(st *State) {
+		st.Phase, st.Load = "finding", "held"
+		st.Finding = &Finding{At: st.Now - 500, Check: "F1", Reason: "n2 exited"}
+		down(st, 2)
+	})
+	node(r, 2).shows(t, "beendet")
+	node(r, 2).hides(t, "SIGKILL")
+	r = render(t, func(st *State) {
+		st.Phase = "action"
+		st.Action = &Action{Kind: Flip, Node: 2, Phase: "struck", Began: st.Now - 20, LiftAt: st.Now}
+		down(st, 2)
+	})
+	node(r, 2).shows(t, "beendet mit SIGKILL")
+}
+
+func TestTwoLeadersNameTheirTerms(t *testing.T) {
+	apart := "Zwei Knoten melden sich als Leader, in verschiedenen Terms. Festschreiben kann nur der mit der Mehrheit."
+	one := "Zwei Knoten melden sich im selben Term als Leader. Das darf nicht sein."
+	r := render(t, func(st *State) { st.Nodes[0].Term, st.Nodes[1].Role = 8, "leader" })
+	r.shows(t, apart)
+	r.hides(t, one)
+	r = render(t, func(st *State) { st.Nodes[1].Role = "leader" })
+	r.shows(t, one)
+	r.hides(t, "in verschiedenen Terms")
+	render(t, nil).hides(t, "melden sich")
+}
+
+func TestFindingSaysOnlyWhatHappened(t *testing.T) {
+	const reset, kept = "neu aufgesetzt", "Die Daten der Knoten sind gesichert."
+	cases := []struct {
+		name     string
+		resetAt  int64
+		evidence string
+		shows    []string
+		hides    []string
+	}{
+		{"before the evidence is copied", 0, "", nil, []string{reset, kept, "00:00:00"}},
+		{"a fourth finding, nothing copied", 1795036520000, "", []string{"Der Cluster steht und wird um " + hm(1795036520000) + " neu aufgesetzt."}, []string{kept}},
+		{"copied", 1795036520000, "befund-1795036490-2", []string{"neu aufgesetzt. " + kept}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := render(t, func(st *State) {
+				st.Phase, st.Load = "finding", "held"
+				st.Finding = &Finding{At: st.Now - 2000, Check: "F1", Reason: "node 3 exited", ResetAt: c.resetAt, Evidence: c.evidence}
+			})
+			verdict := rendered{page: regexp.MustCompile(`(?s)<p class="alarm" id="standing">.*?</p>`).FindString(r.page)}
+			verdict.shows(t, append(c.shows, "Befund um ")...)
+			verdict.hides(t, c.hides...)
+		})
+	}
 }
 
 func TestPageIsAccessible(t *testing.T) {

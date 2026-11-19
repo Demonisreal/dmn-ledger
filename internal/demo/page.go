@@ -124,11 +124,13 @@ type agreement struct {
 	Other   *Node
 	Differ  bool
 	Leaders int
+	OneTerm bool
 }
 
 func accord(nodes [3]Node) agreement {
 	var ag agreement
 	at := map[uint64][]int{}
+	var led []uint64
 	for _, n := range nodes {
 		if !n.Answers {
 			continue
@@ -136,6 +138,8 @@ func accord(nodes [3]Node) agreement {
 		at[n.Applied] = append(at[n.Applied], n.ID)
 		if n.Role == "leader" {
 			ag.Leaders++
+			ag.OneTerm = ag.OneTerm || slices.Contains(led, n.Term)
+			led = append(led, n.Term)
 		}
 	}
 	for index, ids := range at {

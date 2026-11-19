@@ -165,6 +165,13 @@ func TestActAnswers(t *testing.T) {
 			if got := w.Header().Get("Retry-After"); got != c.retry {
 				t.Errorf("%v: Retry-After %q, want %q", c.err, got, c.retry)
 			}
+			if c.err == nil {
+				var own accepted
+				if err := json.Unmarshal(w.Body.Bytes(), &own); err != nil || own.Until != until.UnixMilli() {
+					t.Errorf("accepted: body %q, want the end of the limit of this address, %d", w.Body, until.UnixMilli())
+				}
+				continue
+			}
 			if c.reason == "" {
 				if w.Body.Len() != 0 {
 					t.Errorf("%v: body %q, want none", c.err, w.Body)

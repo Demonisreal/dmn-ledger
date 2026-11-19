@@ -3,6 +3,7 @@ import { agrees, check, fromHex, toHex } from './receipt.js'
 const TRANSFER = 2
 const AMOUNT = 2 + 48 + 15
 const STEPS = ['transfer', 'leaf', 'path', 'head', 'stamp', 'owner', 'go']
+const PROVEN = { transfer: 'path', leaf: 'path', head: 'stamp' }
 const BREAKS = { format: 'transfer', path: 'path', unsigned: 'stamp', signature: 'stamp', unsupported: 'stamp', cluster: 'stamp', key: 'owner' }
 const REFUSED = { noleader: 'proof-noleader', finding: 'proof-finding', empty: 'empty' }
 
@@ -40,19 +41,23 @@ const put = (root, key, text) => {
 async function draw() {
   const seen = await check(copy, fromHex(receipt.cluster), receipt.keys.map(fromHex))
   const booking = seen.kind === TRANSFER
-  const same = seen.ok && agrees(seen.head, receipt.head.seq, receipt.head.hash)
+  const matches = Boolean(seen.head) && agrees(seen.head, receipt.head.seq, receipt.head.hash)
+  const blind = seen.failed === 'unsupported'
+  const same = seen.ok && matches
   let stop = STEPS.length
   if (!booking) stop = 0
+  else if (blind && !matches) stop = STEPS.indexOf('head')
   else if (seen.failed) stop = STEPS.indexOf(BREAKS[seen.failed])
   else if (!same) stop = STEPS.indexOf('go')
+  const proven = (name) => (blind && name === 'head' ? matches : STEPS.indexOf(PROVEN[name] ?? name) < stop)
 
   STEPS.forEach((name, i) => {
     const step = steps.querySelector(`[data-step="${name}"]`)
     const word = field(step, 'ok')
-    if (i < stop) {
+    if (i < stop && proven(name)) {
       step.dataset.ok = 'true'
       word.textContent = say('holds')
-    } else if (i === stop && seen.failed !== 'unsupported') {
+    } else if (i === stop && !(blind && matches)) {
       step.dataset.ok = 'false'
       word.textContent = say('fails')
     } else {
@@ -80,6 +85,7 @@ async function draw() {
       return li
     }))
     put(steps, 'root', seen.root ? toHex(seen.root) : '')
+    put(steps, 'linkroot', toHex(seen.link.root))
   }
   if (stop >= 3 && seen.head) {
     put(steps, 'seq', grouped(seen.head.seq))
@@ -90,7 +96,7 @@ async function draw() {
 
   let says = ''
   if (booking && same) says = say('proof-ok', { n: seen.signer + 1 })
-  else if (booking && seen.failed === 'unsupported') says = say('proof-unsupported')
+  else if (booking && blind && matches) says = say('proof-unsupported')
   else if (booking && tampered && seen.failed === 'path') says = say('proof-changed')
   verdict.textContent = says
   return seen
@@ -113,9 +119,12 @@ async function guarded(btn, work) {
   if (busy) return
   busy = true
   btn.setAttribute('aria-busy', 'true')
-  await work()
-  btn.removeAttribute('aria-busy')
-  busy = false
+  try {
+    await work()
+  } finally {
+    btn.removeAttribute('aria-busy')
+    busy = false
+  }
 }
 
 export function prove() {
@@ -131,7 +140,12 @@ export function prove() {
       note.textContent = REFUSED[why.error] ? say(REFUSED[why.error]) : say('refused', { status: res.status })
       return
     }
-    receipt = await res.json()
+    const got = await res.json().catch(() => null)
+    if (!got) {
+      note.textContent = say('proof-lost')
+      return
+    }
+    receipt = got
     copy = fromHex(receipt.receipt)
     tampered = false
     lay(await draw())

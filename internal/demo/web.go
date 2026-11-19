@@ -103,6 +103,10 @@ type proofs struct {
 	body   []byte
 }
 
+type accepted struct {
+	Until int64 `json:"until"`
+}
+
 type refusal struct {
 	Error string `json:"error"`
 	Until int64  `json:"until,omitempty"`
@@ -194,7 +198,10 @@ func (web *Web) act(w http.ResponseWriter, r *http.Request) {
 	until, err := web.show.Act(kind, target, visitor(r, web.proxies))
 	switch {
 	case err == nil:
+		body, _ := json.Marshal(accepted{Until: until.UnixMilli()})
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write(body)
 	case errors.Is(err, ErrBusy):
 		refuse(w, http.StatusConflict, "busy", time.Time{})
 	case errors.Is(err, ErrYoung):

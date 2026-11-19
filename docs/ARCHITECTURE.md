@@ -1731,7 +1731,7 @@ which asks once a second, ends with 1.
 |---|---|---|
 | `GET /` | the page, rendered from the state with `html/template` | one rendering a second however many ask; the same bytes in between |
 | `GET /events` | the event stream | a seat in the hub, limited |
-| `POST /act/{kind}/{node}` | 202 without a body, or a refusal | a check in memory |
+| `POST /act/{kind}/{node}` | 202 with the time until which this address is limited, or a refusal | a check in memory |
 | `GET /proof` | a receipt with the keys, as JSON | one `Prove` a second at the cluster however many ask |
 | `GET /static/{name}` | an embedded file from `web/` | none; `ETag` from the content, `Cache-Control: no-cache` |
 | `GET /healthz` | `ok`, or 503 | none |

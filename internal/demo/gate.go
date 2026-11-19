@@ -59,7 +59,7 @@ func (s *Stage) Act(kind Kind, target int, from netip.Prefix) (time.Time, error)
 	s.visits = append(s.visits, visit{from, now})
 	s.began, s.acting = now, true
 	s.wishes <- wish{kind, target, s.sight.leader}
-	return time.Time{}, nil
+	return now.Add(s.pace.per), nil
 }
 
 func (s *Stage) forget(now time.Time) {

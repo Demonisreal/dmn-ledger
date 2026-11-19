@@ -135,6 +135,27 @@ func TestPerAddressLimit(t *testing.T) {
 	})
 }
 
+func TestAcceptedActionNamesTheLimit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := steady()
+		began := time.Now()
+		until, err := act(s, Kill, 1, addr(1))
+		if err != nil || !until.Equal(began.Add(30*time.Second)) {
+			t.Fatalf("accepted: %v until %v, want the end of the 30s of this address", err, until.Sub(began))
+		}
+		time.Sleep(time.Second)
+		done(t, s)
+		time.Sleep(time.Until(until) - time.Millisecond)
+		if _, err := act(s, Freeze, 2, addr(1)); !errors.Is(err, ErrLimited) {
+			t.Fatalf("1ms before the named time: %v, want ErrLimited", err)
+		}
+		time.Sleep(time.Millisecond)
+		if _, err := act(s, Freeze, 2, addr(1)); err != nil {
+			t.Fatalf("at the named time: %v", err)
+		}
+	})
+}
+
 func TestRefusedActionTouchesNothing(t *testing.T) {
 	for _, c := range []struct {
 		name string

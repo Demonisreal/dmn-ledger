@@ -21,12 +21,14 @@ let pending = null
 let sent = null
 let top = Math.max(0, ...Array.from(list.children, (li) => Number(li.dataset.n)))
 let said = ''
+let born = null
 let wait = 3000
 let ctl = new AbortController()
 let dog = 0
 let retry = 0
 let away = 0
 let asleep = false
+let reading = false
 
 const pad = (n, width = 2) => String(n).padStart(width, '0')
 const clock = (ms) => {
@@ -116,8 +118,9 @@ const plural = (n, one, many) => say(n === 1 ? one : many)
 
 function reason() {
   const { cluster } = st
-  if (st.finding || cluster.why === 'finding') return say('why-finding')
-  if (cluster.why === 'limit' || (cluster.limit && st.books.confirmed >= cluster.limit)) return say('why-limit', { limit: grouped(cluster.limit) })
+  const full = cluster.limit && st.books.confirmed >= cluster.limit
+  if (st.finding || (!full && cluster.why === 'finding')) return say('why-finding')
+  if (full || cluster.why === 'limit') return say('why-limit', { limit: grouped(cluster.limit) })
   return say('why-start')
 }
 
@@ -155,7 +158,8 @@ function tally() {
   const parts = []
   if (st.phase === 'finding' && st.finding) {
     const f = st.finding
-    parts.push(el('p', { class: 'alarm', id: 'standing' }, fill('finding', { at: f.at, check: f.check, reason: f.reason, reset: f.resetat })))
+    parts.push(el('p', { class: 'alarm', id: 'standing' }, fill('finding', { at: f.at, check: f.check, reason: f.reason }),
+      f.resetat ? fill('finding-reset', { reset: f.resetat }) : '', f.evidence ? fill('finding-kept') : ''))
   } else if (st.phase === 'setup') {
     parts.push(el('p', { class: 'alarm quiet', id: 'setup' }, fill('setup', { why: reason() })))
   } else {
@@ -197,16 +201,13 @@ function node(n, commit) {
   const rows = [head]
   const hurt = (name, vals) => rows.push(el('p', { class: 'hurt', 'data-k': 'hurt' }, fill(name, vals)))
   const act = st.action
-  if (act) {
-    const hit = act.node === n.id && (act.phase === '' || act.phase === 'struck')
-    const s = left(st.now, act.liftat)
-    if (n.proc === 'down' && hit && act.kind === 'kill') hurt('killed', { s })
-    else if (n.proc === 'down' && act.kind === 'flip' && act.node === n.id) hurt('flipped')
-    else if (n.proc === 'frozen' && hit) hurt('frozen', { s })
-    else if (hit && act.kind === 'cut') hurt('cut', { s })
-  } else if (n.proc === 'down') {
-    hurt('down')
-  }
+  const hit = act && st.phase !== 'finding' && act.node === n.id && (act.phase === '' || act.phase === 'struck')
+  const s = hit ? left(st.now, act.liftat) : 0
+  if (hit && n.proc === 'down' && act.kind === 'kill') hurt('killed', { s })
+  else if (hit && n.proc === 'down' && act.kind === 'flip') hurt('flipped')
+  else if (hit && n.proc === 'frozen') hurt('frozen', { s })
+  else if (hit && act.kind === 'cut') hurt('cut', { s })
+  else if (n.proc === 'down') hurt('down')
   if (n.proc === 'frozen' && st.phase === 'finding') hurt('halted')
   if (n.repair) rows.push(el('p', { class: 'hurt', 'data-k': 'repair' }, fill('repair')))
   if (n.answers) {
@@ -223,11 +224,11 @@ function node(n, commit) {
 
 function accord() {
   const at = new Map()
-  let leaders = 0
+  const led = []
   for (const n of st.nodes) {
     if (!n.answers) continue
     at.set(n.applied, [...(at.get(n.applied) ?? []), n.id])
-    if (n.role === 'leader') leaders++
+    if (n.role === 'leader') led.push(n.term)
   }
   let index = 0
   let pair = null
@@ -243,7 +244,8 @@ function accord() {
   }
   const shared = document.getElementById('accord')
   patch(shared, sentence)
-  optional('leaders', leaders >= 2, () => el('p', { class: 'accord hurt', id: 'leaders' }, fill('leaders')), shared)
+  const both = optional('leaders', led.length >= 2, () => el('p', { class: 'accord hurt', id: 'leaders' }), shared)
+  if (both) patch(both, fill(new Set(led).size < led.length ? 'leaders-one-term' : 'leaders'))
 }
 
 const running = (act) => act && (act.phase === '' || act.phase === 'struck' || (act.phase === 'lifted' && act.kind === 'flip'))
@@ -324,10 +326,11 @@ function add(line) {
 
 function relog(lines) {
   const newest = lines.at(-1)?.n ?? 0
-  if (newest < top || (lines.length > 0 && lines[0].n > top + 1)) {
+  if ((born !== null && born !== st.started) || newest < top || (lines.length > 0 && lines[0].n > top + 1)) {
     list.replaceChildren()
     top = 0
   }
+  born = st.started
   for (const line of lines) if (line.n > top) add(line)
 }
 
@@ -392,7 +395,13 @@ function lose(how) {
 
 function watch() {
   clearTimeout(dog)
-  dog = setTimeout(() => lose('stale'), STALE)
+  dog = setTimeout(() => {
+    lose('stale')
+    if (!reading) return
+    reading = false
+    ctl.abort()
+    later(wait)
+  }, STALE)
 }
 
 function heard(block) {
@@ -429,10 +438,13 @@ async function listen() {
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
   let buf = ''
   let heardAny = false
+  reading = true
+  watch()
   for (;;) {
     const got = await reader.read().catch(() => null)
     if (signal.aborted) return
     if (!got || got.done) {
+      reading = false
       later(got && heardAny ? 0 : wait)
       return
     }
@@ -446,6 +458,7 @@ async function listen() {
 
 function sleep() {
   asleep = true
+  reading = false
   clearTimeout(dog)
   clearTimeout(retry)
   ctl.abort()
@@ -469,10 +482,13 @@ async function strike(btn) {
   hold = null
   lock()
   const target = page.querySelector('input[name="target"]:checked').value
+  const before = st?.action?.began ?? 0
   const res = await fetch(`/act/${btn.dataset.kind}/${target}`, { method: 'POST' }).catch(() => null)
   pending = null
   if (res?.ok) {
-    sent = st?.action?.began ?? 0
+    const own = await res.json().catch(() => ({}))
+    if ((st?.action?.began ?? 0) === before) sent = before
+    if (own.until) hold = { name: 'limited', until: own.until, status: res.status, mark: mark() }
   } else if (res) {
     const why = await res.json().catch(() => ({}))
     const until = why.error === 'recovering' ? seen + Number(res.headers.get('Retry-After')) * 1000 : why.until ?? 0
@@ -493,3 +509,4 @@ document.getElementById('prove').addEventListener('click', () => prove())
 document.getElementById('tamper').addEventListener('click', () => tamper())
 watch()
 listen()
+if (document.hidden) away = setTimeout(sleep, AWAY)

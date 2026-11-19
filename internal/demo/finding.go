@@ -126,24 +126,29 @@ func (s *Stage) keep(r *run) string {
 	if err := os.Mkdir(dst, 0o700); err != nil {
 		return ""
 	}
+	var failed error
 	for id := 1; id <= 3; id++ {
 		node := r.c.Node(id)
-		_ = os.CopyFS(filepath.Join(dst, filepath.Base(node.Dir())), os.DirFS(node.Dir()))
-		_ = os.WriteFile(filepath.Join(dst, fmt.Sprintf("n%d.log", id)), []byte(logs[id-1]+"\n"), 0o600)
+		failed = errors.Join(failed,
+			os.CopyFS(filepath.Join(dst, filepath.Base(node.Dir())), os.DirFS(node.Dir())),
+			os.WriteFile(filepath.Join(dst, fmt.Sprintf("n%d.log", id)), []byte(logs[id-1]+"\n"), 0o600))
 	}
 	var journal strings.Builder
 	for _, l := range lines {
 		fmt.Fprintf(&journal, "%d %s %s %s\n", l.N, time.UnixMilli(l.At).UTC().Format(time.RFC3339Nano), l.Src, l.Text)
 	}
-	_ = os.WriteFile(filepath.Join(dst, "journal.txt"), []byte(journal.String()), 0o600)
+	failed = errors.Join(failed, os.WriteFile(filepath.Join(dst, "journal.txt"), []byte(journal.String()), 0o600))
 	if b, err := json.MarshalIndent(st, "", "  "); err == nil {
-		_ = os.WriteFile(filepath.Join(dst, "state.json"), b, 0o600)
+		failed = errors.Join(failed, os.WriteFile(filepath.Join(dst, "state.json"), b, 0o600))
 	}
 	if b, err := json.Marshal(struct {
 		Waiting [][]sim.Call `json:"waiting"`
 		Current []sim.Call   `json:"current"`
 	}{waiting, current}); err == nil {
-		_ = os.WriteFile(filepath.Join(dst, "calls.json"), b, 0o600)
+		failed = errors.Join(failed, os.WriteFile(filepath.Join(dst, "calls.json"), b, 0o600))
+	}
+	if failed != nil {
+		return ""
 	}
 	return name
 }

@@ -167,6 +167,7 @@ var (
 	nowPattern      = regexp.MustCompile(`(?s)<p class="now">.*?</p>`)
 	connSeen        = regexp.MustCompile(`<p data-conn="">([^<]*)</p>`)
 	faultButton     = regexp.MustCompile(`<button[^>]*data-kind="[a-z]+"[^>]*>`)
+	rootsPattern    = regexp.MustCompile(`data-k="root">([0-9a-f]*)</span>\. Im Kettenglied steht <span class="hex" data-k="linkroot">([0-9a-f]*)</span>`)
 	stepPattern     = regexp.MustCompile(`(?s)<li data-step="([a-z]+)"(?: data-ok="(true|false)")?>\s*<p class="step-h">.*?<span class="verdict-word" data-k="ok">([^<]*)</span>`)
 	proofShot       = regexp.MustCompile(`(?s)<section class="proof blk"[^>]*data-shot="([a-z]+)">(.*?)</section>`)
 	proofResult     = regexp.MustCompile(`<p class="result" id="proof-result" aria-live="polite">([^<]*)</p>`)
@@ -438,6 +439,61 @@ func TestPageInChrome(t *testing.T) {
 	}
 }
 
+func TestSilentStreamIsReopenedInChrome(t *testing.T) {
+	web := NewWeb(newFake(), "", nil)
+	first, second := sampleState(), sampleState()
+	second.Now += 5000
+	var opened atomic.Int32
+	again := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.Handle("GET /static/", web)
+	mux.HandleFunc("GET /{$}", pageWith(t, web, appScript+`<img src="/held.svg" alt="" hidden>`))
+	mux.HandleFunc("GET /held.svg", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-again:
+			time.Sleep(500 * time.Millisecond)
+		case <-time.After(15 * time.Second):
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
+		n := opened.Add(1)
+		rc := http.NewResponseController(w)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(retryLine)
+		st := first
+		if n > 1 {
+			st = second
+		}
+		_, _ = w.Write(event("state", st))
+		_ = rc.Flush()
+		if n == 2 {
+			close(again)
+		}
+		<-r.Context().Done()
+	})
+	srv := httptest.NewServer(guarded(mux))
+	defer srv.Close()
+	dom, stderr := chrome(t, "--dump-dom", srv.URL+"/")
+	clean(t, stderr)
+	if n := opened.Load(); n != 2 {
+		t.Fatalf("the page opened the stream %d times, want a second try after 3 s of silence and no third within half a second", n)
+	}
+	mains := mainPattern.FindAllStringSubmatch(dom, -1)
+	if len(mains) != 1 {
+		t.Fatalf("%d main elements", len(mains))
+	}
+	if got, want := mains[0][2], strconv.FormatInt(second.Now, 10); got != want {
+		t.Errorf("the page shows the state of %s, want the one of the second stream, %s", got, want)
+	}
+	if strings.Contains(mains[0][1], "data-stale") {
+		t.Errorf("the values are still marked as old after the second stream: %s", mains[0][1])
+	}
+	if conn := connPattern.FindString(mains[0][3]); !strings.Contains(conn, " hidden") || plain(conn) != "" {
+		t.Errorf("the hint about the connection is still there: %s", conn)
+	}
+}
+
 func TestRefusalsInChrome(t *testing.T) {
 	st := sampleState()
 	st.Action, st.Next = nil, 0
@@ -555,6 +611,104 @@ func TestRefusalsInChrome(t *testing.T) {
 	}
 }
 
+func TestOwnLimitAfterAnAcceptedActionInChrome(t *testing.T) {
+	st := sampleState()
+	st.Action, st.Next = nil, 0
+	running, after, free := st, st, st
+	running.Now += 1000
+	running.Phase, running.Next = "action", st.Now+10100
+	running.Action = &Action{Kind: Kill, Node: 1, Role: "leader", Term: 7, Phase: "struck", Began: st.Now + 100, LiftAt: st.Now + 2100}
+	after.Now += 12000
+	after.Action = &Action{Kind: Kill, Node: 1, Role: "leader", Term: 7, Phase: "done", Began: st.Now + 100, LiftAt: st.Now + 2100, Ended: st.Now + 2400}
+	free.Now += 31000
+	free.Action = after.Action
+	limited := "Von dieser Adresse geht die nächste Störung in 18 s."
+	ready := "Bereit. Jede Störung endet von selbst. Es läuft immer nur eine, und alle Besucher sehen dieselbe."
+
+	web := NewWeb(newFake(), "", nil)
+	acted := make(chan struct{})
+	done := make(chan struct{})
+	var posts atomic.Int32
+	mux := http.NewServeMux()
+	mux.Handle("GET /static/", web)
+	mux.HandleFunc("GET /{$}", pageWith(t, web, `<script type="module" src="/page.js"></script>`+appScript+
+		`<script type="module" src="/act.js"></script><img src="/held.svg" alt="" hidden>`))
+	mux.HandleFunc("GET /page.js", file("testdata/page.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /act.js", file("testdata/act.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /held.svg", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-done:
+			time.Sleep(300 * time.Millisecond)
+		case <-time.After(chromeLimit - 5*time.Second):
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("POST /act/{kind}/{node}", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = fmt.Fprintf(w, `{"until":%d}`, st.Now+30000)
+		if posts.Add(1) == 1 {
+			close(acted)
+		}
+	})
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		w.Header().Set("Content-Type", "text/event-stream")
+		send := func(ev []byte) {
+			_, _ = w.Write(ev)
+			_ = rc.Flush()
+		}
+		send(retryLine)
+		send(event("state", st))
+		select {
+		case <-acted:
+		case <-time.After(10 * time.Second):
+			t.Error("the page never sent the action")
+		}
+		time.Sleep(200 * time.Millisecond)
+		for _, next := range []State{running, after, free} {
+			send(event("tick", next))
+			time.Sleep(100 * time.Millisecond)
+		}
+		close(done)
+		<-r.Context().Done()
+	})
+	srv := httptest.NewServer(guarded(mux))
+	defer srv.Close()
+	dom, stderr := chrome(t, "--dump-dom", srv.URL+"/")
+	clean(t, stderr)
+	if n := posts.Load(); n != 1 {
+		t.Errorf("the page sent %d actions, want 1", n)
+	}
+	shots := map[string]string{}
+	for _, m := range mainPattern.FindAllStringSubmatch(dom, -1)[1:] {
+		shots[m[2]] = m[3]
+	}
+	for _, want := range []struct {
+		st     State
+		says   string
+		locked bool
+	}{
+		{running, "Läuft: n1 ist beendet und startet in 2 s.", true},
+		{after, limited, true},
+		{free, ready, false},
+	} {
+		shot, ok := shots[strconv.FormatInt(want.st.Now, 10)]
+		if !ok {
+			t.Fatalf("no snapshot %d ms after the state", want.st.Now-st.Now)
+		}
+		faults := section(t, shot, "faults")
+		if got := plain(nowPattern.FindString(faults)); got != want.says {
+			t.Errorf("%d ms after the state the status line says %q, want %q", want.st.Now-st.Now, got, want.says)
+		}
+		for _, b := range faultButton.FindAllString(faults, -1) {
+			if strings.Contains(b, " disabled") != want.locked {
+				t.Errorf("%d ms after the state, locked %v: %s", want.st.Now-st.Now, want.locked, b)
+			}
+		}
+	}
+}
+
 type vector struct {
 	Name    string `json:"name"`
 	Proof   string `json:"proof"`
@@ -603,6 +757,73 @@ func recorded(t *testing.T, v vector) ledger.Transfer {
 		t.Fatalf("vector %q: %v, kind %v", v.Name, err, p.Kind)
 	}
 	return p.Transfer
+}
+
+func TestProofWithoutEd25519InChrome(t *testing.T) {
+	raw, err := os.ReadFile("../notary/testdata/vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors []vector
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	transfer := vectors[0]
+	other := transfer
+	other.Head = strings.Repeat("5a", 32)
+	receipts := [][]byte{receiptOf(t, transfer), receiptOf(t, other)}
+
+	var asked atomic.Int32
+	web := NewWeb(newFake(), "", nil)
+	mux := http.NewServeMux()
+	mux.Handle("GET /static/", web)
+	mux.HandleFunc("GET /{$}", pageWith(t, web, `<script type="module" src="/run.js"></script>`))
+	mux.HandleFunc("GET /run.js", file("testdata/blind.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /proof", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(receipts[min(int(asked.Add(1))-1, len(receipts)-1)])
+	})
+	srv := httptest.NewServer(guarded(mux))
+	defer srv.Close()
+	dom, stderr := chrome(t, "--virtual-time-budget=8000", "--dump-dom", srv.URL+"/")
+	clean(t, stderr)
+	if i := strings.Index(dom, `<div id="shots" hidden="">error`); i >= 0 {
+		t.Fatalf("the run failed: %.300s", dom[i:])
+	}
+	shots := map[string]string{}
+	for _, m := range proofShot.FindAllStringSubmatch(dom, -1) {
+		shots[m[1]] = m[2]
+	}
+	holds, fails := [2]string{"true", "stimmt"}, [2]string{"false", "stimmt nicht"}
+	unchecked := "Dieser Browser kann Ed25519 nicht prüfen. Der Pfad stimmt, und der Kopf ist der, den der Controller errechnet hat; über den Stempel sagt diese Seite hier nichts."
+	for _, c := range []struct {
+		shot  string
+		steps map[string][2]string
+		said  string
+	}{
+		{"agrees", map[string][2]string{"transfer": holds, "leaf": holds, "path": holds, "head": holds}, unchecked},
+		{"differs", map[string][2]string{"transfer": holds, "leaf": holds, "path": holds, "head": fails}, ""},
+	} {
+		shot, ok := shots[c.shot]
+		if !ok {
+			t.Fatalf("no snapshot %q", c.shot)
+		}
+		steps := stepPattern.FindAllStringSubmatch(shot, -1)
+		if len(steps) != 7 {
+			t.Fatalf("%s: %d steps, want 7", c.shot, len(steps))
+		}
+		for _, s := range steps {
+			if got, want := [2]string{s[2], s[3]}, c.steps[s[1]]; got != want {
+				t.Errorf("%s: step %s says %q, want %q", c.shot, s[1], got, want)
+			}
+		}
+		if said := proofResult.FindStringSubmatch(shot); said == nil || said[1] != c.said {
+			t.Errorf("%s: the page sums up %q, want %q", c.shot, said, c.said)
+		}
+		if strings.Contains(shot, "schlüssig") {
+			t.Errorf("%s: the page calls a receipt sound whose stamp it could not check", c.shot)
+		}
+	}
 }
 
 func TestProofInChrome(t *testing.T) {
@@ -674,7 +895,7 @@ func TestProofInChrome(t *testing.T) {
 				`buchung-<span data-k="id">` + tr.ID.String() + `</span>.proof`,
 				`LEDGER_CLUSTER=0x<span data-k="cluster">` + transfer.Cluster + `</span>`,
 			}},
-		{"tampered", map[string][2]string{"transfer": holds, "leaf": holds, "path": fails},
+		{"tampered", map[string][2]string{"path": fails},
 			"Der geänderte Beleg fällt durch: Der Pfad führt nicht mehr zur Wurzel im Kettenglied.",
 			[]string{
 				`<dd data-k="amount">` + money(tampered.String()) + `</dd>`,
@@ -709,6 +930,14 @@ func TestProofInChrome(t *testing.T) {
 		}
 		if c.shot != "fetched" && strings.Contains(shot, "schlüssig") {
 			t.Errorf("%s: the page calls the receipt sound", c.shot)
+		}
+		roots := rootsPattern.FindStringSubmatch(shot)
+		switch {
+		case c.shot == "account":
+		case roots == nil || len(roots[1]) != 64 || len(roots[2]) != 64:
+			t.Errorf("%s: the page does not show the computed root next to the one in the link: %q", c.shot, roots)
+		case (roots[1] == roots[2]) != (c.shot == "fetched"):
+			t.Errorf("%s: computed root %s, root in the link %s", c.shot, roots[1], roots[2])
 		}
 	}
 	if lost := plain(proofState.FindString(shots["lost"])); lost != "Der Beleg kam nicht an, der Server war nicht zu erreichen." {

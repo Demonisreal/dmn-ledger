@@ -41,7 +41,7 @@
 
     <div class="tally" id="tally">
       {{- if and (eq .Phase "finding") .Finding}}{{with .Finding}}
-      <p class="alarm" id="standing">{{template "finding" (args "at" .At "check" .Check "reason" .Reason "reset" .ResetAt)}}</p>
+      <p class="alarm" id="standing">{{template "finding" (args "at" .At "check" .Check "reason" .Reason)}}{{if .ResetAt}}{{template "finding-reset" (args "reset" .ResetAt)}}{{end}}{{if .Evidence}}{{template "finding-kept"}}{{end}}</p>
       {{- end}}
       {{- else if eq .Phase "setup"}}
       <p class="alarm quiet" id="setup">{{template "setup" (args "st" .)}}</p>
@@ -64,20 +64,17 @@
       {{- range .Nodes}}{{$n := .}}
       <li data-node="{{.ID}}" data-proc="{{.Proc}}" data-role="{{.Role}}"{{if not .Answers}} data-silent{{end}}>
         <h3><span class="nid">n{{.ID}}</span> <span data-k="role">{{if .Answers}}{{template "role" .Role}}{{else if eq $st.Phase "setup"}}{{template "starting"}}{{else}}{{template "silent"}}{{end}}</span>{{if .Answers}} <span class="term" data-k="term">{{template "term" (args "term" (num .Term))}}</span>{{end}}</h3>
-        {{- with $st.Action}}{{$hit := and (eq .Node $n.ID) (or (eq .Phase "") (eq .Phase "struck"))}}
-        {{- if and (eq $n.Proc "down") $hit (eq .Kind.String "kill")}}
-        <p class="hurt" data-k="hurt">{{template "killed" (args "s" (left $st.Now .LiftAt))}}</p>
-        {{- else if and (eq $n.Proc "down") (eq .Kind.String "flip") (eq .Node $n.ID)}}
+        {{- $act := $st.Action}}{{$hit := and $act (ne $st.Phase "finding") (eq $act.Node $n.ID) (or (eq $act.Phase "") (eq $act.Phase "struck"))}}
+        {{- if and $hit (eq $n.Proc "down") (eq $act.Kind.String "kill")}}
+        <p class="hurt" data-k="hurt">{{template "killed" (args "s" (left $st.Now $act.LiftAt))}}</p>
+        {{- else if and $hit (eq $n.Proc "down") (eq $act.Kind.String "flip")}}
         <p class="hurt" data-k="hurt">{{template "flipped"}}</p>
-        {{- else if and (eq $n.Proc "frozen") $hit}}
-        <p class="hurt" data-k="hurt">{{template "frozen" (args "s" (left $st.Now .LiftAt))}}</p>
-        {{- else if and $hit (eq .Kind.String "cut")}}
-        <p class="hurt" data-k="hurt">{{template "cut" (args "s" (left $st.Now .LiftAt))}}</p>
-        {{- end}}
-        {{- else}}
-        {{- if eq $n.Proc "down"}}
+        {{- else if and $hit (eq $n.Proc "frozen")}}
+        <p class="hurt" data-k="hurt">{{template "frozen" (args "s" (left $st.Now $act.LiftAt))}}</p>
+        {{- else if and $hit (eq $act.Kind.String "cut")}}
+        <p class="hurt" data-k="hurt">{{template "cut" (args "s" (left $st.Now $act.LiftAt))}}</p>
+        {{- else if eq $n.Proc "down"}}
         <p class="hurt" data-k="hurt">{{template "down"}}</p>
-        {{- end}}
         {{- end}}
         {{- if and (eq .Proc "frozen") (eq $st.Phase "finding")}}
         <p class="hurt" data-k="hurt">{{template "halted"}}</p>
@@ -105,7 +102,7 @@
     {{- $ag := accord .Nodes}}
     <p class="accord" id="accord">{{if not $ag.Pair}}{{template "apart"}}{{else if $ag.Differ}}{{template "differ" (args "i" (num $ag.Index))}}{{else if not $ag.Odd}}{{template "agree3" (args "i" (num $ag.Index) "h" $ag.Hash)}}{{else}}{{template "agree2" (args "a" (index $ag.Pair 0) "b" (index $ag.Pair 1) "i" (num $ag.Index) "c" $ag.Odd "odd" $ag.Other)}}{{end}}</p>
     {{- if ge $ag.Leaders 2}}
-    <p class="accord hurt" id="leaders">{{template "leaders"}}</p>
+    <p class="accord hurt" id="leaders">{{if $ag.OneTerm}}{{template "leaders-one-term"}}{{else}}{{template "leaders"}}{{end}}</p>
     {{- end}}
   </section>
 
@@ -250,7 +247,7 @@
         <li data-step="path">
           <p class="step-h">Der Pfad: <span data-k="path"></span> <span class="verdict-word" data-k="ok"></span></p>
           <ol class="hexes" data-k="hashes"></ol>
-          <p>Errechnete Wurzel <span class="hex" data-k="root"></span>, die Wurzel im Kettenglied.</p>
+          <p>Errechnete Wurzel <span class="hex" data-k="root"></span>. Im Kettenglied steht <span class="hex" data-k="linkroot"></span>.</p>
         </li>
         <li data-step="head">
           <p class="step-h">Der Kopf: <code>SHA-256(02 | voriger Kopf | Nummer | Glied)</code>, Glied <span data-k="seq"></span> <span class="verdict-word" data-k="ok"></span></p>
@@ -352,7 +349,9 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <template data-t="why-start">{{template "why-start"}}</template>
 <template data-t="why-limit">{{template "why-limit" (args "limit" "{limit}")}}</template>
 <template data-t="why-finding">{{template "why-finding"}}</template>
-<template data-t="finding">{{template "finding" (args "at" "{at}" "check" "{check}" "reason" "{reason}" "reset" "{reset}")}}</template>
+<template data-t="finding">{{template "finding" (args "at" "{at}" "check" "{check}" "reason" "{reason}")}}</template>
+<template data-t="finding-reset">{{template "finding-reset" (args "reset" "{reset}")}}</template>
+<template data-t="finding-kept">{{template "finding-kept"}}</template>
 <template data-t="resting">{{template "resting" (args "since" "{since}")}}</template>
 <template data-t="stale">{{template "stale" (args "at" "{at}")}}</template>
 <template data-t="crowded">{{template "crowded" (args "at" "{at}")}}</template>
@@ -383,6 +382,7 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <template data-t="differ">{{template "differ" (args "i" "{i}")}}</template>
 <template data-t="apart">{{template "apart"}}</template>
 <template data-t="leaders">{{template "leaders"}}</template>
+<template data-t="leaders-one-term">{{template "leaders-one-term"}}</template>
 <template data-t="ready">{{template "ready"}}</template>
 <template data-t="running">{{template "running" (args "was" "{was}")}}</template>
 <template data-t="was-kill">{{template "was-kill" (args "n" "{n}" "s" "{s}")}}</template>
@@ -446,11 +446,13 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "judged-found"}}{{.n}} {{.word}} seit dem Start des Steuerprogramms, zuletzt um {{template "t" .at}}. Unten steht er im Wortlaut.{{end}}
 {{define "since"}}Seit dem Start am {{template "d" .at}} um {{template "t" .at}}: {{.actions}} {{.actword}} ausgelöst, {{.healed}}-mal erholt, {{.found}} {{.foundword}}.{{end}}
 {{define "setup"}}Der Cluster wird gerade neu aufgesetzt ({{if .st}}{{template "why" .st}}{{else}}{{.why}}{{end}}). In wenigen Sekunden geht es weiter.{{end}}
-{{define "why"}}{{if or .Finding (eq .Cluster.Why "finding")}}{{template "why-finding"}}{{else if or (eq .Cluster.Why "limit") (and .Cluster.Limit (ge .Books.Confirmed .Cluster.Limit))}}{{template "why-limit" (args "limit" (num .Cluster.Limit))}}{{else}}{{template "why-start"}}{{end}}{{end}}
+{{define "why"}}{{$full := and .Cluster.Limit (ge .Books.Confirmed .Cluster.Limit)}}{{if or .Finding (and (not $full) (eq .Cluster.Why "finding"))}}{{template "why-finding"}}{{else if or $full (eq .Cluster.Why "limit")}}{{template "why-limit" (args "limit" (num .Cluster.Limit))}}{{else}}{{template "why-start"}}{{end}}{{end}}
 {{define "why-start"}}nach dem Start{{end}}
 {{define "why-limit"}}{{.limit}} Buchungen erreicht{{end}}
 {{define "why-finding"}}nach einem Befund{{end}}
-{{define "finding"}}Befund um {{template "t" .at}}: <span class="check">{{.check}}</span>, <span class="said">{{.reason}}.</span> Der Cluster steht und wird um {{template "t" .reset}} neu aufgesetzt. Die Daten der Knoten sind gesichert.{{end}}
+{{define "finding"}}Befund um {{template "t" .at}}: <span class="check">{{.check}}</span>, <span class="said">{{.reason}}.</span>{{end}}
+{{define "finding-reset"}} Der Cluster steht und wird um {{template "t" .reset}} neu aufgesetzt.{{end}}
+{{define "finding-kept"}} Die Daten der Knoten sind gesichert.{{end}}
 {{define "resting"}}Es hat niemand zugesehen, deshalb ruhte die Last seit {{template "t" .since}}. Sie läuft wieder an.{{end}}
 {{define "stale"}}Stand {{template "t" .at}}. Die Verbindung ist unterbrochen, ein neuer Versuch läuft.{{end}}
 {{define "crowded"}}Gerade sehen zu viele zu. Das ist der Stand von {{template "t" .at}}; die Seite versucht es weiter.{{end}}
@@ -481,6 +483,7 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "differ"}}Bei Eintrag {{.i}} melden die Knoten verschiedene Zustände.{{end}}
 {{define "apart"}}Gerade stehen keine zwei Knoten beim selben Eintrag.{{end}}
 {{define "leaders"}}Zwei Knoten melden sich als Leader, in verschiedenen Terms. Festschreiben kann nur der mit der Mehrheit.{{end}}
+{{define "leaders-one-term"}}Zwei Knoten melden sich im selben Term als Leader. Das darf nicht sein.{{end}}
 
 {{define "ready"}}Bereit. Jede Störung endet von selbst. Es läuft immer nur eine, und alle Besucher sehen dieselbe.{{end}}
 {{define "running"}}Läuft: {{if .a}}{{template "kind-was" .}}{{else}}{{.was}}{{end}}.{{end}}
@@ -518,7 +521,7 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "proof-lost"}}Der Beleg kam nicht an, der Server war nicht zu erreichen.{{end}}
 {{define "proof-ok"}}Der Beleg ist in sich schlüssig und trägt den Stempel von Knoten {{.n}}.{{end}}
 {{define "proof-changed"}}Der geänderte Beleg fällt durch: Der Pfad führt nicht mehr zur Wurzel im Kettenglied.{{end}}
-{{define "proof-unsupported"}}Dieser Browser kann Ed25519 nicht prüfen. Pfad und Kopf stimmen; über den Stempel sagt diese Seite hier nichts.{{end}}
+{{define "proof-unsupported"}}Dieser Browser kann Ed25519 nicht prüfen. Der Pfad stimmt, und der Kopf ist der, den der Controller errechnet hat; über den Stempel sagt diese Seite hier nichts.{{end}}
 {{define "holds"}}stimmt{{end}}
 {{define "fails"}}stimmt nicht{{end}}
 {{define "path"}}Blatt {{.leaf}} von {{.leaves}}, {{.n}} {{.word}} bis zur Wurzel{{end}}

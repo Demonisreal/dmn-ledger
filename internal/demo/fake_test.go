@@ -59,7 +59,7 @@ func (f *fakeShow) Act(kind Kind, target int, from netip.Prefix) (time.Time, err
 	}
 	f.st.Action = &Action{Kind: kind, Target: target, Phase: "struck", Began: time.Now().UnixMilli()}
 	f.st.Rev++
-	return time.Time{}, nil
+	return f.until, nil
 }
 
 func (f *fakeShow) State() State {
