@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dmn-ledger: drei Knoten, ein Hauptbuch</title>
+</head>
+<body>
+<h1>Drei Server führen gemeinsam ein Hauptbuch. Einer darf ausfallen.</h1>
+<dl>
+<dt>now</dt><dd>{{.Now}}</dd>
+<dt>started</dt><dd>{{.Started}}</dd>
+<dt>phase</dt><dd>{{.Phase}}</dd>
+<dt>load</dt><dd>{{.Load}}</dd>
+<dt>rest</dt><dd>{{.Rest.Since}} {{.Rest.Until}}</dd>
+<dt>viewers</dt><dd>{{.Viewers}}</dd>
+<dt>next</dt><dd>{{.Next}}</dd>
+</dl>
+<h2>cluster</h2>
+<dl>
+{{with .Cluster}}<dt>n</dt><dd>{{.N}}</dd>
+<dt>id</dt><dd>{{.ID}}</dd>
+<dt>since</dt><dd>{{.Since}}</dd>
+<dt>why</dt><dd>{{.Why}}</dd>
+<dt>limit</dt><dd>{{.Limit}}</dd>
+<dt>failed</dt><dd>{{.Failed}}</dd>{{end}}
+</dl>
+<h2>nodes</h2>
+{{range .Nodes}}<dl>
+<dt>id</dt><dd>{{.ID}}</dd>
+<dt>pid</dt><dd>{{.Pid}}</dd>
+<dt>since</dt><dd>{{.Since}}</dd>
+<dt>proc</dt><dd>{{.Proc}}</dd>
+<dt>answers</dt><dd>{{.Answers}}</dd>
+<dt>role</dt><dd>{{.Role}}</dd>
+<dt>term</dt><dd>{{.Term}}</dd>
+<dt>leader</dt><dd>{{.Leader}}</dd>
+<dt>commit</dt><dd>{{.Commit}}</dd>
+<dt>applied</dt><dd>{{.Applied}}</dd>
+<dt>last</dt><dd>{{.Last}}</dd>
+<dt>apply</dt><dd>{{.Apply}}</dd>
+<dt>headhash</dt><dd>{{.HeadHash}}</dd>
+<dt>head</dt><dd>{{.Head}}</dd>
+<dt>repair</dt><dd>{{.Repair}}</dd>
+<dt>key</dt><dd>{{.Key}}</dd>
+<dt>note</dt><dd>{{.Note.At}} {{.Note.Text}}</dd>
+</dl>
+{{end}}<h2>links</h2>
+<ul>
+{{range .Links}}<li>{{.From}} {{.To}} {{.Cut}}</li>
+{{end}}</ul>
+<h2>books</h2>
+{{with .Books}}<dl>
+<dt>confirmed</dt><dd>{{.Confirmed}}</dd>
+<dt>refused</dt><dd>{{.Refused}}</dd>
+<dt>open</dt><dd>{{.Open}}</dd>
+<dt>opensince</dt><dd>{{.OpenSince}}</dd>
+<dt>sum</dt><dd>{{.Sum.At}} {{.Sum.Value}} {{.Sum.Want}}</dd>
+<dt>accounts</dt><dd>{{range .Sum.Accounts}}{{.ID}} {{.Balance}}; {{end}}</dd>
+{{with .Recount}}<dt>recount</dt><dd>{{.At}} {{.After}} {{.Confirmed}} {{.Found}} {{.Refused}} {{.Strays}} {{.Index}} {{.Hash}}</dd>{{end}}
+{{with .Judged}}<dt>judged</dt><dd>{{.Windows}} {{.Calls}} {{.Upto}} {{.At}}</dd>{{end}}
+</dl>{{end}}
+<h2>action</h2>
+{{with .Action}}<dl>
+<dt>kind</dt><dd>{{.Kind}}</dd>
+<dt>target</dt><dd>{{.Target}}</dd>
+<dt>node</dt><dd>{{.Node}}</dd>
+<dt>role</dt><dd>{{.Role}}</dd>
+<dt>term</dt><dd>{{.Term}}</dd>
+<dt>phase</dt><dd>{{.Phase}}</dd>
+<dt>began</dt><dd>{{.Began}}</dd>
+<dt>liftat</dt><dd>{{.LiftAt}}</dd>
+<dt>ended</dt><dd>{{.Ended}}</dd>
+<dt>file</dt><dd>{{.File}}</dd>
+<dt>size</dt><dd>{{.Size}}</dd>
+<dt>offset</dt><dd>{{.Offset}}</dd>
+<dt>bit</dt><dd>{{.Bit}}</dd>
+<dt>before</dt><dd>{{.Before}}</dd>
+<dt>after</dt><dd>{{.After}}</dd>
+<dt>repair</dt><dd>{{.Repair}}</dd>
+<dt>nonvoter</dt><dd>{{.NonVoter}}</dd>
+</dl>{{end}}
+<h2>finding</h2>
+{{with .Finding}}<dl>
+<dt>at</dt><dd>{{.At}}</dd>
+<dt>check</dt><dd>{{.Check}}</dd>
+<dt>reason</dt><dd>{{.Reason}}</dd>
+<dt>resetat</dt><dd>{{.ResetAt}}</dd>
+<dt>evidence</dt><dd>{{.Evidence}}</dd>
+</dl>{{end}}
+<h2>totals</h2>
+{{with .Totals}}<dl>
+<dt>clusters</dt><dd>{{.Clusters}}</dd>
+<dt>confirmed</dt><dd>{{.Confirmed}}</dd>
+<dt>windows</dt><dd>{{.Windows}}</dd>
+<dt>actions</dt><dd>{{.Actions.Kill}} {{.Actions.Freeze}} {{.Actions.Cut}} {{.Actions.Flip}}</dd>
+<dt>healed</dt><dd>{{.Healed}}</dd>
+<dt>found</dt><dd>{{.Found}}</dd>
+<dt>findings</dt><dd>{{range .Findings}}{{.At}} {{.Check}} {{.Reason}} {{.ResetAt}} {{.Evidence}}; {{end}}</dd>
+</dl>{{end}}
+<h2>recent</h2>
+<ul>
+{{range .Recent}}<li>{{.ID}} {{.Debit}} {{.Credit}} {{.Amount}} {{.At}} {{.Refused}}</li>
+{{end}}</ul>
+<h2>lines</h2>
+<ol>
+{{range .Lines}}<li>{{.N}} {{.At}} {{.Src}} {{.Text}}</li>
+{{end}}</ol>
+</body>
+</html>
