@@ -6,8 +6,11 @@ ledger.dmn-software.com {
 			flush_interval -1
 		}
 	}
-	handle {
+	handle /static/* {
 		encode zstd gzip
+		reverse_proxy demo:8080
+	}
+	handle {
 		reverse_proxy demo:8080
 	}
 }

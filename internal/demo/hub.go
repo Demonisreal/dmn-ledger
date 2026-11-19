@@ -147,6 +147,11 @@ func event(name string, v any) []byte {
 }
 
 func (web *Web) events(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	if foreign(r, web.origin) {
 		w.WriteHeader(http.StatusForbidden)
 		return

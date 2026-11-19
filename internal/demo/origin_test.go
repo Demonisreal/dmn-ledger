@@ -60,7 +60,14 @@ func TestReadsRefuseAForeignOrigin(t *testing.T) {
 			}
 		}
 	}
-	for _, headers := range [][]string{nil, {"Origin", testOrigin}} {
+	for _, target := range []string{"/proof", "/events"} {
+		for _, site := range []string{"cross-site", "same-site"} {
+			if w := hit(web, "GET", target, "Sec-Fetch-Site", site); w.Code != http.StatusForbidden {
+				t.Errorf("GET %s without an origin, Sec-Fetch-Site %s: status %d, want 403", target, site, w.Code)
+			}
+		}
+	}
+	for _, headers := range [][]string{nil, {"Origin", testOrigin}, {"Sec-Fetch-Site", "same-origin"}, {"Sec-Fetch-Site", "none"}} {
 		if w := hit(web, "GET", "/proof", headers...); w.Code != http.StatusOK {
 			t.Errorf("GET /proof with %q: status %d, want 200", headers, w.Code)
 		}

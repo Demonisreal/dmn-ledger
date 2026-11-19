@@ -219,7 +219,7 @@ func TestWrongMethodIs405(t *testing.T) {
 	web := NewWeb(show, testOrigin, nil)
 	for _, c := range []struct{ method, target string }{
 		{"GET", "/act/kill/1"}, {"HEAD", "/act/kill/1"}, {"PUT", "/act/kill/1"}, {"DELETE", "/act/kill/1"}, {"PATCH", "/act/flip/leader"},
-		{"POST", "/"}, {"POST", "/events"}, {"POST", "/proof"}, {"DELETE", "/proof"}, {"POST", "/healthz"},
+		{"POST", "/"}, {"POST", "/events"}, {"HEAD", "/events"}, {"POST", "/proof"}, {"DELETE", "/proof"}, {"POST", "/healthz"},
 		{"POST", "/robots.txt"}, {"POST", "/static/receipt.js"}, {"PUT", "/static/receipt.js"},
 	} {
 		w := hit(web, c.method, c.target, "Origin", testOrigin)
@@ -229,6 +229,9 @@ func TestWrongMethodIs405(t *testing.T) {
 	}
 	if acts := show.calls(); len(acts) != 0 {
 		t.Fatalf("Act was called: %v", acts)
+	}
+	if n := len(web.hub.viewers); n != 0 {
+		t.Fatalf("%d viewers joined through a wrong method", n)
 	}
 }
 

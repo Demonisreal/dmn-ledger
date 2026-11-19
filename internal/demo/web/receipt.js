@@ -4,7 +4,10 @@ const STAMP = 104
 const RECORD = { 0: 0, 1: 96, 2: 100, 3: 100 }
 const DOMAIN = new TextEncoder().encode('dmn-ledger head v1\n')
 
-export const fromHex = (s) => Uint8Array.from(s.match(/../g) ?? [], (b) => parseInt(b, 16))
+export const fromHex = (s) => {
+  if (!/^(?:[0-9a-f]{2})*$/.test(s)) throw new TypeError('want whole bytes in lower-case hex')
+  return Uint8Array.from(s.match(/../g) ?? [], (b) => parseInt(b, 16))
+}
 export const toHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
 const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
 const u64 = (n) => {
