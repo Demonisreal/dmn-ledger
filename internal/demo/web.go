@@ -21,6 +21,7 @@ import (
 const (
 	maxConns   = 512
 	writeLimit = 10 * time.Second
+	closeLimit = 2 * time.Second
 	proofHold  = time.Second
 )
 
@@ -126,7 +127,7 @@ func (web *Web) Serve(ctx context.Context, l net.Listener) error {
 	wg.Go(func() { web.hub.run(ctx) })
 	wg.Go(func() {
 		<-ctx.Done()
-		shut, stop := context.WithTimeout(context.WithoutCancel(ctx), writeLimit)
+		shut, stop := context.WithTimeout(context.WithoutCancel(ctx), closeLimit)
 		defer stop()
 		if srv.Shutdown(shut) != nil {
 			_ = srv.Close()

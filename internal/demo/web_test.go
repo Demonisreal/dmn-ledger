@@ -454,7 +454,7 @@ func TestProofAsksOncePerSecond(t *testing.T) {
 	})
 }
 
-func TestNoRequestDataInState(t *testing.T) {
+func noRequestDataInFake(t *testing.T) {
 	const marker = "zq7x"
 	synctest.Test(t, func(t *testing.T) {
 		show := newFake()

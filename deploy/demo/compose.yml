@@ -1,0 +1,45 @@
+services:
+  demo:
+    build:
+      context: ../..
+      dockerfile: deploy/demo/Dockerfile
+    image: dmn-ledger-demo
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DEMO_ORIGIN: ${DEMO_ORIGIN:?set DEMO_ORIGIN in .env}
+      DEMO_PROXIES: ${SUBNET:?set SUBNET in .env}
+      GOMEMLIMIT: 96MiB
+    volumes:
+      - demo-data:/data
+    expose: ["8080"]
+    networks: [demo]
+    cpus: "1.0"
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 128
+    restart: unless-stopped
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "/demo", "-check"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  demo:
+    name: ledger-demo
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SUBNET:?set SUBNET in .env}
+
+volumes:
+  demo-data:

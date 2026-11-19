@@ -46,7 +46,7 @@ const (
 )
 
 const (
-	failExited     = "n%d hat sich selbst beendet (%v). Die letzten Zeilen seines Logs:\n%s"
+	failExited     = "n%d hat sich selbst beendet (%s). Die letzten Zeilen seines Logs:\n%s"
 	failCall       = "c%d, Aufruf %d (%s): %v"
 	failAsk        = "Zählung: %v"
 	failOpen       = "%d Aufrufe sind %v nach dem Anhalten der Last noch offen"

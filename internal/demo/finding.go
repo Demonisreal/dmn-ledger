@@ -69,7 +69,11 @@ func (s *Stage) exited(r *run, id int, err error) {
 	s.mu.Lock()
 	tail := r.ears[id-1].tail(20)
 	s.mu.Unlock()
-	s.fail(r, "F1", fmt.Sprintf(failExited, id, err, tail))
+	how := "Exit 0"
+	if err != nil {
+		how = err.Error()
+	}
+	s.fail(r, "F1", fmt.Sprintf(failExited, id, how, tail))
 }
 
 func (s *Stage) finding(r *run) *Finding {

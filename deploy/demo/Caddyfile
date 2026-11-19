@@ -1,0 +1,13 @@
+ledger.dmn-software.com {
+	header Strict-Transport-Security "max-age=31536000"
+	@stream path /events
+	handle @stream {
+		reverse_proxy demo:8080 {
+			flush_interval -1
+		}
+	}
+	handle {
+		encode zstd gzip
+		reverse_proxy demo:8080
+	}
+}
