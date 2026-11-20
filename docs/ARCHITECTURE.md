@@ -1860,8 +1860,10 @@ is unspecified, and exits with 0 or 1; the container image has no shell and no `
 health check.
 
 `deploy/demo` holds the `Dockerfile` (both binaries, built without cgo, in a distroless image
-as user 65532), a `compose.yml` and a site block for a reverse proxy. The `Dockerfile` sets the
-address of the repository with `-ldflags -X …/internal/demo.repo=…`, and only then does the page
+as user 65532), a `compose.yml`, an `.env.example` and a site block for a reverse proxy.
+`compose.yml` reads `DEMO_ORIGIN` and `PROXY_IP` from a `.env` next to it, passes `PROXY_IP/32`
+as `DEMO_PROXIES` and attaches the service to a network that is created beforehand; the command
+is in ADR-014. The `Dockerfile` sets the address of the repository with `-ldflags -X …/internal/demo.repo=…`, and only then does the page
 show the links to the source and the `git clone` line; a plain `go build` leaves them out. What
 they restrict and what of that has run is in ADR-014.
 

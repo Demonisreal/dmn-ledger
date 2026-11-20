@@ -116,11 +116,11 @@ The tests named below are in `internal/demo` unless a package is given.
 | 7 | taking every seat on the event stream | 4 streams per address, 200 in all, 10 minutes per stream; beyond that 503 | 50 addresses hold every seat. Others see the page as rendered on request, with its time and with the buttons locked | `TestStreamCaps`, `TestStreamEndsAfterTenMinutes` |
 | 8 | opening a stream and not reading it | a buffer of 32 events per stream; when it is full the stream is closed and its seat freed; 5 s per write; the sender never waits for a reader | more than 32 events within one beat of 250 ms would drop every viewer at once; a browser reconnects and starts with the full state | `TestSlowReaderIsDropped` |
 | 9 | `HEAD /events`, which would hold a seat and a proxy connection without a byte to read | 405 with `Allow`, before a seat is taken | | `TestWrongMethodIs405` |
-| 10 | holding connections open, sending slowly | 5 s for the header, 10 s for the request, 60 s idle, at most 512 connections accepted at a time | 512 connections can be held; beyond that only the proxy limits | `TestServerLimits` |
+| 10 | holding connections open, sending slowly | 5 s for the header, 10 s for the request, 60 s idle, at most 512 connections accepted at a time | 512 connections can be held, and new ones wait beyond that. The site block in `deploy/demo` sets no rate and no connection limit of its own | `TestServerLimits` |
 | 11 | large headers, large bodies | headers above about 12 KiB are refused by `net/http` (8 KiB `MaxHeaderBytes` plus its own slack); a body is never read, on any route | | `TestBodyIsRefused`, `TestServerLimits` |
 | 12 | smuggling a second request past the proxy inside a body | a request with a body, chunked or with a length, gets 400 and `Connection: close` before the router sees it | | `TestBodyIsRefused` |
 | 13 | reaching a node, a file or the journal with input | kind and target from fixed tables, anything else 404; file, offset and bit chosen by the controller inside the target's directory; nodes are started without arguments and with an environment the controller lists | | `TestUnknownActionIs404`, `TestFlipStaysInTheNodeDir`, `TestPickStaysInTheSealedHalf`, `TestNoRequestDataInState`, `TestEnvIsExplicit` in `internal/local` |
-| 14 | repeating expensive requests | the page is rendered at most once a second and the same bytes go to everyone in between; `/proof` asks the cluster at most once a second; an event is encoded once for all viewers; static files are embedded and carry an `ETag` | bandwidth. How often somebody fetches the same bytes only the proxy limits | `TestPageRendersOncePerSecond`, `TestProofAsksOncePerSecond` |
+| 14 | repeating expensive requests | the page is rendered at most once a second and the same bytes go to everyone in between; `/proof` asks the cluster at most once a second; an event is encoded once for all viewers; static files are embedded and carry an `ETag` | bandwidth. The site block sets no rate and no connection limit, so nothing bounds how often somebody fetches the same bytes | `TestPageRendersOncePerSecond`, `TestProofAsksOncePerSecond` |
 | 15 | script or markup in the page | nothing from a request is in the state; `html/template` escapes what nodes and checker wrote; the script writes values as text; the policy allows scripts and styles from the own origin only, none inline | an escaping mistake would stay without effect as long as `script-src 'self'` holds. Answers that `net/http` writes itself carry no policy (below) | `TestNoRequestDataInState`, `TestNoInlineScriptOrStyle`, `TestSecurityHeaders` |
 | 16 | putting the page into a frame | `frame-ancestors 'none'` | | `TestSecurityHeaders` |
 | 17 | reaching the ports of the nodes | the nodes and the links between them listen on `127.0.0.1` only; the container publishes no port | the node ports have no TLS and no authentication (ADR-015). That matters only to somebody who is already inside the container | `TestNodesListenOnLoopback` |
@@ -130,11 +130,11 @@ The tests named below are in `internal/demo` unless a package is given.
 | 21 | filling memory | every queue, ring and buffer has a fixed size; the load waits when the checker falls four windows behind; `GOMEMLIMIT` for every node and, in the container, for the controller; a memory limit on the container | if the limit of the container strikes, it dies and restarts with a new cluster, and the totals since the start are gone | `TestStateIsBounded`, `TestBacklogHoldsTheLoad` in `internal/history` |
 | 22 | multiplying processes | three children, started by the controller only; starting a node that runs is an error; `pids_limit` on the container | | `TestNeverMoreThanThreeNodes`, `TestStartOfARunningNodeFails` in `internal/local` |
 | 23 | forcing a new cluster again and again | a cluster is replaced for three reasons only: the start, the limit of transfers, a finding | whoever can cause a finding has found a bug in the product, and it is then on the page | `TestResetAtTheLimit`, `TestNodeThatDiesIsAFinding` |
-| 24 | breaking out after taking over the controller | the container: no root, no capabilities, no new privileges, a read-only file system, no Docker socket, no host path, an internal network. The only secrets are the node keys of one cluster | kernel bugs. The reverse proxy is reachable from the container, and through it whatever else that proxy serves. See "The container" for what of this has run | none: configuration |
-| 25 | recognising or tracking visitors | no cookies, no storage in the browser, nothing loaded from another origin, no access log, and the error log of `net/http` is discarded because it would name the caller when a handler panics. The key of an address is in memory for 30 s after an accepted fault and as long as a stream from it is open, and nowhere else | the reverse proxy sees every address. What it logs is its own configuration | `TestNoCookies`, `TestServerLogsNoRequest`, `TestAddressIsForgottenWithoutAnotherAction`, `TestNoRequestDataInState` |
+| 24 | breaking out after taking over the controller | the container: no root, no capabilities, no new privileges, a read-only file system, no Docker socket, no host path, an internal network. The only secrets are the node keys of one cluster | kernel bugs. The reverse proxy is reachable from the container, and through it whatever else that proxy serves; the host is too, unless the bridge of the network drops what it sends to the host. See "The container" for what of this has run | none: configuration |
+| 25 | recognising or tracking visitors | no cookies, no storage in the browser, nothing loaded from another origin, no access log, and the error log of `net/http` is discarded because it would name the caller when a handler panics. The key of an address is in memory for 30 s after an accepted fault and as long as a stream from it is open, and nowhere else | the reverse proxy sees every address. The site block has no access log, but a request that fails is named with its address in the proxy's error log, which is kept as long as the proxy's own settings say | `TestNoCookies`, `TestServerLogsNoRequest`, `TestAddressIsForgottenWithoutAnotherAction`, `TestNoRequestDataInState` |
 | 26 | making the page lie | every value comes from a status frame, a line a node wrote, an answer to the load or a step the controller took itself; after 3 s without an event the page marks its values as old and locks the buttons; findings stay (decision 7) | whoever controls the controller, the operator included, can show anything. That is why the page tells how to run it oneself | `TestPageInChrome`, `TestNodeThatDiesIsAFinding` |
 | 27 | bots keep the load running | `X-Robots-Tag: noindex` and a `robots.txt` that disallows everything; the load runs only while an event stream is open; the page closes its stream when its tab has been hidden for 60 s | a bot that runs JavaScript is a viewer, and a viewer costs at most the fixed load | `TestLoadRestsWithoutViewers`, `TestLoadRestsWhileTheHubReportsNoViewers`, `TestHiddenTabClosesItsStreamInChrome` |
-| 28 | the supply chain | no JavaScript dependency, no CDN, no build step for the page; the main module still has one dependency; both base images are pinned by digest; `govulncheck` runs in CI | | CI |
+| 28 | the supply chain | no JavaScript dependency, no CDN, no build step for the page; the main module still has one dependency; both base images are pinned by digest; `govulncheck` runs in CI and once a day on its own schedule, and Dependabot watches the Go modules, the Actions and the images | | CI |
 | 29 | passing a receipt of the demo off as proof of something else | the cluster ID is in the signed message and random for every cluster; the keys are new for every cluster | a receipt of the demo proves something about the demo | |
 
 Known gaps, none of which changes what a visitor can trigger:
@@ -154,22 +154,46 @@ Known gaps, none of which changes what a visitor can trigger:
 
 ## The container
 
-`deploy/demo` holds a `Dockerfile`, a `compose.yml` and a site block for the reverse proxy that
-terminates TLS.
+`deploy/demo` holds a `Dockerfile`, a `compose.yml`, an `.env.example` and a site block for the
+reverse proxy that terminates TLS.
 
 | Measure | In `deploy/demo` |
 |---|---|
 | a base image without shell or package manager | `gcr.io/distroless/static-debian12:nonroot`, pinned by digest; the build image as well |
 | not root | `user: "65532:65532"` |
 | no capabilities, no new privileges | `cap_drop: [ALL]`, `security_opt: ["no-new-privileges:true"]` |
-| read-only file system | `read_only: true`; only the named volume under `/data` is writable |
+| read-only file system | `read_only: true` and `ipc: none`; only the named volume under `/data` is writable, and `/dev/shm` is not mounted |
 | no Docker socket, no host path | no volume besides the named one |
 | limits | `cpus: "1.0"`, `mem_limit` and `memswap_limit` of 384 MiB, `pids_limit: 128`, `GOMEMLIMIT` of 96 MiB for the controller and 64 MiB for each node |
 | no port to the outside | `expose`, no `ports` |
-| no way to the internet | a network of its own with `internal: true`, for this service and the reverse proxy |
-| restart | `restart: unless-stopped`; the watchdog ends the process with 1; a health check runs `/demo -check` |
+| no way to the internet | the network `ledger-demo` with `internal: true`, created beforehand and declared `external` in `compose.yml`, so that neither project owns it; only this service and the reverse proxy are attached |
+| the proxy and nobody else sets the visitor's address | the proxy has a fixed address in that network, and `DEMO_PROXIES` is that address as `/32` (`PROXY_IP` in `.env`), not the subnet |
+| a name that nothing else uses | `name: dmn-ledger-demo` for the project and the alias `dmn-ledger-demo` for the service in the network, which is the upstream in the site block |
+| restart | `restart: unless-stopped`; the watchdog ends the process with 1; a health check runs `/demo -check`, with 30 s of grace at the start |
 | bounded logs | `json-file` with 10 MB and three files |
 | a small build context | `.dockerignore` lets in `go.mod`, `go.sum`, `cmd`, `internal` and `ledger`, without tests and test data |
+
+The site block sends everything to one upstream with `flush_interval -1`, so events go out at
+once, and compresses `/static/*` only. Its connections to the demo are kept idle for 50 s, under
+the 60 s after which the demo closes them, so that a `POST` does not meet a connection that is
+just being closed, and it waits 10 s for the header of an answer.
+
+The network is made once, by hand, with the proxy's fixed address outside the range Docker hands
+out. The subnet is an example and must be free on the host:
+
+```
+docker network create --driver bridge --internal \
+  --subnet 172.29.10.0/24 --ip-range 172.29.10.128/25 \
+  --opt com.docker.network.bridge.name=br-ledger-demo \
+  ledger-demo
+```
+
+The reverse proxy lists `ledger-demo` as an external network with `ipv4_address: 172.29.10.2` in
+its own compose file. The bridge carries an address of the host, and a service that listens on
+all addresses of the host would be reachable from a container that someone has taken over. A
+rule in the host's firewall drops what the bridge sends to the host itself, for example
+`iptables -I INPUT -i br-ledger-demo -j DROP`. Traffic between the proxy and the demo is
+forwarded, not input, and is not touched by it.
 
 The controller needs no capability to signal its children: they run under the same user. It is
 PID 1 in the container, reaps its children and handles `SIGTERM` itself. The `Dockerfile` sets
@@ -184,18 +208,31 @@ and the switches of the table (user, read-only, no capabilities, no new privileg
 processes ran as 65532, `/demo -check` answered 0, the image had no shell, `docker stop` ended it
 with 0 in under a second, and the two-minute run under "Consequences" passed against it.
 
-What has not run and can only be checked where the demo is deployed: `compose.yml` itself, the
-internal network and that nothing leaves it, the health check and the log limits under compose,
-the site block and the proxy in front. Open for that day:
+`compose.yml` has run there too, once, on an internal network created as below, with a Caddy
+container at the proxy's fixed address in front and the site block of the `Caddyfile` on plain
+HTTP: the health check reported healthy, the container ran with `ipc: none` and a read-only root,
+the first event of the stream arrived through the proxy in 0.35 s, only `/static/` was
+compressed, a `POST` with a forged `X-Forwarded-For` 16 s after an accepted fault was refused as
+`limited`, and from a second container on the network neither an address outside nor a name
+could be reached, while the proxy could. `caddy validate` accepts the `Caddyfile` as it stands.
 
-- `DEMO_PROXIES` in `compose.yml` is the whole subnet of that network, not the address of the
-  proxy. Anything else that can send from this subnet could claim any visitor address (row 5).
-  It should be narrowed to the proxy's address.
-- That the proxy replaces a client's own `X-Forwarded-For`, passes every event on at once and
-  can be attached to the network is assumed. The address rule holds either way, because the
-  rightmost entry counts.
-- If IPv6 visitors reach the proxy through an IPv4 hop, they share one address, and with it four
-  streams and one fault in 30 s.
+What can only be checked where the demo is deployed: the host's firewall towards the bridge, TLS
+and the real name, the log limits over time, and everything the proxy serves besides. Open for
+that day:
+
+- That the proxy sees the visitor's own address. That holds if the DNS entry points at the host
+  and no CDN stands in front: with one, every visitor from a region arrives from a few of its
+  addresses and counts as one. It holds for IPv6 only if the proxy's network has IPv6 or the
+  entry has no AAAA record. If IPv6 visitors reach the proxy through an IPv4 hop, they share one
+  address, and with it four streams and one fault in 30 s.
+- That the proxy of the host behaves like the one in the local run. The address rule holds
+  either way, because the rightmost entry counts.
+- That what else the proxy serves does not treat the network of the demo as a trusted one. A
+  site that admits callers from private address ranges, or that trusts `X-Forwarded-For` from
+  them, is open to a taken-over container, and so is an administration endpoint of the proxy
+  that listens on more than the loopback.
+- That a container on the network cannot resolve names outside it: Docker's resolver forwards
+  them for internal networks in some versions.
 
 ## What the demo does not show
 
@@ -219,8 +256,8 @@ times with randomness. It shows that the sequences exist. That they hold is what
 - **The availability of the demo against somebody with many addresses** (rows 2 and 7). They can
   make it useless for others. They cannot load the machine beyond the fixed bounds with it, and
   they cannot falsify the page.
-- **Bandwidth.** The controller answers what is asked. Rates for ordinary requests are a matter
-  of the proxy.
+- **Bandwidth.** The controller answers what is asked. The site block sets no rate and no
+  connection limit; bounding either takes a plugin or something in front of the proxy.
 - **The page against its operator.** Whoever runs the container can show anything.
 
 ## Consequences

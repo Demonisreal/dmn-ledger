@@ -1,21 +1,27 @@
+name: dmn-ledger-demo
+
 services:
   demo:
     build:
       context: ../..
       dockerfile: deploy/demo/Dockerfile
     image: dmn-ledger-demo
+    pull_policy: build
     user: "65532:65532"
     read_only: true
+    ipc: none
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     environment:
       DEMO_ORIGIN: ${DEMO_ORIGIN:?set DEMO_ORIGIN in .env}
-      DEMO_PROXIES: ${SUBNET:?set SUBNET in .env}
+      DEMO_PROXIES: ${PROXY_IP:?set PROXY_IP in .env}/32
       GOMEMLIMIT: 96MiB
     volumes:
       - demo-data:/data
     expose: ["8080"]
-    networks: [demo]
+    networks:
+      demo:
+        aliases: [dmn-ledger-demo]
     cpus: "1.0"
     mem_limit: 384m
     memswap_limit: 384m
@@ -27,6 +33,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 30s
     logging:
       driver: json-file
       options:
@@ -36,10 +43,7 @@ services:
 networks:
   demo:
     name: ledger-demo
-    internal: true
-    ipam:
-      config:
-        - subnet: ${SUBNET:?set SUBNET in .env}
+    external: true
 
 volumes:
   demo-data:

@@ -4,6 +4,11 @@ set -euo pipefail
 minutes=${1:-30}
 out=${NIGHTLY_CHAOS_DIR:-$HOME/dmn-ledger-chaos}
 
+if [[ ! $minutes =~ ^[1-9][0-9]*$ ]]; then
+	echo "nightly-chaos: want whole minutes, got '$minutes'" >&2
+	exit 2
+fi
+
 mkdir -p "$out"
 exec 9>"$out/lock"
 if ! flock -n 9; then

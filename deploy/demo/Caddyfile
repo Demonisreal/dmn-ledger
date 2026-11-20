@@ -1,16 +1,11 @@
 ledger.dmn-software.com {
 	header Strict-Transport-Security "max-age=31536000"
-	@stream path /events
-	handle @stream {
-		reverse_proxy demo:8080 {
-			flush_interval -1
+	encode /static/* zstd gzip
+	reverse_proxy dmn-ledger-demo:8080 {
+		flush_interval -1
+		transport http {
+			keepalive 50s
+			response_header_timeout 10s
 		}
-	}
-	handle /static/* {
-		encode zstd gzip
-		reverse_proxy demo:8080
-	}
-	handle {
-		reverse_proxy demo:8080
 	}
 }
