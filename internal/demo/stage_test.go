@@ -691,7 +691,7 @@ func TestRecountFindsAMissingTransfer(t *testing.T) {
 	})
 	armed.Store(true)
 	localtest.Await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
-	if f := s.State().Finding; f.Check != "books" || !strings.Contains(f.Reason, "bestätigte Buchungen fehlen") {
+	if f := s.State().Finding; f.Check != "books" || !strings.Contains(f.Reason, "ist bestätigt und fehlt im Hauptbuch") {
 		t.Fatalf("finding %s: %s", f.Check, f.Reason)
 	}
 }
@@ -705,8 +705,41 @@ func TestRecountSeesAStray(t *testing.T) {
 	r.marks[id] = refused
 	s.mu.Unlock()
 	localtest.Await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
-	if f := s.State().Finding; f.Check != "books" || !strings.Contains(f.Reason, fmt.Sprintf("abgelehnt oder nie geschickt worden, die erste ist %d", id+1)) {
+	if f := s.State().Finding; f.Check != "books" || !strings.Contains(f.Reason, fmt.Sprintf("Buchung %d steht im Hauptbuch und ist abgelehnt oder nie geschickt worden", id+1)) {
 		t.Fatalf("finding %s: %s", f.Check, f.Reason)
+	}
+}
+
+func TestOpenCallsAreAFinding(t *testing.T) {
+	var held atomic.Int32
+	s := stage(t, func(s *Stage) {
+		issue := s.issue
+		s.issue = func(ctx context.Context, cl *ledger.Client, op client.Op, body []byte) (client.Reply, error) {
+			if op == client.CreateTransfers && held.Add(-1) >= 0 {
+				<-ctx.Done()
+				return client.Reply{}, ctx.Err()
+			}
+			return issue(ctx, cl, op, body)
+		}
+	})
+	for _, c := range []struct {
+		held int32
+		want string
+	}{
+		{1, "ein Aufruf ist 15s nach dem Anhalten der Last noch offen"},
+		{2, "2 Aufrufe sind 15s nach dem Anhalten der Last noch offen"},
+	} {
+		before := s.State()
+		held.Store(c.held)
+		localtest.Await(t, 40*time.Second, "a finding", func() bool { return s.State().Totals.Found > before.Totals.Found })
+		fs := s.State().Totals.Findings
+		if f := fs[len(fs)-1]; f.Check != "L1" || f.Reason != c.want {
+			t.Errorf("held %d: finding %s: %s, want L1: %s", c.held, f.Check, f.Reason, c.want)
+		}
+		localtest.Await(t, 30*time.Second, "the next cluster", func() bool {
+			st := s.State()
+			return st.Cluster.N > before.Cluster.N && st.Phase == "steady"
+		})
 	}
 }
 

@@ -113,6 +113,9 @@ func TestSecurityHeaders(t *testing.T) {
 			t.Fatalf("fifth stream: status %d, want 429", open.res.StatusCode)
 		}
 		check("events refused", open.res.Header, false)
+		if got := open.res.Header.Get("Retry-After"); got != "3" {
+			t.Errorf("events refused: Retry-After %q, want 3", got)
+		}
 		res, _ := l.open(t, "203.0.113.9:9").do(t, request("POST", "/act/kill/1", "Content-Length", "1")+"x")
 		check("body", res.Header, false)
 	})
@@ -575,6 +578,23 @@ func TestNoInlineScriptOrStyle(t *testing.T) {
 	}
 	if found := inlineCode(`<script type="module" src="/static/app.js"></script>`); len(found) > 0 {
 		t.Errorf("the check refuses an external script: %q", found)
+	}
+}
+
+func TestScriptsWriteNoMarkup(t *testing.T) {
+	sinks := regexp.MustCompile(`innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(`)
+	for name, a := range assets {
+		if !strings.HasSuffix(name, ".js") {
+			continue
+		}
+		if found := sinks.FindAllString(string(a.body), -1); len(found) > 0 {
+			t.Errorf("%s writes markup into the page: %q", name, found)
+		}
+	}
+	for _, bad := range []string{"li.innerHTML = s", "li.outerHTML = s", "ol.insertAdjacentHTML('afterbegin', s)", "document.write(s)", "document.writeln(s)", "eval(s)"} {
+		if !sinks.MatchString(bad) {
+			t.Errorf("the check misses %s", bad)
+		}
 	}
 }
 

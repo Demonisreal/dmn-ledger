@@ -3,6 +3,7 @@ package demo
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -48,6 +49,33 @@ func TestPostNeedsTheOrigin(t *testing.T) {
 		} else if acts != 1 {
 			t.Errorf("%s: Act was called %d times, want once", c.name, acts)
 		}
+	}
+}
+
+func TestPreflightFromAForeignSiteIsAWrongMethod(t *testing.T) {
+	show := newFake()
+	web := NewWeb(show, testOrigin, nil)
+	for _, c := range []struct{ target, method, allow string }{
+		{"/act/kill/leader", "POST", "POST"},
+		{"/events", "GET", "GET, HEAD"},
+		{"/proof", "GET", "GET, HEAD"},
+	} {
+		w := hit(web, "OPTIONS", c.target, "Origin", "https://evil.example", "Access-Control-Request-Method", c.method,
+			"Sec-Fetch-Mode", "cors", "Sec-Fetch-Site", "cross-site")
+		if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != c.allow {
+			t.Errorf("OPTIONS %s: status %d, Allow %q; want 405 with Allow %s", c.target, w.Code, w.Header().Get("Allow"), c.allow)
+		}
+		for key := range w.Header() {
+			if strings.HasPrefix(key, "Access-Control-") {
+				t.Errorf("OPTIONS %s: CORS header %s", c.target, key)
+			}
+		}
+	}
+	if acts := show.calls(); len(acts) != 0 {
+		t.Errorf("Act was called: %v", acts)
+	}
+	if n := len(web.hub.viewers); n != 0 {
+		t.Errorf("%d viewers joined through a preflight", n)
 	}
 }
 

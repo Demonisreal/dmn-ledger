@@ -44,7 +44,11 @@ func (s *Stage) count(r *run, full bool, after Kind) bool {
 			s.mu.Lock()
 			open := s.st.Books.Open
 			s.mu.Unlock()
-			s.fail(r, "L1", fmt.Sprintf(failOpen, open, holdWithin))
+			why := fmt.Sprintf(failOpen, open, holdWithin)
+			if open == 1 {
+				why = fmt.Sprintf(failOpenOne, holdWithin)
+			}
+			s.fail(r, "L1", why)
 		}
 		return false
 	}
@@ -275,11 +279,16 @@ func (s *Stage) compare(r *run, trs []state.Transfer) (Recount, string) {
 			rc.Refused++
 		}
 	}
+	extra := len(trs) - rc.Confirmed
 	switch {
+	case missing == 1:
+		return rc, fmt.Sprintf(failMissingOne, first)
 	case missing > 0:
 		return rc, fmt.Sprintf(failMissing, missing, first)
+	case stray != nil && extra == 1:
+		return rc, fmt.Sprintf(failStraysOne, *stray)
 	case stray != nil:
-		return rc, fmt.Sprintf(failStrays, len(trs)-rc.Confirmed, *stray)
+		return rc, fmt.Sprintf(failStrays, extra, *stray)
 	}
 	return rc, ""
 }

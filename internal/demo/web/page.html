@@ -197,6 +197,7 @@
     <div class="books-in">
       {{- with .Books.Sum}}
       <table class="accounts" id="accounts"{{if not .At}} hidden{{end}}>
+        <caption class="vh">Kontostände der sechs Konten und ihre Summe</caption>
         <thead><tr><th scope="col">Konto</th><th scope="col">{{template "accounts-head" (args "at" .At)}}</th></tr></thead>
         <tbody>
           {{- range .Accounts}}

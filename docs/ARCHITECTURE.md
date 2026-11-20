@@ -1829,8 +1829,8 @@ restart of the controller are the same case. Lines carry their number, and the p
 numbers above the last one it shows. The hub encodes an event once for all streams and never
 waits: each stream has a buffer of 32 events, and a stream whose buffer is full is closed. At
 most 4 streams per address and 200 in all are open; the fifth of one address gets 429, one beyond
-the 200 gets 503, both without a body; a stream ends after 10 minutes and the page connects again.
-`HEAD /events` is answered with 405.
+the 200 gets 503, both without a body and with `Retry-After: 3`, the `retry` of the stream; a
+stream ends after 10 minutes and the page connects again. `HEAD /events` is answered with 405.
 
 Times in the state are Unix milliseconds, amounts are decimal strings in hundredths, hashes and
 keys are lower-case hex, transfer IDs are decimal strings. The fields are the Go type

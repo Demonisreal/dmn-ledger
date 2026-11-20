@@ -129,7 +129,7 @@ next to a list; steps on a rail; a list with square marks; prose with code.
 | status line | new | ready, running with seconds left, counting, done, failed, pause, finding, setup; the script adds address limit, young log, refused; takes the focus (`tabindex="-1"`, ring as everywhere) when the focused fault button is locked |
 | log | site `.pipe`/`.stage` panel in `--ink`, mono .75rem | newest line on top; demo and check lines in white, node lines `lang="en"`; a line whose source and text equal the line above (the newer one) in `--muted`, so a quiet minute of identical counts does not read as twelve news; long lines and line breaks wrap anywhere; pinned finding above in a red-bordered row; explanation under the panel |
 | viewer count | status page `.sec-head p` | with scripting it stays invisible (`visibility: hidden`, `@media (scripting: enabled)`) until the first `tick`, because the count in the served page and in the first `state` does not yet include this visitor; without scripting it shows the count of the served page |
-| accounts table | site `.sum` | sum row with a `--line` rule and weight 600; empty state sentence when nothing is booked |
+| accounts table | site `.sum` | sum row with a `--line` rule and weight 600; a caption for screen readers only (`.vh`), because heading, intro and column head already say it on screen; empty state sentence when nothing is booked |
 | receipt steps | site `.flow` | dot `--muted` until the comparison that covers the step has held, `--green` with "stimmt", `--red-hi` with "stimmt nicht" |
 | code block | site `.stage pre` in an `--ink` panel | wraps, `user-select: all` |
 | limits list | site `.ticks` | |

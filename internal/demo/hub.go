@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -18,10 +19,11 @@ const (
 	streamsPerAddr = 4
 	streamLife     = 10 * time.Minute
 	streamWrite    = 5 * time.Second
+	streamRetry    = 3 * time.Second
 	logTail        = 60
 )
 
-var retryLine = []byte("retry: 3000\n\n")
+var retryLine = fmt.Appendf(nil, "retry: %d\n\n", streamRetry.Milliseconds())
 
 type viewer struct {
 	from   netip.Prefix
@@ -161,6 +163,7 @@ func (web *Web) events(w http.ResponseWriter, r *http.Request) {
 	}
 	v, status := web.hub.join(visitor(r, web.proxies))
 	if v == nil {
+		w.Header().Set("Retry-After", strconv.Itoa(int(streamRetry/time.Second)))
 		w.WriteHeader(status)
 		return
 	}

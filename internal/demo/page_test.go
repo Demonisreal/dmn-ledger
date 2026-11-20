@@ -451,6 +451,10 @@ func TestPageIsAccessible(t *testing.T) {
 			t.Errorf("a button without text: %s", b[0])
 		}
 	}
+	caption := regexp.MustCompile(`<table class="accounts" id="accounts">\s*<caption class="vh">([^<]*)</caption>`).FindStringSubmatch(r.page)
+	if caption == nil || caption[1] != "Kontostände der sechs Konten und ihre Summe" {
+		t.Errorf("the table of the accounts has no caption that says what it holds: %q", caption)
+	}
 	fieldset := regexp.MustCompile(`(?s)<fieldset[^>]*>\s*<legend>([^<]+)</legend>`).FindStringSubmatch(r.page)
 	if fieldset == nil || fieldset[1] != "Ziel" {
 		t.Error("the choice of the target has no fieldset with a legend")

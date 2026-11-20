@@ -140,6 +140,31 @@ func TestBalanceRules(t *testing.T) {
 	}
 }
 
+func TestRecountSaysOneOrSeveral(t *testing.T) {
+	s := New(Config{Log: log.New(io.Discard, "", 0)})
+	ids := func(ns ...uint64) []state.Transfer {
+		var trs []state.Transfer
+		for _, n := range ns {
+			trs = append(trs, state.Transfer{ID: u128.From64(n)})
+		}
+		return trs
+	}
+	for _, c := range []struct {
+		marks []mark
+		trs   []state.Transfer
+		want  string
+	}{
+		{[]mark{confirmed, confirmed, confirmed}, ids(1, 3), "Buchung 2 ist bestätigt und fehlt im Hauptbuch"},
+		{[]mark{confirmed, confirmed, confirmed}, ids(1), "2 bestätigte Buchungen fehlen im Hauptbuch, die erste ist 2"},
+		{[]mark{confirmed, confirmed}, ids(1, 2, 9), "Buchung 9 steht im Hauptbuch und ist abgelehnt oder nie geschickt worden"},
+		{[]mark{confirmed, refused, confirmed}, ids(1, 2, 3, 9), "2 Buchungen im Hauptbuch sind abgelehnt oder nie geschickt worden, die erste ist 2"},
+	} {
+		if _, why := s.compare(&run{marks: c.marks}, c.trs); why != c.want {
+			t.Errorf("marks %v, ledger %d transfers: %q, want %q", c.marks, len(c.trs), why, c.want)
+		}
+	}
+}
+
 func TestBurstOfNodeLinesIsCounted(t *testing.T) {
 	s := New(Config{Log: log.New(io.Discard, "", 0)})
 	r := &run{fresh: make(chan struct{})}

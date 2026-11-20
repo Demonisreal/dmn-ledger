@@ -130,7 +130,7 @@ func TestStreamCaps(t *testing.T) {
 			return s
 		}
 		refused := func(s *stream, status int) bool {
-			if s.res.StatusCode != status {
+			if s.res.StatusCode != status || s.res.Header.Get("Retry-After") != "3" {
 				return false
 			}
 			for key, want := range wantGuards {
