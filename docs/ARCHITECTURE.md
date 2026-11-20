@@ -2,7 +2,8 @@
 
 This file describes what is built today: the consensus core and the contract with its driver, the
 node, the audit trail, the client sessions, the wire format, the server, the SDK, the simulator and
-its checkers, the chaos test with real processes, and the demo.
+its checkers, the chaos test with real processes, and the demo. What is not built, and what each
+gap means for a user, is in [ADR-013](adr/013-non-goals.md).
 
 ## Layers
 
@@ -874,7 +875,7 @@ ledger time catches up at a quarter of real time.
 
 Fixed values: `HeartbeatTicks` 5, `ElectionTicks` 50, `SnapshotTicks` 500, `MaxAppendBytes` 1 MiB,
 `MaxUncommitted` twice `MaxClients`, `ClockStep` `Tick + Tick/4`. With the default tick of 10 ms a
-heartbeat goes every 50 ms and the election timeout is 500 to 1000 ms. Only the tick is a setting.
+heartbeat goes every 50 ms and the election timeout is 500 to 990 ms. Only the tick is a setting.
 
 ### Queues
 

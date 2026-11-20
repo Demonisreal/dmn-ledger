@@ -357,6 +357,10 @@ There are no benchmark numbers for a cluster yet; the ADRs quote micro-benchmark
 packages. The benchmarks are a module of their own: `cd bench && go test ./...`, and with
 `-tags pg` and Docker also the tests against Postgres.
 
+These are not the only limits. What else is not built, from replacing a lost node to backups and
+queries, what each gap means for a user today and how it could be closed, is in
+[ADR-013](docs/adr/013-non-goals.md).
+
 ## Requirements
 
 Go 1.27.4 or newer, as set in `go.mod`. The main module has one dependency,
@@ -372,6 +376,8 @@ with real processes, the chaos test and the demo need Linux; `scripts/vectors.mj
 - [docs/adr/](docs/adr/): the decisions and what they cost.
   [ADR-009](docs/adr/009-disk-corruption-seal-and-repair.md) covers disk corruption,
   [ADR-011](docs/adr/011-audit-trail.md) the audit trail and what a receipt proves,
+  [ADR-013](docs/adr/013-non-goals.md) what is not built, what each gap means today and how it
+  could be closed,
   [ADR-014](docs/adr/014-public-demo-fixed-faults-no-docker-socket.md) the demo and its threat
   model, [ADR-015](docs/adr/015-binary-protocol-over-plain-tcp.md) the protocol and the network.
 - [docs/ledger-rules.md](docs/ledger-rules.md): fields, check order, time, chains, the audit
