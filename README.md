@@ -74,12 +74,14 @@ Not built yet:
 
 ## Measurements
 
-One run of the benchmark plan, on 2026-11-20 at commit `a6ee18b`, on a laptop: an i5-12500H, one
+One run of the benchmark plan, on 2026-11-20 at commit `ae184c6`, on a laptop: an i5-12500H, one
 NVMe disk with ext4, governor `powersave`, a desktop session next to it. The load generator, the
 nodes and Postgres ran on that one machine. The raw file of every run, the machine, the Postgres
 settings and the report built from them are in
-[docs/bench/2026-11-20-a6ee18b/](docs/bench/2026-11-20-a6ee18b/RESULTS.md). How it was measured,
-what follows from it and when Postgres is the better choice is in
+[docs/bench/2026-11-20-a6ee18b/](docs/bench/2026-11-20-a6ee18b/RESULTS.md). The folder and its
+files name the commit `a6ee18b`: that was its hash before one file was taken out of the history
+of this repository, and its tree is the same. How it was measured, what follows from it and when
+Postgres is the better choice is in
 [ADR-012](docs/adr/012-benchmarks-open-load-one-machine-postgres.md).
 
 The load is open: transfers arrive at a fixed rate whether or not the system has answered, and

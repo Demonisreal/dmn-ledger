@@ -1,8 +1,10 @@
 # ADR-012: Benchmarks: open load on one machine, with Postgres on the same disk
 
 Status: accepted, 2026-11-20. The figures are those of one run of the plan, on 2026-11-20 at commit
-`a6ee18b`. `bench check` does not pass on that run: three required groups missed the 10 % criterion
-(see "Where the criterion was missed").
+`ae184c6`. `bench check` does not pass on that run: three required groups missed the 10 % criterion
+(see "Where the criterion was missed"). The result folder and its raw files name the commit
+`a6ee18b`, its hash before one file was taken out of the history of the repository; the tree,
+`3c8fb2c`, is the same.
 
 ## Context
 
