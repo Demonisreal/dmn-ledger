@@ -206,7 +206,7 @@ and the switches of the table (user, read-only, no capabilities, no new privileg
 384 MiB without swap, 128 PIDs), an anonymous volume under `/data` and the port published on
 `127.0.0.1` only. In it the volume took the owner 65532 and the cluster wrote to it, four
 processes ran as 65532, `/demo -check` answered 0, the image had no shell, `docker stop` ended it
-with 0 in under a second, and the two-minute run under "Consequences" passed against it.
+with 0 in under a second, and the two-hour run under "Consequences" passed against it.
 
 `compose.yml` has run there too, once, on an internal network created as below, with a Caddy
 container at the proxy's fixed address in front and the site block of the `Caddyfile` on plain
@@ -286,28 +286,22 @@ readers, and a page and a receipt every second, each receipt verified.
 
 | Run | Transfers | Faults (kill, freeze, cut, flip) | Longest fault, count included | Longest count after an undo | Receipts verified | Heap at most | CPU of a core: controller, nodes |
 |---|---|---|---|---|---|---|---|
-| 2 minutes, native | 1 171 | 3, 1, 1, 2 | 6.67 s | 0.67 s | 115 | 4.8 MiB | 1.8 %, 4.8 % |
-| 10 minutes, native | 5 741 | 14, 9, 4, 12 | 6.72 s | 1.34 s | 587 | 22.5 MiB | 2.2 %, 5.1 % |
-| 2 minutes, against the container | 1 255 | 2, 2, 1, 3 | 6.72 s | 0.84 s | 119 | not measured | not measured |
+| 2 hours, native | 69 403 | 99, 115, 133, 122 | 7.04 s | 1.77 s | 7 027 | 73.4 MiB | 3.0 %, 5.6 % |
+| 2 hours, against the container | 69 111 | 147, 111, 120, 99 | 7.04 s | 1.73 s | 7 029 | not measured | not measured |
 
-No run had a finding, a new cluster or a stream dropped for a full buffer, and all 17 flipped
-bits ended in a repair. The controller's CPU in the native runs includes the test's own clients.
-After the run against the container, `docker stats` showed 37.65 MiB of 384, 35 of 128 PIDs and
-6.2 % of a core.
+Neither run had a finding or a stream dropped for a full buffer. Each replaced its cluster three
+times, every time at the limit of 20 000 transfers, about 35 minutes apart. All 221 flipped bits
+ended in a repair. The heap and the controller's CPU in the native run include the test's own
+clients. At the end of the run against the container, `docker stats` showed 108.8 MiB of 384, 36
+of 128 PIDs, 6.3 % of a core and 765 MB written; the container had not restarted, `docker stop`
+ended it with 0 in 0.3 s, and no line of its log held the address of a caller.
 
 What these numbers do not cover:
 
-- A run of two hours is planned and has not been made, neither native nor in the container.
-- No run reached the limit of 20 000 transfers at the real rate; at the measured 9.6 transfers a
-  second that takes about 35 minutes. `TestFullCountAtTheRealLimit` books 20 000 transfers with a
-  shortened pause and requires the last full count and the new cluster. How large the heap is at
-  that point with the real pause is not measured.
 - The outcome of a `flip` in which the node starts without repair, because the bit fell into a
   write it had not acknowledged, never occurred. The line the controller writes for it has not
   been seen in a run.
-- The runs predate the last corrections: the native ones those to what a fault writes once a
-  finding stands and to how long an address is kept, the one against the container those to
-  `HEAD /events` and to `Sec-Fetch-Site` on reads. None was repeated on the final code.
+- The memory of the container was read once, at the end, not as a maximum over the run.
 - One laptop, one run each. A slower machine with other services next to the demo is not
   measured.
 
