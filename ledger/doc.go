@@ -14,5 +14,7 @@
 // transfer today, nor that anything is absent. ProveBatch takes Result.Batch, the time of the batch a
 // write ran in, which is earlier than Result.Timestamp for a write bundled behind others. Links asks
 // for at most 1024 links per request and, when a request fails, returns the links it already has
-// together with the error.
+// together with the error. ConnectProofs folds the links between two verified proofs: ErrConflict
+// means two heads with the same number and different hashes, which proves two histories; ErrBadLinks
+// means only that these links do not connect the heads, which proves nothing about them.
 package ledger

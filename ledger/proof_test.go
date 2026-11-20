@@ -197,23 +197,27 @@ func TestConnectProofs(t *testing.T) {
 		links  []byte
 		denied error
 	}{
-		{"a changed link", older, newer, changed, ErrConflict},
-		{"two links swapped", older, newer, swapped, ErrConflict},
+		{"a changed link", older, newer, changed, ErrBadLinks},
+		{"two links swapped", older, newer, swapped, ErrBadLinks},
+		{"another newer head", older, other, links, ErrBadLinks},
+		{"a link missing", older, newer, links[audit.LinkSize:], ErrBadLinks},
+		{"a link too many", older, newer, slices.Concat(links, links[:audit.LinkSize]), ErrBadLinks},
+		{"a link cut short", older, newer, links[:len(links)-1], ErrBadLinks},
+		{"no links", older, newer, nil, ErrBadLinks},
+		{"a link between a head and itself", newer, newer, links[:audit.LinkSize], ErrBadLinks},
 		{"another head at the same number", newer, other, nil, ErrConflict},
-		{"another newer head", older, other, links, ErrConflict},
-		{"a link missing", older, newer, links[audit.LinkSize:], nil},
-		{"a link too many", older, newer, slices.Concat(links, links[:audit.LinkSize]), nil},
-		{"a link cut short", older, newer, links[:len(links)-1], nil},
+		{"another head at the same number, with a link", newer, other, links[:audit.LinkSize], ErrConflict},
 		{"older and newer swapped", newer, older, links, nil},
+		{"older and newer swapped, without links", newer, older, nil, nil},
 	} {
 		err := ConnectProofs(tc.older, tc.newer, tc.links)
 		switch {
 		case err == nil:
 			t.Errorf("%s: connected", tc.name)
-		case tc.denied != nil && !errors.Is(err, tc.denied):
-			t.Errorf("%s: %v, want %v", tc.name, err, tc.denied)
-		case tc.denied == nil && errors.Is(err, ErrConflict):
-			t.Errorf("%s: %v, want an error that is not a conflict", tc.name, err)
+		case tc.denied == nil && (errors.Is(err, ErrConflict) || errors.Is(err, ErrBadLinks)):
+			t.Errorf("%s: %v, want an error that is neither a conflict nor bad links", tc.name, err)
+		case tc.denied != nil && (errors.Is(err, ErrConflict) != (tc.denied == ErrConflict) || errors.Is(err, ErrBadLinks) != (tc.denied == ErrBadLinks)):
+			t.Errorf("%s: %v, want only %v", tc.name, err, tc.denied)
 		}
 	}
 }

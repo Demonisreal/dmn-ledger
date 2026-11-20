@@ -39,9 +39,15 @@ as status -keys prints them.
 A proof that verifies shows this much: the holder of a listed key declared that the chain of this
 cluster has this head at this link number, and SHA-256 puts the record under that head. It does
 not show that a majority agreed, that the head is the newest, a balance, what became of a transfer
-later, or that anything is missing. verify chain connects two heads over the links between them,
-verify dir recounts an in-memory copy of the data directory of a stopped node up to the link
-number of a head and leaves the directory as it was.`
+later, or that anything is missing. verify dir recounts an in-memory copy of the data directory of
+a stopped node up to the link number of a head and leaves the directory as it was.
+
+verify chain connects two heads over the links between them. "connected" holds wherever the links
+came from: SHA-256 shows that the newer head continues the older one. "CONFLICT" is printed only
+for two heads with the same number and different hashes; that needs no links and shows that their
+signers vouch for two histories. Links that do not connect show nothing about the heads, because
+nobody vouches for links: from a file given with -links they are "invalid", from the cluster
+there is "no verdict".`
 
 var patience = 10 * time.Second
 

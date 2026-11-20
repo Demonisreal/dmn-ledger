@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,7 +16,9 @@ import (
 	"testing"
 
 	"github.com/Demonisreal/dmn-ledger/internal/audit"
+	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/notary"
+	"github.com/Demonisreal/dmn-ledger/internal/wire"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
@@ -90,6 +94,48 @@ func digest(t *testing.T, dir string) [32]byte {
 		t.Fatal(err)
 	}
 	return [32]byte(h.Sum(nil))
+}
+
+func lyingNode(t *testing.T, links []byte) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	answer := func(nc net.Conn) {
+		defer nc.Close()
+		for {
+			frame, _, err := wire.ReadFrame(nc, nil, 1, wire.MaxClientBody)
+			if err != nil {
+				return
+			}
+			req, err := frame.Request()
+			if err != nil {
+				return
+			}
+			reply := client.Reply{Client: req.Client, Number: req.Number, Op: req.Op, Status: client.OK, Leader: 1}
+			switch req.Op {
+			case client.Register:
+				reply.Body = binary.BigEndian.AppendUint64(nil, 1)
+			case client.Links:
+				reply.Body = links
+			}
+			if _, err := nc.Write(wire.AppendReply(nil, 1, reply)); err != nil {
+				return
+			}
+		}
+	}
+	go func() {
+		for {
+			nc, err := l.Accept()
+			if err != nil {
+				return
+			}
+			answer(nc)
+		}
+	}()
+	return l.Addr().String()
 }
 
 func TestProofsAndTheirChecks(t *testing.T) {
@@ -189,11 +235,13 @@ func TestProofsAndTheirChecks(t *testing.T) {
 	write(t, at("links"), links)
 	write(t, at("changed"), changed)
 	write(t, at("short"), links[audit.LinkSize:])
+	const unconnected = `ledger: the links do not connect the heads: head 3 [0-9a-f]{16} does not lead to head 9 [0-9a-f]{16} over these links`
+	const unproven = `this does not show that the heads contradict each other\n$`
 	for _, s := range []step{
 		{args("verify chain " + at("transfer") + " " + at("later") + " -keys " + at("keys") + " -links " + at("links")), 0, `^connected: head 3 `},
-		{args("verify chain " + at("transfer") + " " + at("later") + " -keys " + at("keys") + " -links " + at("changed")), 1,
-			`^CONFLICT: ledger: the heads contradict each other: head 3 [0-9a-f]{16} and head 9 [0-9a-f]{16} do not connect over these links\nfile=\S+/transfer kind=transfer .*\nfile=\S+/later kind=head .*\n$`},
-		{args("verify chain " + at("transfer") + " " + at("later") + " -keys " + at("keys") + " -links " + at("short")), 1, `^invalid: ledger: 565 bytes of links between heads 3 and 9, want 6 links\n$`},
+		{args("verify chain " + at("transfer") + " " + at("later") + " -keys " + at("keys") + " -links " + at("changed")), 1, `^file=\S+/changed invalid: ` + unconnected + `; ` + unproven},
+		{args("verify chain " + at("transfer") + " " + at("later") + " -keys " + at("keys") + " -links " + at("short")), 1,
+			`^file=\S+/short invalid: ledger: the links do not connect the heads: 565 bytes of links between heads 3 and 9, want 6 links; ` + unproven},
 		{args("verify chain " + at("later") + " " + at("transfer") + " -keys " + at("keys")), 2, `give the older one first`},
 		{args("verify chain " + at("transfer") + " " + at("later") + " -keys " + at("other.keys")), 1, `key is not trusted`},
 		{args("verify chain " + at("unsigned") + " " + at("later") + " -keys " + at("keys")), 3, `no verdict`},
@@ -201,6 +249,21 @@ func TestProofsAndTheirChecks(t *testing.T) {
 	} {
 		s.check(t)
 	}
+
+	const unstamped = `; links from the cluster carry no stamp, so ` + unproven
+	for _, lie := range []struct {
+		links []byte
+		out   string
+	}{
+		{changed, `^no verdict: ` + unconnected + unstamped},
+		{append(bytes.Clone(links), links[:audit.LinkSize]...), `^no verdict: ledger: the links do not connect the heads: 791 bytes of links between heads 3 and 9, want 6 links` + unstamped},
+		{append(bytes.Clone(links), 0), `^no verdict: ledger: the links do not connect the heads: 679 bytes of links between heads 3 and 9, want 6 links` + unstamped},
+		{links[audit.LinkSize:], `^no verdict: links 3 to 9: got 5 of 6 from the cluster, `},
+	} {
+		t.Setenv("LEDGER_NODES", lyingNode(t, lie.links))
+		step{args("verify chain " + at("transfer") + " " + at("later") + " -keys " + at("keys")), 3, lie.out}.check(t)
+	}
+	t.Setenv("LEDGER_NODES", addr)
 
 	step{args("verify dir " + data + " -head " + at("later") + " -keys " + at("keys")), 3, `^no verdict: \S+ is locked by a running node; stop the node or give a copy of the directory\n$`}.check(t)
 	stop()
@@ -216,6 +279,17 @@ func TestProofsAndTheirChecks(t *testing.T) {
 	write(t, at("wrong"), append(audit.AppendHead(nil, wrong), notary.Sign(key, 1, wrong)...))
 	zero := audit.Head{}
 	write(t, at("zero"), append(audit.AppendHead(nil, zero), notary.Sign(key, 1, zero)...))
+	unset(t, "LEDGER_NODES")
+	for _, s := range []step{
+		{args("verify chain " + at("later") + " " + at("wrong") + " -keys " + at("keys")), 1,
+			`^CONFLICT: ledger: the heads contradict each other: head 9 is [0-9a-f]{16} in one and [0-9a-f]{16} in the other\nfile=\S+/later kind=head seq=9` + signed + `file=\S+/wrong kind=head seq=9` + signed + `$`},
+		{args("verify chain " + at("later") + " " + at("wrong") + " -keys " + at("keys") + " -links " + at("links")), 1, `^CONFLICT: ledger: the heads contradict each other: head 9 is `},
+		{args("verify chain " + at("later") + " " + at("later") + " -keys " + at("keys")), 0, `^connected: head 9 [0-9a-f]{16} leads to head 9 [0-9a-f]{16} over 0 links\n$`},
+		{args("verify chain " + at("later") + " " + at("later") + " -keys " + at("keys") + " -links " + at("links")), 1,
+			`^file=\S+/links invalid: ledger: the links do not connect the heads: 678 bytes of links between heads 9 and 9, want 0 links; ` + unproven},
+	} {
+		s.check(t)
+	}
 	for _, s := range []step{
 		{args("verify dir " + data + " -head " + at("later") + " -keys " + at("keys")), 0,
 			`^recounted from snapshot 0: 9 links, committed for sure up to link 0\nthe directory leads to head 9 [0-9a-f]{64}; 0 links after it are not checked\n$`},

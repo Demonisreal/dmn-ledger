@@ -18,6 +18,7 @@ var (
 	ErrBadProof = errors.New("ledger: proof does not hold")
 	ErrUnsigned = errors.New("ledger: proof carries no stamp")
 	ErrConflict = errors.New("ledger: the heads contradict each other")
+	ErrBadLinks = errors.New("ledger: the links do not connect the heads")
 )
 
 type ProofKind uint8
@@ -132,15 +133,17 @@ func ConnectProofs(older, newer Proof, links []byte) error {
 	switch {
 	case older.HeadSeq > newer.HeadSeq:
 		return fmt.Errorf("ledger: head %d comes after head %d", older.HeadSeq, newer.HeadSeq)
+	case older.HeadSeq == newer.HeadSeq && older.Head != newer.Head:
+		return fmt.Errorf("%w: head %d is %x in one and %x in the other", ErrConflict, older.HeadSeq, older.Head[:8], newer.Head[:8])
 	case len(links)%audit.LinkSize != 0 || uint64(len(links)/audit.LinkSize) != newer.HeadSeq-older.HeadSeq:
-		return fmt.Errorf("ledger: %d bytes of links between heads %d and %d, want %d links", len(links), older.HeadSeq, newer.HeadSeq, newer.HeadSeq-older.HeadSeq)
+		return fmt.Errorf("%w: %d bytes of links between heads %d and %d, want %d links", ErrBadLinks, len(links), older.HeadSeq, newer.HeadSeq, newer.HeadSeq-older.HeadSeq)
 	}
 	h := audit.Head{Seq: older.HeadSeq, Hash: older.Head}
 	for ; len(links) > 0; links = links[audit.LinkSize:] {
 		h = h.Next(audit.DecodeLink(links))
 	}
 	if h.Hash != newer.Head {
-		return fmt.Errorf("%w: head %d %x and head %d %x do not connect over these links", ErrConflict, older.HeadSeq, older.Head[:8], newer.HeadSeq, newer.Head[:8])
+		return fmt.Errorf("%w: head %d %x does not lead to head %d %x over these links", ErrBadLinks, older.HeadSeq, older.Head[:8], newer.HeadSeq, newer.Head[:8])
 	}
 	return nil
 }

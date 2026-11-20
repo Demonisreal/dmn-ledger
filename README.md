@@ -174,6 +174,12 @@ $ ledgerctl verify chain old.head new.head -keys cluster.keys
 connected: head 4 1f3501e41522b668 leads to head 5 2c46727a9cd5cd6f over 1 links
 ```
 
+`connected` is shown by SHA-256, wherever the links came from. Links that do not connect show
+nothing about the heads, because nobody vouches for links: fetched from the cluster they end in
+`no verdict` (exit code 3), from a file given with `-links` in `invalid` (exit code 1, a verdict on
+the file). `CONFLICT` is printed only for two stamped heads with the same number and different
+hashes.
+
 Last, stop a follower and recount its data directory against the head kept last. `verify dir`
 works on a copy in memory and refuses a directory that a running node holds:
 

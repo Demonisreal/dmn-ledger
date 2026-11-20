@@ -72,6 +72,18 @@ node (`ledgerctl status`) or with a head kept earlier (`ledgerctl verify dir`). 
 of one cluster with the same number and different hashes prove that their signers vouch for two
 histories. A cluster restored from an older backup and written to again shows the same.
 
+Two stamped heads with different numbers are connected by the links between them. If the links
+lead from the older head to the newer one, SHA-256 shows that the newer head continues the older
+one, whoever supplied the links. Links that do not lead there prove nothing about the heads.
+Nobody vouches for links: the cluster serves them without a stamp, on a port that is not
+authenticated (ADR-015). The links may be wrong, or the heads may belong to two histories, and
+the verifier cannot tell which. `ledgerctl verify chain` therefore prints `CONFLICT` only for two
+heads with the same number and different hashes, and it needs neither links nor the cluster for
+that. For links that do not connect it prints `invalid` when they came from a file, which is a
+verdict on the file, and `no verdict` when it fetched them from the cluster. The suspicion
+becomes a proof only when a stamped receipt or head turns up with the same number as one of the
+two and another hash.
+
 A receipt without a stamp proves only that its bytes agree with each other.
 
 | Who | does what | is noticed by | what remains |
@@ -82,8 +94,9 @@ A receipt without a stamp proves only that its bytes agree with each other.
 | the same | changes a log entry after the snapshot | the recount gives another head | only up to the number of the head that was kept |
 | the operator, with every node and every key | writes a new history and stamps it | no earlier receipt or head fits it | whoever kept none notices nothing |
 | the same | shows two verifiers two histories | two stamped heads with the same number and different hashes, once the verifiers compare | without comparing, nothing; no exchange between verifiers is built |
-| one malicious node | as leader, issues a receipt for a transfer that was never committed | the receipt does not connect to a head of an honest node | the holder notices only when connecting; the cluster does not tolerate Byzantine nodes |
+| one malicious node | as leader, issues a receipt for a transfer that was never committed | the receipt does not connect to a head of an honest node | the holder notices only when connecting, and not connecting is a suspicion, not a proof; the cluster does not tolerate Byzantine nodes |
 | someone in the network | changes a receipt on its way | a changed bit fails to decode or leads to another head, and then the signature fails | swapping it for an older valid receipt, or cutting the stamp off, which leaves an unsigned receipt |
+| someone in the network, or a node | changes the links between two heads on their way, or serves wrong ones | the links no longer lead from the older head to the newer one, and `ledgerctl verify chain` gives no verdict | two heads of one chain stay unconnected for as long as this goes on; changed links yield neither `connected` nor `CONFLICT` |
 | someone with a stolen key | stamps any head | not until the key is taken off the verifiers' lists | there is no revocation |
 | someone with a receipt of cluster A | shows it for cluster B | the cluster ID is in the signed message | |
 

@@ -144,7 +144,7 @@ func (c *ctl) verifyChain(args []string) int {
 			fmt.Fprintln(c.stderr, "ledgerctl:", err)
 			return 2
 		}
-	} else {
+	} else if want > 0 {
 		if err := c.nodesEnv(); err != nil {
 			fmt.Fprintln(c.stderr, "ledgerctl:", err)
 			return 2
@@ -167,9 +167,15 @@ func (c *ctl) verifyChain(args []string) int {
 	case errors.Is(err, ledger.ErrConflict):
 		fmt.Fprintf(c.stdout, "CONFLICT: %v\n%s\n%s\n", err, describe(files[0], older), describe(files[1], newer))
 		return 1
-	case err != nil:
-		fmt.Fprintf(c.stdout, "invalid: %v\n", err)
+	case errors.Is(err, ledger.ErrBadLinks) && *linksPath == "":
+		fmt.Fprintf(c.stdout, "no verdict: %v; links from the cluster carry no stamp, so this does not show that the heads contradict each other\n", err)
+		return 3
+	case errors.Is(err, ledger.ErrBadLinks):
+		fmt.Fprintf(c.stdout, "file=%s invalid: %v; this does not show that the heads contradict each other\n", *linksPath, err)
 		return 1
+	case err != nil:
+		fmt.Fprintln(c.stderr, "ledgerctl:", err)
+		return 2
 	}
 	fmt.Fprintf(c.stdout, "connected: head %d %x leads to head %d %x over %d links\n", older.HeadSeq, older.Head[:8], newer.HeadSeq, newer.Head[:8], newer.HeadSeq-older.HeadSeq)
 	return 0

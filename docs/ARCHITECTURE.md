@@ -633,7 +633,8 @@ public key and an Ed25519 signature (RFC 8032, no prehash, no context) over the 
 own link, not the head of the ledger at the time of the request; the head of the ledger is a
 receipt of its own (`TestStampIsOverTheHeadOfTheReceipt`). A receipt the server cannot decode stops
 the node: it signs nothing it cannot check itself. `Links` are not stamped. They prove themselves
-by connecting two heads the verifier already trusts. Nothing signed is stored.
+by connecting two heads the verifier already trusts, and links that do not connect them prove
+nothing about the heads (`ConnectProofs` under SDK). Nothing signed is stored.
 
 The key never reaches `replica`, `state` or the simulator (the `keyless` rule). `ledgerd` reads it
 from `LEDGER_KEY_FILE`: 64 hex digits of the Ed25519 seed and a newline, in a regular file that
@@ -1011,9 +1012,11 @@ and refuses to start while it is set. `ledgerctl -h` lists the commands: `status
 `account create|get`, `transfer create|post|void|get`, `key new|show`,
 `proof account|transfer|expiry|batch`, `head` and `verify proof|chain|dir`. Exit codes: 0 for a
 good answer, 1 when the cluster answered but the answer is bad (a failed event, a missing ID, a
-node unreachable or in repair, nodes that differ, a receipt that does not hold), 2 for a usage
+node unreachable or in repair, nodes that differ, a receipt that does not hold, two heads with the
+same number and different hashes, a file of links that does not connect two heads), 2 for a usage
 error, 3 when there is no verdict (no answer within 10 s, an unknown outcome, an evicted session,
-a receipt without a stamp, a directory behind the head or held by a running node).
+a receipt without a stamp, links from the cluster that do not connect two heads, a directory
+behind the head or held by a running node).
 
 ## SDK (`ledger`)
 
@@ -1069,10 +1072,25 @@ decoder error or any frame other than a reply closes the connection. The session
 `Prove`, `ProveBatch` and `Head` return receipts as bytes. `VerifyProof` checks one against a
 cluster ID and a list of public keys without a client; it returns `ErrUnsigned` for a receipt
 without a stamp, with the path to the head checked, and `ErrBadProof` for every other failure.
-`ConnectProofs` folds the links between two receipts or heads and returns `ErrConflict` when they
-do not meet. `Links` asks for at most 1024 links per request and, when one fails, returns the
-links it already has with the error. `Status` asks one node for its status frame, without a
-session.
+`Links` asks for at most 1024 links per request and, when one fails, returns the links it already
+has with the error. `Status` asks one node for its status frame, without a session.
+
+`ConnectProofs` takes the `Proof` of two receipts or heads that `VerifyProof` accepted, the older
+one first, and the links between them; it checks no stamp itself. Nobody vouches for links, so
+only the first two results say something about the heads:
+
+| Returned | What it shows |
+|---|---|
+| `nil` | the links lead from the older head to the newer one: the newer head continues the older one, whoever supplied the links |
+| `ErrConflict` | both have the same number and different hashes: their signers vouch for two histories. The links are not read |
+| `ErrBadLinks` | these links do not lead from the older head to the newer one, by their number or by their content. The links may be wrong, or the heads may belong to two histories; the second is proven only by a stamped receipt or head with the same number as one of the two and another hash |
+| any other error | the arguments are wrong: the older head has the higher number |
+
+`ledgerctl verify chain` prints `connected` for the first and `CONFLICT` for the second. For
+`ErrBadLinks` it prints `invalid` and exits with 1 when the links came from a file given with
+`-links`, a verdict on that file, and `no verdict` with 3 when it fetched them from the cluster.
+For two heads with the same number it asks the cluster for nothing (`TestConnectProofs` in
+`ledger`, `TestProofsAndTheirChecks` in `cmd/ledgerctl`).
 
 ## Simulator (`internal/sim`)
 

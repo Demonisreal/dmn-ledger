@@ -54,6 +54,7 @@ What the server does against a stranger who reaches a port:
 | many lookups or receipts | a read budget of 8 MiB, over the answers waiting and over the work of a round; beyond it `Busy` | one receipt of a batch that swept many expirations stays expensive |
 | filling memory | a limit on every queue | about 2 GiB above the state with the defaults, computed in "Memory in the worst case" in [ARCHITECTURE.md](../ARCHITECTURE.md); it grows with `LEDGER_MAX_CLIENTS` |
 | many client IDs | one per connection | |
+| taking the replies of another client | the SDK draws a client ID of 128 bits from `crypto/rand`, and it is in no log line, no status frame and no receipt | replies go to the connection that last sent a request with the ID, so whoever knows the ID of another client gets its replies, and that client has to retry. The ID is in every frame of its client and, with its session, in the log and the snapshots of the nodes: whoever reads the wire or a data directory knows it |
 | evicting sessions | | `MaxSessions` new registrations push every real session out. Their clients learn it (`ErrEvicted`); nothing applies twice |
 | writing transfers, growing the state | | yes. The client port is a database port without a password |
 | posing as a node on the peer port | only IPs from `LEDGER_PEERS`; the hello names cluster ID, both node IDs and `MaxSessions` | whoever sends from one of those IPs, or sits in the network between, can vote and append entries. Malicious nodes are outside the fault model |
