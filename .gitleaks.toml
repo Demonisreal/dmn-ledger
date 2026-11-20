@@ -1,0 +1,14 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "public Ed25519 keys in test vectors, a fixture and example output"
+paths = [
+  '''^internal/notary/testdata/vectors\.json$''',
+  '''^internal/demo/fake_test\.go$''',
+]
+
+[[allowlists]]
+description = "public key in the example output of ledgerctl verify proof"
+regexTarget = "match"
+regexes = ['''key=[0-9a-f]{64}''']
