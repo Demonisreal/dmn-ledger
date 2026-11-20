@@ -294,12 +294,27 @@ func TestAnswerAskedBeforeAFreezeIsDropped(t *testing.T) {
 	}()
 	n := r.c.Node(2)
 	n.Signal(syscall.SIGSTOP)
-	looked := make(chan struct{})
-	go func() {
-		s.look(ctx, false)
-		close(looked)
-	}()
-	localtest.Await(t, sightWithin/2, "the look asking n2", func() bool { return queued(t, r.c.Addrs()[1]) > 0 })
+	var looked chan struct{}
+	asking := false
+	for try := 0; try < 20 && !asking; try++ {
+		before := queued(t, r.c.Addrs()[1])
+		looked = make(chan struct{})
+		go func() {
+			s.look(ctx, false)
+			close(looked)
+		}()
+		for over := false; !over && !asking; {
+			select {
+			case <-looked:
+				over = true
+			case <-time.After(5 * time.Millisecond):
+				asking = queued(t, r.c.Addrs()[1]) > before
+			}
+		}
+	}
+	if !asking {
+		t.Fatal("no look was seen asking n2 while it was stopped")
+	}
 	s.mu.Lock()
 	r.frozen[1], r.asked[1] = true, time.Time{}
 	s.mu.Unlock()
