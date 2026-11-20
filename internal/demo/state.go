@@ -126,7 +126,6 @@ type Books struct {
 	Confirmed int     `json:"confirmed"`
 	Refused   int     `json:"refused"`
 	Open      int     `json:"open"`
-	OpenSince int64   `json:"opensince"`
 	Sum       Sum     `json:"sum"`
 	Recount   Recount `json:"recount"`
 	Judged    Judged  `json:"judged"`

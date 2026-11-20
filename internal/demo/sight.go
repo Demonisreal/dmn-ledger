@@ -59,7 +59,7 @@ func (s *Stage) look(ctx context.Context, measure bool) {
 		return
 	}
 	sctx, cancel := context.WithTimeout(ctx, sightWithin)
-	sts := ask(sctx, r, skip)
+	sts := poll(sctx, r, skip)
 	cancel()
 	var sizes [3]int64
 	var pids [3]int
@@ -105,7 +105,7 @@ func (s *Stage) look(ctx context.Context, measure bool) {
 	s.draw(r)
 }
 
-func ask(ctx context.Context, r *run, skip [3]bool) [3]*ledger.NodeStatus {
+func poll(ctx context.Context, r *run, skip [3]bool) [3]*ledger.NodeStatus {
 	var sts [3]*ledger.NodeStatus
 	var wg sync.WaitGroup
 	for i, addr := range r.c.Addrs() {
@@ -159,9 +159,9 @@ func newest(dir string) (string, int64) {
 	var name string
 	var size int64
 	for _, seg := range segs {
-		num, ok := strings.CutPrefix(seg.Name(), wal.SegmentPrefix)
-		num, done := strings.CutSuffix(num, ".log")
-		if _, err := strconv.ParseUint(num, 10, 64); !ok || !done || err != nil {
+		seq, ok := strings.CutPrefix(seg.Name(), wal.SegmentPrefix)
+		seq, done := strings.CutSuffix(seq, ".log")
+		if _, err := strconv.ParseUint(seq, 10, 64); !ok || !done || err != nil {
 			continue
 		}
 		if fi, err := seg.Info(); err == nil {

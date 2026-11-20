@@ -47,23 +47,23 @@ type pace struct {
 	holds              [Flip + 1]time.Duration
 	light, full        time.Duration
 	rest, stand, retry time.Duration
-	gap, calm, per     time.Duration
+	gap, calm, perAddr time.Duration
 	pause              time.Duration
 	limit              int
 }
 
 var standard = pace{
-	holds: [Flip + 1]time.Duration{Kill: 2 * time.Second, Freeze: 5 * time.Second, Cut: 6 * time.Second},
-	light: 5 * time.Second,
-	full:  60 * time.Second,
-	rest:  30 * time.Second,
-	stand: 30 * time.Second,
-	retry: time.Second,
-	gap:   10 * time.Second,
-	calm:  4 * time.Second,
-	per:   30 * time.Second,
-	pause: time.Second,
-	limit: 20_000,
+	holds:   [Flip + 1]time.Duration{Kill: 2 * time.Second, Freeze: 5 * time.Second, Cut: 6 * time.Second},
+	light:   5 * time.Second,
+	full:    60 * time.Second,
+	rest:    30 * time.Second,
+	stand:   30 * time.Second,
+	retry:   time.Second,
+	gap:     10 * time.Second,
+	calm:    4 * time.Second,
+	perAddr: 30 * time.Second,
+	pause:   time.Second,
+	limit:   20_000,
 }
 
 type Stage struct {
@@ -98,22 +98,22 @@ func New(cfg Config) *Stage {
 }
 
 type run struct {
-	n      int
-	id     uint64
-	why    string
-	began  time.Time
-	keys   []ed25519.PrivateKey
-	seed   uint64
-	rng    *mrand.Rand
-	ctx    context.Context
-	cancel context.CancelFunc
-	c      *local.Cluster
-	rec    *history.Recorder
-	judge  context.CancelFunc
-	judged chan struct{}
-	load   []*ledger.Client
-	teller *ledger.Client
-	wg     sync.WaitGroup
+	n         int
+	id        uint64
+	why       string
+	began     time.Time
+	keys      []ed25519.PrivateKey
+	seed      uint64
+	rng       *mrand.Rand
+	ctx       context.Context
+	cancel    context.CancelFunc
+	c         *local.Cluster
+	rec       *history.Recorder
+	stopJudge context.CancelFunc
+	judged    chan struct{}
+	load      []*ledger.Client
+	teller    *ledger.Client
+	wg        sync.WaitGroup
 
 	ready    bool
 	found    *Finding
@@ -182,7 +182,8 @@ func (s *Stage) raise(ctx context.Context, why string) (*run, error) {
 		if ctx.Err() != nil {
 			return nil, nil
 		}
-		s.report("demo", fmt.Sprintf(saySetupFailed, try, attempts, err))
+		s.say("demo", fmt.Sprintf(saySetupFailed, try, attempts, err))
+		s.cfg.Log.Printf("setup failed, attempt %d of %d: %v", try, attempts, err)
 		s.change(func(st *State) { st.Cluster.Failed = err.Error() })
 		if try == attempts {
 			return nil, fmt.Errorf("demo: gave up after %d attempts to set up a cluster: %w", try, err)
@@ -264,7 +265,7 @@ func (s *Stage) prepare(ctx context.Context, dir, why string) (*run, error) {
 		s.sink(r, calls)
 		return nil
 	}}, check.NewReplayer())
-	r.judge = s.startJudge(ctx, r)
+	r.stopJudge = s.startJudge(ctx, r)
 	s.mu.Lock()
 	s.clusters++
 	r.n = s.clusters
@@ -315,7 +316,8 @@ func (s *Stage) boot(r *run) error {
 	s.mu.Lock()
 	pids := r.pids
 	s.mu.Unlock()
-	s.report("demo", fmt.Sprintf(saySetup, r.n, s.reason(r.why), r.id, r.id, pids[0], pids[1], pids[2]))
+	s.say("demo", fmt.Sprintf(saySetup, r.n, s.reason(r.why), r.id, r.id, pids[0], pids[1], pids[2]))
+	s.cfg.Log.Printf("cluster %d set up as number %d (%s): pids %d, %d, %d", r.id, r.n, r.why, pids[0], pids[1], pids[2])
 	if err := s.fund(r); err != nil {
 		return err
 	}
@@ -475,7 +477,7 @@ func (s *Stage) quiet(r *run) {
 	case <-r.judged:
 	case <-tm.C:
 	}
-	r.judge()
+	r.stopJudge()
 	<-r.judged
 }
 
@@ -521,11 +523,6 @@ func (s *Stage) say(src, text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.journal.add(time.Now(), src, text)
-}
-
-func (s *Stage) report(src, text string) {
-	s.say(src, text)
-	s.cfg.Log.Print(text)
 }
 
 func (s *Stage) State() State {

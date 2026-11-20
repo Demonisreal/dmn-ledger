@@ -135,7 +135,7 @@ function judged() {
   const { found } = st.totals
   if (found) {
     const last = findings().at(-1)
-    return last ? fill('judged-found', { n: grouped(found), word: plural(found, 'w-befund', 'w-befunde'), at: last.at }) : ''
+    return last ? fill('judged-found', { n: grouped(found), word: plural(found, 'w-finding', 'w-findings'), at: last.at }) : ''
   }
   return st.books.judged.upto ? fill('judged', { upto: st.books.judged.upto }) : ''
 }
@@ -146,10 +146,10 @@ function since() {
   return fill('since', {
     at: st.started,
     actions: grouped(acts),
-    actword: plural(acts, 'w-stoerung', 'w-stoerungen'),
+    actword: plural(acts, 'w-fault', 'w-faults'),
     healed: grouped(healed),
     found: grouped(found),
-    foundword: plural(found, 'w-befund', 'w-befunde'),
+    foundword: plural(found, 'w-finding', 'w-findings'),
   })
 }
 
@@ -261,13 +261,13 @@ function faults() {
     now('recovering')
   } else if (running(act)) {
     const s = secs(left(st.now, act.liftat))
-    now('running', { was: act.kind === 'flip' ? fill('was-flip', { n: act.node }) : fill(`was-${act.kind}`, { n: act.node, s }) })
+    now('running', { what: act.kind === 'flip' ? fill('running-flip', { n: act.node }) : fill(`running-${act.kind}`, { n: act.node, s }) })
   } else if (act && (act.phase === 'lifted' || act.phase === 'settling')) {
     now('settling')
   } else {
     if (act) {
-      const war = say(`war-${act.kind}`, { n: act.node })
-      rows.push(el('p', { class: 'was' }, act.phase === 'failed' ? fill('failed', { war }) : fill('done', { war, s: tenths(act.ended - act.began), at: st.books.recount.at })))
+      const what = say(`ended-${act.kind}`, { n: act.node })
+      rows.push(el('p', { class: 'was' }, act.phase === 'failed' ? fill('failed', { what }) : fill('done', { what, s: tenths(act.ended - act.began), at: st.books.recount.at })))
     }
     if (hold) now(hold.name, { s: secs(left(st.now, hold.until)), status: hold.status })
     else if (st.next > st.now) now('pause', { s: secs(left(st.now, st.next)) })
@@ -277,7 +277,7 @@ function faults() {
   const status = document.getElementById('fault-state')
   patch(status, box(...rows))
   const why = optional('fault-why', act && act.kind !== 'kill', () => el('p', { class: 'why', id: 'fault-why' }), status)
-  if (why) patch(why, fill(`why-${act.kind}`))
+  if (why) patch(why, fill(act.kind === 'flip' && act.repair === 'no' ? 'why-torn' : `why-${act.kind}`))
 }
 
 function pinned() {

@@ -4,9 +4,7 @@ package history
 
 import (
 	"context"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +12,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/check"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/local"
+	"github.com/Demonisreal/dmn-ledger/internal/local/localtest"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 	"github.com/Demonisreal/dmn-ledger/ledger"
@@ -22,20 +21,10 @@ import (
 var bin string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "history-bin-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	build := exec.Command("go", "build", "-o", dir+string(filepath.Separator), "../../cmd/ledgerd") //nolint:gosec // G204: the directory comes from MkdirTemp
-	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build ledgerd: %v\n%s", err, out)
-		_ = os.RemoveAll(dir)
-		os.Exit(1)
-	}
+	dir, remove := localtest.Build("", "../../cmd/ledgerd")
 	bin = filepath.Join(dir, "ledgerd")
 	code := m.Run()
-	_ = os.RemoveAll(dir)
+	remove()
 	os.Exit(code)
 }
 

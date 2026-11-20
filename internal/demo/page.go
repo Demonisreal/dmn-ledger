@@ -34,6 +34,7 @@ var pageTemplate = template.Must(template.New("page.html").Funcs(template.FuncMa
 	"accord":  accord,
 	"commit":  leaderCommit,
 	"severed": severed,
+	"others":  others,
 	"lately":  lately,
 	"total":   func(a Actions) int { return a.Kill + a.Freeze + a.Cut + a.Flip },
 	"latest":  latest,
@@ -181,6 +182,16 @@ func severed(links [6]Link, a, b int) bool {
 		}
 	}
 	return false
+}
+
+func others(node int) [2]int {
+	switch node {
+	case 1:
+		return [2]int{2, 3}
+	case 2:
+		return [2]int{1, 3}
+	}
+	return [2]int{1, 2}
 }
 
 func lately(lines []Line) []Line {

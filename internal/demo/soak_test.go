@@ -24,6 +24,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Demonisreal/dmn-ledger/internal/local/localtest"
 )
 
 var (
@@ -374,10 +376,10 @@ func TestSoak(t *testing.T) {
 		self, nodes := cpu(syscall.RUSAGE_SELF)-selfBefore, cpu(syscall.RUSAGE_CHILDREN)-nodesBefore
 		usage = fmt.Sprintf("cpu of this process %v (%.1f%% of a core), of the nodes %v (%.1f%%)",
 			self.Round(time.Millisecond), 100*self.Seconds()/ran.Seconds(), nodes.Round(time.Millisecond), 100*nodes.Seconds()/ran.Seconds())
-		if left := children(t); len(left) > 0 {
+		if left := localtest.Children(t, os.Getpid()); len(left) > 0 {
 			t.Errorf("ledgerd still running after the soak: %v", left)
 		}
-		await(t, 5*time.Second, fmt.Sprintf("at most %d goroutines", goroutines+10), func() bool { return runtime.NumGoroutine() <= goroutines+10 })
+		localtest.Await(t, 5*time.Second, fmt.Sprintf("at most %d goroutines", goroutines+10), func() bool { return runtime.NumGoroutine() <= goroutines+10 })
 	}
 	allowed := int(ran / standard.gap)
 	if accepted*2 < allowed {

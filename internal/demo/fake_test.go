@@ -149,7 +149,7 @@ func sampleState() State {
 		Viewers: 12,
 		Cluster: Cluster{N: 3, ID: "c1057e1200000001", Since: 1795034000000, Why: "limit", Limit: 20000},
 		Books: Books{
-			Confirmed: 18734, Refused: 211, Open: 2, OpenSince: 1795036492100,
+			Confirmed: 18734, Refused: 211, Open: 2,
 			Sum: Sum{At: 1795036491000, Value: "6000000", Want: "6000000"},
 			Recount: Recount{
 				At: 1795036480000, After: Kill, Confirmed: 18650, Found: 18650, Refused: 210, Strays: 0,

@@ -1685,8 +1685,8 @@ size, offset, bit and both byte values into the state. After the start it reads 
 lines: `started: … repair yes`, then `repair flag cleared`. The time the node spent as a
 non-voter is the difference between the stamps of those two lines, not a reading of the
 controller's clock. A start with `repair no` would mean that the bit fell into a write the node
-had not acknowledged and cut off as a torn write; the journal has a line for that case. Neither
-line within 10 s is a finding.
+had not acknowledged and cut off as a torn write; the journal and the page each have a sentence
+for that case. Neither line within 10 s is a finding.
 
 Once a finding stands, an undo opens links but neither starts nor continues a node: all three
 stay stopped for the evidence.
@@ -1843,8 +1843,10 @@ code.
 Before it listens, the program checks that `ledgerd` is there, that `DEMO_DIR` is writable and
 that `<DEMO_DIR>/run`, which every setup deletes, holds nothing a demo did not write. Its first
 line on stderr names what it read: address, origin, proxy networks, the path of `ledgerd` and
-the directory. It writes a line per setup or failed attempt, per count after a fault and per
-finding, never a line per request and never an address of a visitor.
+the directory. Its lines are English, like those of `ledgerd`: one per setup or failed attempt,
+one per healed fault and one per finding, which is where a fault ends that does not heal; never a
+line per request and never an address of a visitor. The German sentences stay in the journal of
+the page.
 
 | Exit | When |
 |---|---|
@@ -1858,17 +1860,19 @@ is unspecified, and exits with 0 or 1; the container image has no shell and no `
 health check.
 
 `deploy/demo` holds the `Dockerfile` (both binaries, built without cgo, in a distroless image
-as user 65532), a `compose.yml` and a site block for a reverse proxy. What they restrict and
-what of that has run is in ADR-014.
+as user 65532), a `compose.yml` and a site block for a reverse proxy. The `Dockerfile` sets the
+address of the repository with `-ldflags -X …/internal/demo.repo=…`, and only then does the page
+show the links to the source and the `git clone` line; a plain `go build` leaves them out. What
+they restrict and what of that has run is in ADR-014.
 
 ### Tests
 
 The tests without processes run in a `testing/synctest` bubble with the real durations and
 limits. Those with processes build `ledgerd` once, need Linux, and shorten holds and pauses
-through an unexported field of the stage, never through the environment. Four tests drive a
-headless Chrome if one is installed and skip otherwise: `TestVectorsInChrome` runs the test
-vectors of the audit trail through `receipt.js`, `TestProofInChrome`, `TestPageInChrome` and
-`TestRefusalsInChrome` run the page against a fake `Show`.
+through an unexported field of the stage, never through the environment. The tests named
+`…InChrome` drive a headless Chrome if one is installed and skip otherwise:
+`TestVectorsInChrome` runs the test vectors of the audit trail through `receipt.js`, the others
+run the page against a fake `Show`.
 
 `TestSoak` is the long run, behind the build tag `soak` and not in CI:
 

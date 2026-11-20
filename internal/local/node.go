@@ -21,10 +21,6 @@ type Node struct {
 	held   bool
 }
 
-func (n *Node) ID() int {
-	return n.id
-}
-
 func (n *Node) Dir() string {
 	return n.dir
 }

@@ -91,10 +91,9 @@ func (s *Stage) count(r *run, full bool, after Kind) bool {
 	s.change(func(st *State) { st.Books.Recount = rc })
 	line := fmt.Sprintf(sayFull, rc.Index, rc.Hash, num(rc.Confirmed), num(rc.Found), num(rc.Refused), num(rc.Strays), money(sum.Value))
 	if after != 0 {
-		s.report("check", sayAfter+strings.TrimPrefix(line, "Zählung: "))
-	} else {
-		s.say("check", line)
+		line = sayAfter + strings.TrimPrefix(line, "Zählung: ")
 	}
+	s.say("check", line)
 	return true
 }
 
@@ -104,7 +103,7 @@ func (s *Stage) agree(r *run) ([]*ledger.NodeStatus, bool) {
 		ctx, cancel := context.WithTimeout(r.ctx, sightWithin)
 		sts := r.c.Statuses(ctx)
 		cancel()
-		why := s.judge(r, sts)
+		why := s.apart(r, sts)
 		switch {
 		case r.ctx.Err() != nil:
 			return nil, false
@@ -119,12 +118,12 @@ func (s *Stage) agree(r *run) ([]*ledger.NodeStatus, bool) {
 	}
 }
 
-func (s *Stage) judge(r *run, sts []*ledger.NodeStatus) string {
+func (s *Stage) apart(r *run, sts []*ledger.NodeStatus) string {
 	var rows []string
 	leaders, agreed := 0, true
 	for i, st := range sts {
 		if st == nil {
-			rows = append(rows, fmt.Sprintf("n%d does not answer", i+1))
+			rows = append(rows, fmt.Sprintf("n%d %s", i+1, silent))
 			agreed = false
 			continue
 		}
@@ -143,12 +142,12 @@ func (s *Stage) judge(r *run, sts []*ledger.NodeStatus) string {
 		if first == nil || st.Commit != first.Commit || st.Applied != st.Commit || st.Applied != first.Applied || st.HeadSeq != first.HeadSeq || st.Head != first.Head {
 			agreed = false
 		}
-		rows = append(rows, fmt.Sprintf("n%d %s term %d commit %d applied %d head %d %x", st.ID, st.Role, st.Term, st.Commit, st.Applied, st.HeadSeq, st.Head[:8]))
+		rows = append(rows, fmt.Sprintf(failNode, st.ID, standing(st), st.Commit, st.Applied, st.HeadSeq, st.Head[:8]))
 	}
 	if agreed && leaders == 1 {
 		return ""
 	}
-	return fmt.Sprintf("%d leaders; %s", leaders, strings.Join(rows, "; "))
+	return fmt.Sprintf(failLeaders, leaders, strings.Join(rows, "; "))
 }
 
 func (s *Stage) keyed(r *run, sts []*ledger.NodeStatus) bool {

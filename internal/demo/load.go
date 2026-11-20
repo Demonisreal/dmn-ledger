@@ -206,15 +206,10 @@ func (s *Stage) fund(r *run) error {
 }
 
 func (s *Stage) tally(r *run) {
-	s.st.Books.Open, s.st.Books.OpenSince = 0, 0
+	s.st.Books.Open = 0
 	for _, call := range r.calls {
-		if call.End != 0 {
-			continue
-		}
-		s.st.Books.Open++
-		at := r.began.Add(time.Duration(call.Start)).UnixMilli() //nolint:gosec // G115: a cluster lives for minutes
-		if s.st.Books.OpenSince == 0 || at < s.st.Books.OpenSince {
-			s.st.Books.OpenSince = at
+		if call.End == 0 {
+			s.st.Books.Open++
 		}
 	}
 	s.st.Rev++

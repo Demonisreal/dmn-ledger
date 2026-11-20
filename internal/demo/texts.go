@@ -46,11 +46,13 @@ const (
 )
 
 const (
-	failExited     = "n%d hat sich selbst beendet (%s). Die letzten Zeilen seines Logs:\n%s"
+	failExited     = "n%d endete, ohne dass das Steuerprogramm ihn beendet hat (%s). Die letzten Zeilen seines Logs:\n%s"
 	failCall       = "c%d, Aufruf %d (%s): %v"
 	failAsk        = "Zählung: %v"
 	failOpen       = "%d Aufrufe sind %v nach dem Anhalten der Last noch offen"
 	failApart      = "die Knoten sind sich %v nach dem Anhalten der Last nicht einig: %s"
+	failLeaders    = "%d Leader; %s"
+	failNode       = "n%d %s, Commit %d, angewendet %d, Kopf %d %x"
 	failHashes     = "n%d und n%d haben bis Eintrag %d angewendet, mit den Hashes %x und %x"
 	failRepair     = "n%d ist in Term %d in Reparatur, ohne dass ein Bit gekippt wurde"
 	failRepairLine = "n%d meldet Reparatur, ohne dass ein Bit gekippt wurde: %s"

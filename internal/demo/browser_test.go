@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,7 +117,11 @@ func TestMoreStatesInChrome(t *testing.T) {
 			st.Books.Confirmed = 20000
 		}),
 		at(9, func(st *State) { st.Nodes[1].Role = "leader" }),
-		at(10, func(*State) {}),
+		at(10, func(st *State) {
+			st.Action = &Action{Kind: Flip, Node: 1, Phase: "done", Repair: "no", Began: st.Now - 2500, Ended: st.Now - 250}
+			st.Next = st.Now + 7500
+		}),
+		at(11, func(*State) {}),
 	}
 	done := make(chan struct{})
 	mux := http.NewServeMux()
@@ -172,6 +177,9 @@ func TestMoreStatesInChrome(t *testing.T) {
 	if !strings.Contains(shots[strconv.FormatInt(ms[5].Now, 10)], `ist beendet und startet in <span aria-live="off">2</span> s`) {
 		t.Error("the seconds left are not kept from the live region")
 	}
+	if shot := shots[strconv.FormatInt(ms[10].Now, 10)]; !strings.Contains(shot, "Erholt nach 2,2 s.") || !strings.Contains(shot, "Ein solches Ende gilt als abgebrochenes Schreiben") {
+		t.Error("a flip without repair that took 2.25 s is not named as such")
+	}
 }
 
 func TestDifferingHashesAreNamed(t *testing.T) {
@@ -187,7 +195,7 @@ func TestPageNamesTheDurationsThatRun(t *testing.T) {
 		fmt.Sprintf("Nach %d Sekunden startet der Prozess neu.", secs(standard.holds[Kill])),
 		fmt.Sprintf("SIGSTOP für %d Sekunden.", secs(standard.holds[Freeze])),
 		fmt.Sprintf("%d Sekunden lang erreicht der Knoten die beiden anderen nicht", secs(standard.holds[Cut])),
-		fmt.Sprintf("%d Sekunden nach einer ausgelösten Störung", secs(standard.per)),
+		fmt.Sprintf("%d Sekunden nach einer ausgelösten Störung", secs(standard.perAddr)),
 		fmt.Sprintf("Diese Demo setzt ihren Cluster nach %s Buchungen neu auf", strings.ReplaceAll(num(standard.limit), "\u202f", " ")),
 		fmt.Sprintf("Nach %s Buchungen wird der Cluster neu aufgesetzt", strings.ReplaceAll(num(standard.limit), "\u202f", " ")),
 		fmt.Sprintf("Jedes Konto begann mit %s", strings.ReplaceAll(money(strconv.Itoa(funding)), "\u202f", " ")),
@@ -225,6 +233,12 @@ func TestLogInChrome(t *testing.T) {
 	for n := uint64(1); n <= 5; n++ {
 		fourth.Lines = append(fourth.Lines, Line{N: n, At: now + 3000, Src: "demo", Text: fmt.Sprintf("after the restart %d", n)})
 	}
+	fifth := fourth
+	fifth.Now, fifth.Lines = fourth.Now+1000, nil
+	var flood []byte
+	for n := uint64(6); n <= 255; n++ {
+		flood = append(flood, event("line", Line{N: n, At: now + 3500, Src: "n2", Text: fmt.Sprintf("flood %d", n)})...)
+	}
 
 	done := make(chan struct{})
 	mux := http.NewServeMux()
@@ -249,6 +263,8 @@ func TestLogInChrome(t *testing.T) {
 		send(event("tick", second))
 		send(event("state", third))
 		send(event("state", fourth))
+		send(flood)
+		send(event("tick", fifth))
 		close(done)
 		<-r.Context().Done()
 	})
@@ -256,7 +272,7 @@ func TestLogInChrome(t *testing.T) {
 	defer srv.Close()
 	dom, stderr := chrome(t, "--dump-dom", srv.URL+"/")
 	clean(t, stderr)
-	live, shots := snapshots(t, dom)
+	_, shots := snapshots(t, dom)
 	escaped := `&lt;b&gt;fett&lt;/b&gt; {at} &lt;img src=x&gt;`
 
 	after := shots[strconv.FormatInt(second.Now, 10)]
@@ -289,9 +305,14 @@ func TestLogInChrome(t *testing.T) {
 		t.Errorf("the wording of the pinned finding is not on the page as text: %s", pinned)
 	}
 
-	last := regexp.MustCompile(`<li data-n="(\d+)"`).FindAllStringSubmatch(section(t, live[3], "log"), -1)
+	numbered := regexp.MustCompile(`<li data-n="(\d+)"`)
+	last := numbered.FindAllStringSubmatch(section(t, shots[strconv.FormatInt(fourth.Now, 10)], "log"), -1)
 	if len(last) != 5 || last[0][1] != "5" {
 		t.Errorf("after a restart of the controller the log holds %d lines, want its 5", len(last))
+	}
+	kept := numbered.FindAllStringSubmatch(section(t, shots[strconv.FormatInt(fifth.Now, 10)], "log"), -1)
+	if len(kept) != 200 || kept[0][1] != "255" || kept[199][1] != "56" {
+		t.Errorf("after 255 lines the log holds %d, want the newest 200", len(kept))
 	}
 }
 
@@ -526,5 +547,70 @@ func TestReceiptValuesInChrome(t *testing.T) {
 		if strings.Contains(shots[name], "schlüssig") {
 			t.Errorf("%s: the page calls the receipt sound", name)
 		}
+	}
+}
+
+func TestHiddenTabClosesItsStreamInChrome(t *testing.T) {
+	web := NewWeb(newFake(), "", nil)
+	app, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	quick := strings.Replace(string(app), "const AWAY = 60000", "const AWAY = 1000", 1)
+	if quick == string(app) {
+		t.Fatal("app.js does not hold const AWAY = 60000")
+	}
+	began := time.Now()
+	var mu sync.Mutex
+	var opened, closed []time.Duration
+	done := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.Handle("GET /static/", web)
+	mux.HandleFunc("GET /static/app.js", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		_, _ = w.Write([]byte(quick))
+	})
+	mux.HandleFunc("GET /{$}", pageWith(t, web, `<script type="module" src="/hidden.js"></script>`+appScript+`<img src="/held.svg" alt="" hidden>`))
+	mux.HandleFunc("GET /hidden.js", file("testdata/hidden.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /held.svg", held(done))
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		opened = append(opened, time.Since(began))
+		mu.Unlock()
+		rc := http.NewResponseController(w)
+		w.Header().Set("Content-Type", "text/event-stream")
+		st := sampleState()
+		_, _ = w.Write(retryLine)
+		_, _ = w.Write(event("state", st))
+		_ = rc.Flush()
+		beat := time.NewTicker(time.Second)
+		defer beat.Stop()
+		for r.Context().Err() == nil {
+			select {
+			case <-beat.C:
+				st.Now += 1000
+				_, _ = w.Write(event("tick", st))
+				_ = rc.Flush()
+			case <-r.Context().Done():
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		closed = append(closed, time.Since(began))
+		if len(closed) == 2 {
+			close(done)
+		}
+	})
+	srv := httptest.NewServer(guarded(mux))
+	defer srv.Close()
+	_, stderr := chrome(t, "--dump-dom", srv.URL+"/")
+	clean(t, stderr)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(opened) != 2 || len(closed) != 2 {
+		t.Fatalf("streams opened at %v and closed at %v; want two, each closed by the page", opened, closed)
+	}
+	if closed[0] > opened[1] || closed[1]-opened[1] < time.Second || closed[1]-opened[1] > 10*time.Second {
+		t.Errorf("streams opened at %v and closed at %v; want the first closed while the tab was hidden from the start, the second a while after the tab was hidden again", opened, closed)
 	}
 }

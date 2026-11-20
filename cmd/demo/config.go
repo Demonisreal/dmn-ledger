@@ -143,12 +143,12 @@ func (cfg config) prepare() error {
 	if err := ownRun(filepath.Join(cfg.dir, "run")); err != nil {
 		return err
 	}
-	probe, err := os.CreateTemp(cfg.dir, ".probe-")
+	f, err := os.CreateTemp(cfg.dir, ".probe-")
 	if err != nil {
 		return err
 	}
-	_ = probe.Close()
-	return os.Remove(probe.Name())
+	_ = f.Close()
+	return os.Remove(f.Name())
 }
 
 func ownRun(run string) error {

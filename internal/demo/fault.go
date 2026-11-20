@@ -33,7 +33,6 @@ func (s *Stage) act(r *run, w wish) {
 	}
 	now := time.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	a := s.st.Action
 	a.Ended = now.UnixMilli()
 	a.Phase = "failed"
@@ -46,6 +45,11 @@ func (s *Stage) act(r *run, w wish) {
 	}
 	s.acting, s.ended = false, now
 	s.st.Rev++
+	rc := s.st.Books.Recount
+	s.mu.Unlock()
+	if healed {
+		s.cfg.Log.Printf("%s on node %d healed after %v: all three at entry %d, all %d confirmed transfers found", f.kind, f.node, now.Sub(f.began).Round(time.Millisecond), rc.Index, rc.Confirmed)
+	}
 }
 
 func (s *Stage) aim(r *run, w wish) *fault {
@@ -118,8 +122,8 @@ func (s *Stage) strike(r *run, f *fault) func() {
 				r.cut[rt] = true
 			}
 		})
-		a, b := others(f.node)
-		s.say("demo", fmt.Sprintf(sayCut, f.node, a, b, f.node))
+		peers := others(f.node)
+		s.say("demo", fmt.Sprintf(sayCut, f.node, peers[0], peers[1], f.node))
 		return func() {
 			for _, rt := range f.routes {
 				r.c.Link(rt).Set(faultnet.Fault{})
@@ -179,16 +183,6 @@ func (s *Stage) lifted(r *run, f *fault, note string, mark func()) {
 	}
 	s.draw(r)
 	s.st.Rev++
-}
-
-func others(node int) (int, int) {
-	switch node {
-	case 1:
-		return 2, 3
-	case 2:
-		return 1, 3
-	}
-	return 1, 2
 }
 
 func (s *Stage) hold(r *run, f *fault) {

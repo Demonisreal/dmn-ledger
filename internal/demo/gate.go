@@ -40,7 +40,7 @@ func (s *Stage) Act(kind Kind, target int, from netip.Prefix) (time.Time, error)
 		return until, ErrCooling
 	}
 	for _, v := range s.visits {
-		if until := v.at.Add(s.pace.per); v.from == from && now.Before(until) {
+		if until := v.at.Add(s.pace.perAddr); v.from == from && now.Before(until) {
 			return until, ErrLimited
 		}
 	}
@@ -59,11 +59,11 @@ func (s *Stage) Act(kind Kind, target int, from netip.Prefix) (time.Time, error)
 	s.visits = append(s.visits, visit{from, now})
 	s.began, s.acting = now, true
 	s.wishes <- wish{kind, target, s.sight.leader}
-	return now.Add(s.pace.per), nil
+	return now.Add(s.pace.perAddr), nil
 }
 
 func (s *Stage) forget(now time.Time) {
-	s.visits = slices.DeleteFunc(s.visits, func(v visit) bool { return !now.Before(v.at.Add(s.pace.per)) })
+	s.visits = slices.DeleteFunc(s.visits, func(v visit) bool { return !now.Before(v.at.Add(s.pace.perAddr)) })
 }
 
 func (s *Stage) cooled() time.Time {

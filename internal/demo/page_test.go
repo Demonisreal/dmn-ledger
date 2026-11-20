@@ -340,7 +340,7 @@ func TestPageStates(t *testing.T) {
 	t.Run("narrow screen", func(t *testing.T) {
 		css, _ := webFS.ReadFile("web/page.css")
 		if !strings.Contains(string(css), "@media (min-width: 40rem) {\n  .trio {\n    grid-template-columns: repeat(3, minmax(0, 1fr));") {
-			t.Error("the three nodes stand side by side below 40rem")
+			t.Error("page.css has no rule that sets the three nodes side by side from 40rem on")
 		}
 	})
 
@@ -349,6 +349,7 @@ func TestPageStates(t *testing.T) {
 	})
 
 	t.Run("repo public", func(t *testing.T) {
+		render(t, nil).hides(t, "git clone", "Quelltext", "ADR-009", "The simulator")
 		repo = "https://example.org/dmn-ledger"
 		defer func() { repo = "" }()
 		render(t, nil).shows(t, "git clone https://example.org/dmn-ledger && cd dmn-ledger", "Quelltext", "ADR-009", "ADR-014", "The simulator")

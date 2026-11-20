@@ -281,10 +281,16 @@ func TestSinkSeesEveryWindow(t *testing.T) {
 		if calls, windows := rec.Judged(); calls != 11 || windows != 4 {
 			t.Fatalf("judged %d calls in %d windows, want 11 in 4", calls, windows)
 		}
+	})
+}
 
+func TestSinkErrorStopsJudge(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
 		full := errors.New("disk full")
 		var seen int
-		rec = NewRecorder(Options{Window: 1, Backlog: 8, Since: since(), Sink: func([]sim.Call) error {
+		rec := NewRecorder(Options{Window: 1, Backlog: 8, Since: since(), Sink: func([]sim.Call) error {
 			seen++
 			if seen == 2 {
 				return full

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/Demonisreal/dmn-ledger/internal/history"
 	"github.com/Demonisreal/dmn-ledger/internal/local"
+	"github.com/Demonisreal/dmn-ledger/internal/local/localtest"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/internal/workload"
@@ -44,20 +44,10 @@ var (
 var bin string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "chaos-bin-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	build := exec.Command("go", "build", "-tags", ledgerdTags, "-o", dir+string(filepath.Separator), "../../cmd/ledgerd") //nolint:gosec // G204: the directory comes from MkdirTemp
-	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build ledgerd: %v\n%s", err, out)
-		_ = os.RemoveAll(dir)
-		os.Exit(1)
-	}
+	dir, remove := localtest.Build(ledgerdTags, "../../cmd/ledgerd")
 	bin = filepath.Join(dir, "ledgerd")
 	code := m.Run()
-	_ = os.RemoveAll(dir)
+	remove()
 	os.Exit(code)
 }
 

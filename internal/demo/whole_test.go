@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Demonisreal/dmn-ledger/internal/local/localtest"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
@@ -158,7 +159,7 @@ func TestProofVerifies(t *testing.T) {
 			mu.Unlock()
 		}
 	}()
-	await(t, 30*time.Second, "ten bookings in the stream", func() bool {
+	localtest.Await(t, 30*time.Second, "ten bookings in the stream", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(seen) >= 10
@@ -221,7 +222,7 @@ func TestProofVerifies(t *testing.T) {
 		t.Fatalf("with all three nodes stopped: status %d, %q; want 503 noleader", pa.status, pa.reason)
 	}
 	thaw()
-	await(t, 30*time.Second, "a proof again", func() bool {
+	localtest.Await(t, 30*time.Second, "a proof again", func() bool {
 		time.Sleep(proofHold)
 		return askProof(t, addr).status == http.StatusOK
 	})
@@ -256,7 +257,7 @@ func TestNoRequestDataInState(t *testing.T) {
 			_, body := dial(t, addr).do(t, raw)
 			bodies = append(bodies, body)
 		}
-		await(t, 30*time.Second, "the kill done", func() bool {
+		localtest.Await(t, 30*time.Second, "the kill done", func() bool {
 			st := s.State()
 			return st.Action != nil && st.Action.Ended != 0
 		})

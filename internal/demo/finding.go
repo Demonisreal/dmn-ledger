@@ -38,12 +38,12 @@ func (s *Stage) fail(r *run, check, reason string) {
 	f := s.record(r, now, check, reason)
 	s.draw(r)
 	s.mu.Unlock()
-	s.cfg.Log.Printf(sayFinding, f.Check, f.Reason)
+	s.cfg.Log.Printf("finding %s in cluster %d, all three nodes stopped", f.Check, r.id)
 	for id := 1; id <= 3; id++ {
 		r.c.Node(id).Halt()
 	}
 	r.cancel()
-	r.judge()
+	r.stopJudge()
 }
 
 func (s *Stage) record(r *run, now time.Time, check, reason string) Finding {
@@ -72,6 +72,10 @@ func (s *Stage) exited(r *run, id int, err error) {
 	how := "Exit 0"
 	if err != nil {
 		how = err.Error()
+	}
+	room := reasonMax - len(fmt.Sprintf(failExited, id, how, ""))
+	for len(tail) > room && strings.Contains(tail, "\n") {
+		_, tail, _ = strings.Cut(tail, "\n")
 	}
 	s.fail(r, "F1", fmt.Sprintf(failExited, id, how, tail))
 }

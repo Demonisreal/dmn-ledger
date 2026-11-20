@@ -89,7 +89,7 @@
         {{- if .Pid}}
         <p data-k="proc">{{template "proc" (args "pid" .Pid "at" .Since)}}</p>
         {{- end}}
-        {{- $a := 1}}{{$b := 2}}{{if eq .ID 1}}{{$a = 2}}{{$b = 3}}{{else if eq .ID 2}}{{$b = 3}}{{end}}
+        {{- $peers := others .ID}}{{$a := index $peers 0}}{{$b := index $peers 1}}
         {{- if or (severed $st.Links .ID $a) (severed $st.Links .ID $b)}}
         <p class="hurt" data-k="net">{{if severed $st.Links .ID $a}}{{template "link-cut" (args "n" $a)}}{{else}}{{template "link-open" (args "n" $a)}}{{end}}, {{if severed $st.Links .ID $b}}{{template "link-cut" (args "n" $b)}}{{else}}{{template "link-open" (args "n" $b)}}{{end}}</p>
         {{- end}}
@@ -166,7 +166,7 @@
       {{- end}}
     </div>
     {{- with $a}}{{if ne .Kind.String "kill"}}
-    <p class="why" id="fault-why">{{if eq .Kind.String "freeze"}}{{template "why-freeze"}}{{else if eq .Kind.String "cut"}}{{template "why-cut"}}{{else}}{{template "why-flip"}}{{end}}</p>
+    <p class="why" id="fault-why">{{if eq .Kind.String "freeze"}}{{template "why-freeze"}}{{else if eq .Kind.String "cut"}}{{template "why-cut"}}{{else if eq .Repair "no"}}{{template "why-torn"}}{{else}}{{template "why-flip"}}{{end}}</p>
     {{- end}}{{end}}
   </section>
 
@@ -288,7 +288,7 @@ LEDGER_CLUSTER=0x<span data-k="cluster"></span> ledgerctl verify proof buchung-<
       <li><b>Kein echtes Netz.</b> Die drei Prozesse laufen auf einer Maschine und sprechen über Loopback. Das Abtrennen macht ein Proxy zwischen ihnen.</li>
       <li><b>Keine falsche Uhr, keine Platte, die Lesefehler meldet, keine böswilligen Knoten.</b></li>
       <li><b>Keinen Dauerbetrieb.</b> Nach 20 000 Buchungen wird der Cluster neu aufgesetzt, mit leeren Büchern, weil der Zustand sonst wächst und der Prüfer eine zweite Kopie davon hält.</li>
-      <li><b>Kein Urteil über die Zeit.</b> Wie schnell das ist, messen die Benchmarks in <code>bench/</code> auf anderer Hardware; ihre Zahlen stehen noch nicht im README.</li>
+      <li><b>Kein Urteil über die Zeit.</b> Wie schnell das ist, messen die Benchmarks in <code>bench/</code> auf anderer Hardware.</li>
     </ul>
     <p class="close">Was hier vier Mal von Hand geht, laufen Simulator und Chaos-Test viele tausend Mal mit Zufall durch. Die Demo zeigt, dass es die Abläufe gibt. Dass sie halten, zeigen die Tests.</p>
   </section>
@@ -384,18 +384,18 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <template data-t="leaders">{{template "leaders"}}</template>
 <template data-t="leaders-one-term">{{template "leaders-one-term"}}</template>
 <template data-t="ready">{{template "ready"}}</template>
-<template data-t="running">{{template "running" (args "was" "{was}")}}</template>
-<template data-t="was-kill">{{template "was-kill" (args "n" "{n}" "s" "{s}")}}</template>
-<template data-t="was-freeze">{{template "was-freeze" (args "n" "{n}" "s" "{s}")}}</template>
-<template data-t="was-cut">{{template "was-cut" (args "n" "{n}" "s" "{s}")}}</template>
-<template data-t="was-flip">{{template "was-flip" (args "n" "{n}")}}</template>
+<template data-t="running">{{template "running" (args "what" "{what}")}}</template>
+<template data-t="running-kill">{{template "running-kill" (args "n" "{n}" "s" "{s}")}}</template>
+<template data-t="running-freeze">{{template "running-freeze" (args "n" "{n}" "s" "{s}")}}</template>
+<template data-t="running-cut">{{template "running-cut" (args "n" "{n}" "s" "{s}")}}</template>
+<template data-t="running-flip">{{template "running-flip" (args "n" "{n}")}}</template>
 <template data-t="settling">{{template "settling"}}</template>
-<template data-t="war-kill">{{template "war-kill" (args "n" "{n}")}}</template>
-<template data-t="war-freeze">{{template "war-freeze" (args "n" "{n}")}}</template>
-<template data-t="war-cut">{{template "war-cut" (args "n" "{n}")}}</template>
-<template data-t="war-flip">{{template "war-flip" (args "n" "{n}")}}</template>
-<template data-t="done">{{template "done" (args "war" "{war}" "s" "{s}" "at" "{at}")}}</template>
-<template data-t="failed">{{template "failed" (args "war" "{war}")}}</template>
+<template data-t="ended-kill">{{template "ended-kill" (args "n" "{n}")}}</template>
+<template data-t="ended-freeze">{{template "ended-freeze" (args "n" "{n}")}}</template>
+<template data-t="ended-cut">{{template "ended-cut" (args "n" "{n}")}}</template>
+<template data-t="ended-flip">{{template "ended-flip" (args "n" "{n}")}}</template>
+<template data-t="done">{{template "done" (args "what" "{what}" "s" "{s}" "at" "{at}")}}</template>
+<template data-t="failed">{{template "failed" (args "what" "{what}")}}</template>
 <template data-t="pause">{{template "pause" (args "s" "{s}")}}</template>
 <template data-t="limited">{{template "limited" (args "s" "{s}")}}</template>
 <template data-t="recovering">{{template "recovering"}}</template>
@@ -405,6 +405,7 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <template data-t="why-freeze">{{template "why-freeze"}}</template>
 <template data-t="why-cut">{{template "why-cut"}}</template>
 <template data-t="why-flip">{{template "why-flip"}}</template>
+<template data-t="why-torn">{{template "why-torn"}}</template>
 <template data-t="viewers">{{template "viewers" (args "n" "{n}")}}</template>
 <template data-t="viewers-1">{{template "viewers-1" (args "n" "{n}")}}</template>
 <template data-t="accounts-head">{{template "accounts-head" (args "at" "{at}")}}</template>
@@ -423,10 +424,10 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <template data-t="path">{{template "path" (args "leaf" "{leaf}" "leaves" "{leaves}" "n" "{n}" "word" "{word}")}}</template>
 <template data-t="w-hash">{{template "w-hash"}}</template>
 <template data-t="w-hashes">{{template "w-hashes"}}</template>
-<template data-t="w-befund">{{template "w-befund"}}</template>
-<template data-t="w-befunde">{{template "w-befunde"}}</template>
-<template data-t="w-stoerung">{{template "w-stoerung"}}</template>
-<template data-t="w-stoerungen">{{template "w-stoerungen"}}</template>
+<template data-t="w-finding">{{template "w-finding"}}</template>
+<template data-t="w-findings">{{template "w-findings"}}</template>
+<template data-t="w-fault">{{template "w-fault"}}</template>
+<template data-t="w-faults">{{template "w-faults"}}</template>
 <template data-t="pinned">{{template "pinned" (args "check" "{check}" "reason" "{reason}")}}</template>
 <template data-t="evidence">{{template "evidence" (args "dir" "{dir}")}}</template>
 </div>
@@ -486,18 +487,18 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "leaders-one-term"}}Zwei Knoten melden sich im selben Term als Leader. Das darf nicht sein.{{end}}
 
 {{define "ready"}}Bereit. Jede Störung endet von selbst. Es läuft immer nur eine, und alle Besucher sehen dieselbe.{{end}}
-{{define "running"}}Läuft: {{if .a}}{{template "kind-was" .}}{{else}}{{.was}}{{end}}.{{end}}
-{{define "was-kill"}}n{{.n}} ist beendet und startet in {{.s}} s{{end}}
-{{define "was-freeze"}}n{{.n}} ist eingefroren, noch {{.s}} s{{end}}
-{{define "was-cut"}}n{{.n}} ist abgetrennt, noch {{.s}} s{{end}}
-{{define "was-flip"}}in n{{.n}} ist ein Bit gekippt, n{{.n}} startet{{end}}
+{{define "running"}}Läuft: {{if .a}}{{template "kind-running" .}}{{else}}{{.what}}{{end}}.{{end}}
+{{define "running-kill"}}n{{.n}} ist beendet und startet in {{.s}} s{{end}}
+{{define "running-freeze"}}n{{.n}} ist eingefroren, noch {{.s}} s{{end}}
+{{define "running-cut"}}n{{.n}} ist abgetrennt, noch {{.s}} s{{end}}
+{{define "running-flip"}}in n{{.n}} ist ein Bit gekippt, n{{.n}} startet{{end}}
 {{define "settling"}}Die Störung ist vorbei. Jetzt wird nachgezählt.{{end}}
-{{define "war-kill"}}n{{.n}} abgeschossen{{end}}
-{{define "war-freeze"}}n{{.n}} eingefroren{{end}}
-{{define "war-cut"}}n{{.n}} abgetrennt{{end}}
-{{define "war-flip"}}In n{{.n}} ein Bit gekippt{{end}}
-{{define "done"}}{{if .a}}{{template "kind-war" .a}}{{else}}{{.war}}{{end}}. Erholt nach {{.s}} s. Nachgezählt um {{template "t" .at}}: Summe und Buchungen stimmen.{{end}}
-{{define "failed"}}{{if .a}}{{template "kind-war" .a}}{{else}}{{.war}}{{end}}. Danach stand der Cluster nicht wie vorher und wird neu aufgesetzt.{{end}}
+{{define "ended-kill"}}n{{.n}} abgeschossen{{end}}
+{{define "ended-freeze"}}n{{.n}} eingefroren{{end}}
+{{define "ended-cut"}}n{{.n}} abgetrennt{{end}}
+{{define "ended-flip"}}In n{{.n}} ein Bit gekippt{{end}}
+{{define "done"}}{{if .a}}{{template "kind-ended" .a}}{{else}}{{.what}}{{end}}. Erholt nach {{.s}} s. Nachgezählt um {{template "t" .at}}: Summe und Buchungen stimmen.{{end}}
+{{define "failed"}}{{if .a}}{{template "kind-ended" .a}}{{else}}{{.what}}{{end}}. Danach stand der Cluster nicht wie vorher und wird neu aufgesetzt.{{end}}
 {{define "pause"}}Die nächste Störung geht in {{.s}} s.{{end}}
 {{define "limited"}}Von dieser Adresse geht die nächste Störung in {{.s}} s.{{end}}
 {{define "recovering"}}Der Cluster ist gerade nicht vollständig. Gleich wieder.{{end}}
@@ -507,6 +508,7 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "why-freeze"}}Ein eingefrorener Leader hält sich beim Aufwachen noch für den Leader. Er hört dann vom neuen Term und tritt zurück, bevor er etwas bestätigt.{{end}}
 {{define "why-cut"}}Der abgetrennte Knoten kann nichts festschreiben, weil ihm die Mehrheit fehlt. Clients, die ihn fragen, bekommen keine Bestätigung und wenden sich an den neuen Leader.{{end}}
 {{define "why-flip"}}Eine Prüfsumme findet das kaputte Stück. Ein Siegel in einer zweiten Datei sagt, dass der Knoten es schon bestätigt hatte. Deshalb stimmt er nicht mehr ab, bis der Leader ihm das Log neu geschickt hat. Die Stelle des Bits kennt hier das Steuerprogramm, weil es das Bit gekippt hat; der Knoten meldet nur, dass er Schaden gefunden hat.{{end}}
+{{define "why-torn"}}Das Bit lag in einem Schreibvorgang, den der Knoten noch nicht bestätigt hatte. Ein solches Ende gilt als abgebrochenes Schreiben: Der Knoten schneidet es beim Start ab und stimmt weiter ab.{{end}}
 {{define "viewers"}}Gerade sehen {{.n}} zu.{{end}}
 {{define "viewers-1"}}Gerade sieht {{.n}} zu.{{end}}
 
@@ -527,12 +529,12 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "path"}}Blatt {{.leaf}} von {{.leaves}}, {{.n}} {{.word}} bis zur Wurzel{{end}}
 {{define "w-hash"}}Hash{{end}}
 {{define "w-hashes"}}Hashes{{end}}
-{{define "w-befund"}}Befund{{end}}
-{{define "w-befunde"}}Befunde{{end}}
-{{define "w-stoerung"}}Störung{{end}}
-{{define "w-stoerungen"}}Störungen{{end}}
+{{define "w-finding"}}Befund{{end}}
+{{define "w-findings"}}Befunde{{end}}
+{{define "w-fault"}}Störung{{end}}
+{{define "w-faults"}}Störungen{{end}}
 {{define "pinned"}}<span class="src">check</span> <span>Befund <span class="check">{{.check}}</span>: <span class="said">{{.reason}}</span></span>{{end}}
 {{define "evidence"}} <span>Daten und Logs der Knoten gesichert unter <code>{{.dir}}</code>.</span>{{end}}
 
-{{define "kind-was"}}{{$a := .a}}{{$s := left .now $a.LiftAt}}{{if eq $a.Kind.String "kill"}}{{template "was-kill" (args "n" $a.Node "s" $s)}}{{else if eq $a.Kind.String "freeze"}}{{template "was-freeze" (args "n" $a.Node "s" $s)}}{{else if eq $a.Kind.String "cut"}}{{template "was-cut" (args "n" $a.Node "s" $s)}}{{else}}{{template "was-flip" (args "n" $a.Node)}}{{end}}{{end}}
-{{define "kind-war"}}{{if eq .Kind.String "kill"}}{{template "war-kill" (args "n" .Node)}}{{else if eq .Kind.String "freeze"}}{{template "war-freeze" (args "n" .Node)}}{{else if eq .Kind.String "cut"}}{{template "war-cut" (args "n" .Node)}}{{else}}{{template "war-flip" (args "n" .Node)}}{{end}}{{end}}
+{{define "kind-running"}}{{$a := .a}}{{$s := left .now $a.LiftAt}}{{if eq $a.Kind.String "kill"}}{{template "running-kill" (args "n" $a.Node "s" $s)}}{{else if eq $a.Kind.String "freeze"}}{{template "running-freeze" (args "n" $a.Node "s" $s)}}{{else if eq $a.Kind.String "cut"}}{{template "running-cut" (args "n" $a.Node "s" $s)}}{{else}}{{template "running-flip" (args "n" $a.Node)}}{{end}}{{end}}
+{{define "kind-ended"}}{{if eq .Kind.String "kill"}}{{template "ended-kill" (args "n" .Node)}}{{else if eq .Kind.String "freeze"}}{{template "ended-freeze" (args "n" .Node)}}{{else if eq .Kind.String "cut"}}{{template "ended-cut" (args "n" .Node)}}{{else}}{{template "ended-flip" (args "n" .Node)}}{{end}}{{end}}

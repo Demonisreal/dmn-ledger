@@ -40,10 +40,7 @@ var guards = [...][2]string{
 	{"Cache-Control", "no-store"},
 }
 
-var (
-	kindOf   = map[string]Kind{"kill": Kill, "freeze": Freeze, "cut": Cut, "flip": Flip}
-	targetOf = map[string]int{"1": 1, "2": 2, "3": 3, "leader": 0}
-)
+var targetOf = map[string]int{"1": 1, "2": 2, "3": 3, "leader": 0}
 
 var assetTypes = map[string]string{
 	".js":    "text/javascript; charset=utf-8",
@@ -189,7 +186,8 @@ func (web *Web) act(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusForbidden, "origin", time.Time{})
 		return
 	}
-	kind, known := kindOf[r.PathValue("kind")]
+	var kind Kind
+	known := kind.UnmarshalText([]byte(r.PathValue("kind"))) == nil
 	target, aimed := targetOf[r.PathValue("node")]
 	if !known || !aimed {
 		http.NotFound(w, r)

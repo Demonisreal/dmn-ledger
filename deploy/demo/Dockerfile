@@ -3,7 +3,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/ ./cmd/demo ./cmd/ledgerd && mkdir /out/data
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/Demonisreal/dmn-ledger/internal/demo.repo=https://github.com/Demonisreal/dmn-ledger" -o /out/ ./cmd/demo ./cmd/ledgerd && mkdir /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /out/demo /out/ledgerd /

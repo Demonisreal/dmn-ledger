@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Demonisreal/dmn-ledger/internal/local/localtest"
 )
 
 func findingDuring(t *testing.T, kind Kind) (*Stage, State, int, uint64) {
@@ -20,7 +22,7 @@ func findingDuring(t *testing.T, kind Kind) (*Stage, State, int, uint64) {
 		s.pace.holds[kind] = 2 * time.Second
 		s.pace.stand = 3 * time.Second
 	})
-	await(t, 20*time.Second, "a log for a flip", func() bool {
+	localtest.Await(t, 20*time.Second, "a log for a flip", func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.sight.sizes[0] >= youngLog && s.sight.sizes[1] >= youngLog && s.sight.sizes[2] >= youngLog
@@ -49,7 +51,7 @@ func findingDuring(t *testing.T, kind Kind) (*Stage, State, int, uint64) {
 	if _, err := s.Act(kind, target, addr(1)); err != nil {
 		t.Fatal(err)
 	}
-	await(t, 30*time.Second, "the action over", func() bool {
+	localtest.Await(t, 30*time.Second, "the action over", func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return !s.acting
@@ -78,13 +80,13 @@ func TestFreezeSaysNoSigcontAfterAFinding(t *testing.T) {
 	s, st, target, mark := findingDuring(t, Freeze)
 	for _, l := range s.Lines(mark) {
 		if l.Src == "demo" && strings.HasPrefix(l.Text, fmt.Sprintf("SIGCONT an n%d", target)) {
-			t.Errorf("the journal says %q, the process is in state %s", l.Text, procState(st.Nodes[target-1].Pid))
+			t.Errorf("the journal says %q, the process is in state %s", l.Text, localtest.ProcState(st.Nodes[target-1].Pid))
 		}
 	}
 	time.Sleep(300 * time.Millisecond)
 	st = s.State()
-	if n := st.Nodes[target-1]; procState(n.Pid) != "T" || n.Proc != "frozen" {
-		t.Errorf("n%d: process %d in state %s, shown as %s", target, n.Pid, procState(n.Pid), n.Proc)
+	if n := st.Nodes[target-1]; localtest.ProcState(n.Pid) != "T" || n.Proc != "frozen" {
+		t.Errorf("n%d: process %d in state %s, shown as %s", target, n.Pid, localtest.ProcState(n.Pid), n.Proc)
 	}
 }
 
@@ -102,7 +104,7 @@ func TestLoadIsNotRunningWhileAFindingStands(t *testing.T) {
 	if err := syscall.Kill(s.State().Nodes[1].Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
+	localtest.Await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
 	for range 20 {
 		st := s.State()
 		if st.Finding == nil {
@@ -130,7 +132,7 @@ func TestFlipSparesAHaltedNode(t *testing.T) {
 		s.lower(r)
 	}()
 	n := r.c.Node(2)
-	await(t, 20*time.Second, "a log for a flip", func() bool {
+	localtest.Await(t, 20*time.Second, "a log for a flip", func() bool {
 		_, size := newest(n.Dir())
 		return size >= youngLog
 	})
@@ -148,7 +150,7 @@ func TestFlipSparesAHaltedNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state := procState(pid); state != "gone" && !bytes.Equal(before, after) {
+	if state := localtest.ProcState(pid); state != "gone" && !bytes.Equal(before, after) {
 		for _, l := range s.Lines(mark) {
 			t.Log(l.Src, l.Text)
 		}
@@ -160,14 +162,14 @@ func TestNoCallAfterTheLastCount(t *testing.T) {
 	s := stage(t, func(s *Stage) { s.pace.limit = 150 })
 	answered, begun := 0, 0
 	for k := 1; k <= 6; k++ {
-		await(t, 60*time.Second, fmt.Sprintf("cluster %d", k), func() bool {
+		localtest.Await(t, 60*time.Second, fmt.Sprintf("cluster %d", k), func() bool {
 			st := s.State()
 			return st.Cluster.N == k && st.Phase == "steady"
 		})
 		s.mu.Lock()
 		r := s.cur
 		s.mu.Unlock()
-		await(t, 60*time.Second, fmt.Sprintf("the end of cluster %d", k), func() bool { return s.State().Cluster.N > k })
+		localtest.Await(t, 60*time.Second, fmt.Sprintf("the end of cluster %d", k), func() bool { return s.State().Cluster.N > k })
 		s.mu.Lock()
 		for _, call := range r.calls {
 			begun++

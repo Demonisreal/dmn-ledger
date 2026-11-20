@@ -300,15 +300,15 @@ func TestAddressIsForgottenWithoutAnotherAction(t *testing.T) {
 			t.Fatal(err)
 		}
 		done(t, s)
-		time.Sleep(s.pace.per - time.Second)
+		time.Sleep(s.pace.perAddr - time.Second)
 		s.look(t.Context(), false)
 		if len(s.visits) != 1 {
-			t.Fatalf("%d addresses kept %v after the action, want the one still limited", len(s.visits), s.pace.per-time.Second)
+			t.Fatalf("%d addresses kept %v after the action, want the one still limited", len(s.visits), s.pace.perAddr-time.Second)
 		}
 		time.Sleep(time.Second)
 		s.look(t.Context(), false)
 		if len(s.visits) != 0 {
-			t.Fatalf("%d addresses kept %v after the action and no action since; want none", len(s.visits), s.pace.per)
+			t.Fatalf("%d addresses kept %v after the action and no action since; want none", len(s.visits), s.pace.perAddr)
 		}
 	})
 }

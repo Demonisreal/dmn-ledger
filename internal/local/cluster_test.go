@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Demonisreal/dmn-ledger/internal/faultnet"
+	"github.com/Demonisreal/dmn-ledger/internal/local/localtest"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
@@ -26,20 +26,10 @@ const clusterID = 7
 var bin string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "local-bin-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	build := exec.Command("go", "build", "-o", dir+string(filepath.Separator), "../../cmd/ledgerd") //nolint:gosec // G204: the directory comes from MkdirTemp
-	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build ledgerd: %v\n%s", err, out)
-		_ = os.RemoveAll(dir)
-		os.Exit(1)
-	}
+	dir, remove := localtest.Build("", "../../cmd/ledgerd")
 	bin = filepath.Join(dir, "ledgerd")
 	code := m.Run()
-	_ = os.RemoveAll(dir)
+	remove()
 	os.Exit(code)
 }
 
@@ -66,51 +56,6 @@ func leader(c *Cluster) int {
 	return c.Leader(ctx)
 }
 
-func await(t *testing.T, within time.Duration, what string, done func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not within %v", what, within)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-func children(t *testing.T) []int {
-	t.Helper()
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var pids []int
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		stat, err := os.ReadFile(filepath.Join("/proc", e.Name(), "stat"))
-		if err != nil {
-			continue
-		}
-		comm, rest, _ := strings.Cut(string(stat), ") ")
-		f := strings.Fields(rest)
-		if strings.HasSuffix(comm, "(ledgerd") && len(f) > 1 && f[1] == strconv.Itoa(os.Getpid()) {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
-}
-
-func procState(pid int) string {
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return "gone"
-	}
-	_, rest, _ := strings.Cut(string(stat), ") ")
-	return strings.Fields(rest)[0]
-}
-
 func peerAddr(t *testing.T, pid, id int) string {
 	t.Helper()
 	environ, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
@@ -128,7 +73,7 @@ func peerAddr(t *testing.T, pid, id int) string {
 
 func TestClusterStartsAndCloses(t *testing.T) {
 	c := start(t, Config{Seed: 1, Clients: true})
-	await(t, 5*time.Second, "a leader", func() bool { return leader(c) != 0 })
+	localtest.Await(t, 5*time.Second, "a leader", func() bool { return leader(c) != 0 })
 	if got := fmt.Sprint(c.Routes()); got != "[c->n1 c->n2 c->n3 n1->n2 n1->n3 n2->n1 n2->n3 n3->n1 n3->n2]" {
 		t.Fatalf("routes %s", got)
 	}
@@ -148,7 +93,7 @@ func TestClusterStartsAndCloses(t *testing.T) {
 	for _, r := range c.Routes() {
 		ports = append(ports, c.Link(r).Addr())
 	}
-	if got := children(t); len(got) != nodes {
+	if got := localtest.Children(t, os.Getpid()); len(got) != nodes {
 		t.Fatalf("%d ledgerd children before Close: %v", len(got), got)
 	}
 	if err := c.Close(); err != nil {
@@ -159,7 +104,7 @@ func TestClusterStartsAndCloses(t *testing.T) {
 			t.Errorf("process %d still there after Close: %v", pid, err)
 		}
 	}
-	if got := children(t); len(got) != 0 {
+	if got := localtest.Children(t, os.Getpid()); len(got) != 0 {
 		t.Errorf("ledgerd children after Close: %v", got)
 	}
 	for _, addr := range ports {
@@ -181,7 +126,7 @@ func TestClusterStartsAndCloses(t *testing.T) {
 func TestKillAndStart(t *testing.T) {
 	c := start(t, Config{Seed: 2})
 	n := c.Node(2)
-	await(t, 5*time.Second, "n2 answers", func() bool { return statuses(c)[1] != nil })
+	localtest.Await(t, 5*time.Second, "n2 answers", func() bool { return statuses(c)[1] != nil })
 	pid := n.Pid()
 	n.Kill()
 	if n.Running() || n.Pid() != 0 {
@@ -193,7 +138,7 @@ func TestKillAndStart(t *testing.T) {
 	if err := n.Start(); err != nil {
 		t.Fatal(err)
 	}
-	await(t, 5*time.Second, "n2 answers again", func() bool { return statuses(c)[1] != nil })
+	localtest.Await(t, 5*time.Second, "n2 answers again", func() bool { return statuses(c)[1] != nil })
 	if again := n.Pid(); again == pid || again == 0 {
 		t.Fatalf("pid %d before Kill, %d after Start", pid, again)
 	}
@@ -209,7 +154,7 @@ func TestStartOfARunningNodeFails(t *testing.T) {
 	if n.Pid() != pid {
 		t.Fatalf("pid %d, was %d", n.Pid(), pid)
 	}
-	if got := children(t); len(got) != nodes {
+	if got := localtest.Children(t, os.Getpid()); len(got) != nodes {
 		t.Fatalf("%d ledgerd children: %v", len(got), got)
 	}
 }
@@ -229,7 +174,7 @@ func TestStoppedNodeStaysDown(t *testing.T) {
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("process %d still there after Stop: %v", pid, err)
 	}
-	if got := children(t); len(got) != nodes-1 {
+	if got := localtest.Children(t, os.Getpid()); len(got) != nodes-1 {
 		t.Fatalf("%d ledgerd children: %v", len(got), got)
 	}
 }
@@ -239,14 +184,14 @@ func TestHaltedNodeIgnoresSignals(t *testing.T) {
 	n := c.Node(1)
 	pid := n.Pid()
 	n.Halt()
-	await(t, 2*time.Second, "n1 stopped", func() bool { return procState(pid) == "T" })
+	localtest.Await(t, 2*time.Second, "n1 stopped", func() bool { return localtest.ProcState(pid) == "T" })
 	n.Signal(syscall.SIGCONT)
 	n.Kill()
 	if err := n.Start(); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(200 * time.Millisecond)
-	if st := procState(pid); st != "T" || n.Pid() != pid {
+	if st := localtest.ProcState(pid); st != "T" || n.Pid() != pid {
 		t.Fatalf("halted n1 is in state %s as process %d, want T as %d", st, n.Pid(), pid)
 	}
 	n.Stop()
@@ -273,7 +218,7 @@ func TestExitedIsReported(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no Exited for n2 after it was killed from outside")
 	}
-	await(t, time.Second, "n2 not running", func() bool { return !c.Node(2).Running() })
+	localtest.Await(t, time.Second, "n2 not running", func() bool { return !c.Node(2).Running() })
 	c.Node(1).Kill()
 	c.Node(3).Stop()
 	if err := c.Close(); err != nil {
@@ -288,7 +233,7 @@ func TestExitedIsReported(t *testing.T) {
 
 func TestCutRoutesAroundANode(t *testing.T) {
 	c := start(t, Config{Seed: 7})
-	await(t, 5*time.Second, "a leader", func() bool { return leader(c) != 0 })
+	localtest.Await(t, 5*time.Second, "a leader", func() bool { return leader(c) != 0 })
 	around := c.Around(2)
 	if got := fmt.Sprint(around); got != "[n1->n2 n2->n1 n2->n3 n3->n2]" {
 		t.Fatalf("around n2: %s", got)
@@ -296,7 +241,7 @@ func TestCutRoutesAroundANode(t *testing.T) {
 	for _, r := range around {
 		c.Link(r).Set(faultnet.Fault{Cut: true})
 	}
-	await(t, 5*time.Second, "n2 alone without a leader, n1 and n3 with one", func() bool {
+	localtest.Await(t, 5*time.Second, "n2 alone without a leader, n1 and n3 with one", func() bool {
 		sts := statuses(c)
 		if sts[0] == nil || sts[1] == nil || sts[2] == nil {
 			return false
@@ -307,7 +252,7 @@ func TestCutRoutesAroundANode(t *testing.T) {
 	for _, r := range around {
 		c.Link(r).Set(faultnet.Fault{})
 	}
-	await(t, 5*time.Second, "three nodes agree after the cut", func() bool {
+	localtest.Await(t, 5*time.Second, "three nodes agree after the cut", func() bool {
 		sts := statuses(c)
 		for _, st := range sts {
 			if st == nil || st.Leader == 0 || st.Leader != sts[0].Leader || st.Term != sts[0].Term {
@@ -323,7 +268,7 @@ func TestEnvIsExplicit(t *testing.T) {
 	t.Setenv("LEDGER_FROM_THE_TEST", "1")
 	exited := make(chan int, nodes)
 	c := start(t, Config{Seed: 8, Env: []string{"LEDGER_SWEEP=off"}, Exited: func(node int, _ error) { exited <- node }})
-	await(t, 5*time.Second, "a leader", func() bool { return leader(c) != 0 })
+	localtest.Await(t, 5*time.Second, "a leader", func() bool { return leader(c) != 0 })
 	select {
 	case id := <-exited:
 		t.Fatalf("n%d ended, its log ends with:\n%s", id, logTail(t, c, id))

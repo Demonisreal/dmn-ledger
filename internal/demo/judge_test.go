@@ -15,18 +15,11 @@ import (
 	"time"
 
 	"github.com/Demonisreal/dmn-ledger/internal/client"
+	"github.com/Demonisreal/dmn-ledger/internal/local/localtest"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
-
-func TestLoadRestsWhileTheHubReportsNoViewers(t *testing.T) {
-	s := stage(t, func(s *Stage) { s.pace.rest = 2 * time.Second })
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go newHub(s).run(ctx)
-	await(t, 10*time.Second, "a resting load behind a hub without viewers", func() bool { return s.State().Load == "resting" })
-}
 
 func settled(t *testing.T, s *Stage) (*run, []*ledger.NodeStatus) {
 	t.Helper()
@@ -34,7 +27,7 @@ func settled(t *testing.T, s *Stage) (*run, []*ledger.NodeStatus) {
 	r := s.cur
 	s.mu.Unlock()
 	var sts []*ledger.NodeStatus
-	await(t, 10*time.Second, "three statuses at one index", func() bool {
+	localtest.Await(t, 10*time.Second, "three statuses at one index", func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), sightWithin)
 		defer cancel()
 		sts = r.c.Statuses(ctx)
@@ -55,7 +48,7 @@ func TestAgreementFindings(t *testing.T) {
 			s := stage(t, func(s *Stage) { s.pace.light, s.pace.full = time.Hour, time.Hour })
 			r, sts := settled(t, s)
 			tc.bend(sts)
-			s.judge(r, sts)
+			s.apart(r, sts)
 			st := s.State()
 			if st.Finding == nil || st.Finding.Check != tc.check {
 				t.Fatalf("finding %+v, want %s", st.Finding, tc.check)
@@ -67,11 +60,11 @@ func TestAgreementFindings(t *testing.T) {
 func TestHeadsMustAgree(t *testing.T) {
 	s := stage(t, func(s *Stage) { s.pace.light, s.pace.full = time.Hour, time.Hour })
 	r, sts := settled(t, s)
-	if why := s.judge(r, sts); why != "" {
+	if why := s.apart(r, sts); why != "" {
 		t.Skipf("the nodes moved on: %s", why)
 	}
 	sts[2].Head[0] ^= 1
-	if why := s.judge(r, sts); why == "" {
+	if why := s.apart(r, sts); why == "" {
 		t.Fatal("three nodes with two different heads count as agreed")
 	}
 }
@@ -84,7 +77,7 @@ func TestKeyMismatchIsAFinding(t *testing.T) {
 	forged := bytes.Clone(keys[1])
 	forged[0] ^= 1
 	keys[1] = forged
-	await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
+	localtest.Await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
 	if f := s.State().Finding; f.Check != "key" {
 		t.Fatalf("finding %s: %s", f.Check, f.Reason)
 	}
@@ -213,7 +206,7 @@ func TestCountGoesToTheChecker(t *testing.T) {
 		}
 	})
 	armed.Store(true)
-	await(t, 20*time.Second, "a finding", func() bool { return s.State().Finding != nil })
+	localtest.Await(t, 20*time.Second, "a finding", func() bool { return s.State().Finding != nil })
 	if f := s.State().Finding; f.Check != "S9" {
 		t.Fatalf("finding %s: %s", f.Check, f.Reason)
 	}
@@ -224,12 +217,12 @@ func TestAcceptedActionDoesNotOutliveItsCluster(t *testing.T) {
 	if err := killNode(s, 0); err != nil {
 		t.Fatal(err)
 	}
-	await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
+	localtest.Await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
 	s.mu.Lock()
 	s.acting, s.began = true, time.Now()
 	s.wishes <- wish{Kill, 2, 1}
 	s.mu.Unlock()
-	await(t, 30*time.Second, "a second cluster", func() bool {
+	localtest.Await(t, 30*time.Second, "a second cluster", func() bool {
 		st := s.State()
 		return st.Cluster.N == 2 && st.Phase != "setup"
 	})
@@ -239,21 +232,6 @@ func TestAcceptedActionDoesNotOutliveItsCluster(t *testing.T) {
 	s.mu.Unlock()
 	if st := s.State(); acting || waiting != 0 || st.Action != nil || st.Totals.Actions.Kill != 0 {
 		t.Fatalf("after the reset: acting %v, %d wishes wait, action %+v, %d kills", acting, waiting, st.Action, st.Totals.Actions.Kill)
-	}
-}
-
-func TestHubReportsTheLastViewerGone(t *testing.T) {
-	show := newFake()
-	h := newHub(show)
-	v := h.join(addr(1))
-	h.beat()
-	if _, _, watching := show.counted(); watching != 1 {
-		t.Fatalf("%d viewers reported with one stream", watching)
-	}
-	h.leave(v)
-	h.beat()
-	if _, _, watching := show.counted(); watching != 0 {
-		t.Fatalf("%d viewers reported after the last stream closed", watching)
 	}
 }
 
@@ -279,7 +257,7 @@ func TestFullCountAtTheRealLimit(t *testing.T) {
 	})
 	began := time.Now()
 	var last State
-	await(t, 8*time.Minute, "a second cluster after 20 000 transfers", func() bool {
+	localtest.Await(t, 8*time.Minute, "a second cluster after 20 000 transfers", func() bool {
 		st := s.State()
 		if st.Cluster.N == 1 {
 			last = st
@@ -303,7 +281,7 @@ func TestProofPrefersACallWithAPath(t *testing.T) {
 	s.mu.Lock()
 	r := s.cur
 	s.mu.Unlock()
-	await(t, 20*time.Second, "two confirmed transfers, one from a call with several", func() bool {
+	localtest.Await(t, 20*time.Second, "two confirmed transfers, one from a call with several", func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return r.provable != 0 && s.st.Books.Confirmed > 4

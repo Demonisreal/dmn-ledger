@@ -9,30 +9,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Demonisreal/dmn-ledger/internal/local/localtest"
 )
 
 var bin string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "demo-bin-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	build := exec.Command("go", "build", "-o", dir+string(filepath.Separator), ".", "../ledgerd") //nolint:gosec // G204: the directory comes from MkdirTemp
-	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build demo and ledgerd: %v\n%s", err, out)
-		_ = os.RemoveAll(dir)
-		os.Exit(1)
-	}
-	bin = dir
+	var remove func()
+	bin, remove = localtest.Build("", ".", "../ledgerd")
 	code := m.Run()
-	_ = os.RemoveAll(dir)
+	remove()
 	os.Exit(code)
 }
 
@@ -109,31 +100,6 @@ func check(t *testing.T, env []string) (int, string) {
 	return cmd.ProcessState.ExitCode(), string(out)
 }
 
-func nodesOf(t *testing.T, parent int) []int {
-	t.Helper()
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var pids []int
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		stat, err := os.ReadFile(filepath.Join("/proc", e.Name(), "stat"))
-		if err != nil {
-			continue
-		}
-		comm, rest, _ := strings.Cut(string(stat), ") ")
-		f := strings.Fields(rest)
-		if strings.HasSuffix(comm, "(ledgerd") && len(f) > 1 && f[1] == strconv.Itoa(parent) {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
-}
-
 func TestExitCodes(t *testing.T) {
 	t.Run("0 after SIGTERM, with -check before and after", func(t *testing.T) {
 		addr := freeAddr(t)
@@ -146,7 +112,7 @@ func TestExitCodes(t *testing.T) {
 				t.Fatalf("%d ledgerd after 30s, log:\n%s", len(nodes), p.logs(t))
 			}
 			time.Sleep(50 * time.Millisecond)
-			nodes = nodesOf(t, p.cmd.Process.Pid)
+			nodes = localtest.Children(t, p.cmd.Process.Pid)
 		}
 		if code, out := check(t, env); code != 0 || out != "" {
 			t.Fatalf("-check on the running demo: exit %d, %q", code, out)

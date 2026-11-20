@@ -55,7 +55,7 @@ func (rec *Recorder) wake() {
 	rec.mu.Unlock()
 }
 
-func (rec *Recorder) Begin(ctx context.Context, client uint64, pick func() (client.Op, []byte)) (Turn, bool) {
+func (rec *Recorder) Begin(ctx context.Context, id uint64, pick func() (client.Op, []byte)) (Turn, bool) {
 	stop := context.AfterFunc(ctx, rec.wake)
 	defer stop()
 	rec.mu.Lock()
@@ -71,7 +71,7 @@ func (rec *Recorder) Begin(ctx context.Context, client uint64, pick func() (clie
 	}
 	rec.started++
 	op, body := pick()
-	t := Turn{N: rec.first + len(rec.calls), Call: sim.Call{Client: client, Op: op, Body: body, Start: rec.o.Since()}}
+	t := Turn{N: rec.first + len(rec.calls), Call: sim.Call{Client: id, Op: op, Body: body, Start: rec.o.Since()}}
 	rec.calls = append(rec.calls, t.Call)
 	rec.open++
 	return t, true

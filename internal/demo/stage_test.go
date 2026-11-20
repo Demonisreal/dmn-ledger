@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Demonisreal/dmn-ledger/internal/client"
+	"github.com/Demonisreal/dmn-ledger/internal/local/localtest"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 	"github.com/Demonisreal/dmn-ledger/ledger"
@@ -30,20 +32,10 @@ import (
 var bin string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "demo-bin-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	build := exec.Command("go", "build", "-o", dir+string(filepath.Separator), "../../cmd/ledgerd") //nolint:gosec // G204: the directory comes from MkdirTemp
-	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build ledgerd: %v\n%s", err, out)
-		_ = os.RemoveAll(dir)
-		os.Exit(1)
-	}
+	dir, remove := localtest.Build("", "../../cmd/ledgerd")
 	bin = filepath.Join(dir, "ledgerd")
 	code := m.Run()
-	_ = os.RemoveAll(dir)
+	remove()
 	os.Exit(code)
 }
 
@@ -91,58 +83,13 @@ func started(t *testing.T, tune func(s *Stage)) *bench {
 		if err := <-b.ran; err != nil {
 			t.Errorf("Run: %v", err)
 		}
-		if kids := children(t); len(kids) > 0 {
+		if kids := localtest.Children(t, os.Getpid()); len(kids) > 0 {
 			t.Errorf("ledgerd still running after Run: %v", kids)
 		}
 	})
 	s.Watching(1)
-	await(t, 30*time.Second, "a steady cluster", func() bool { return s.State().Phase == "steady" })
+	localtest.Await(t, 30*time.Second, "a steady cluster", func() bool { return s.State().Phase == "steady" })
 	return b
-}
-
-func await(t *testing.T, within time.Duration, what string, ok func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for !ok() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not within %v", what, within)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-func children(t *testing.T) []int {
-	t.Helper()
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var pids []int
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		stat, err := os.ReadFile(filepath.Join("/proc", e.Name(), "stat"))
-		if err != nil {
-			continue
-		}
-		comm, rest, _ := strings.Cut(string(stat), ") ")
-		f := strings.Fields(rest)
-		if strings.HasSuffix(comm, "(ledgerd") && len(f) > 1 && f[1] == strconv.Itoa(os.Getpid()) {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
-}
-
-func procState(pid int) string {
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return "gone"
-	}
-	_, rest, _ := strings.Cut(string(stat), ") ")
-	return strings.Fields(rest)[0]
 }
 
 func queued(t *testing.T, addr string) int {
@@ -176,11 +123,11 @@ func follower(st State) int {
 
 func perform(t *testing.T, s *Stage, kind Kind, target int, from byte) State {
 	t.Helper()
-	await(t, 30*time.Second, fmt.Sprintf("%s on %d accepted", kind, target), func() bool {
+	localtest.Await(t, 30*time.Second, fmt.Sprintf("%s on %d accepted", kind, target), func() bool {
 		_, err := s.Act(kind, target, addr(from))
 		return err == nil
 	})
-	await(t, 60*time.Second, fmt.Sprintf("%s on %d done", kind, target), func() bool {
+	localtest.Await(t, 60*time.Second, fmt.Sprintf("%s on %d done", kind, target), func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return !s.acting
@@ -227,7 +174,11 @@ func inOrder(t *testing.T, ls []Line, want ...string) {
 }
 
 func TestKillHealsItself(t *testing.T) {
-	s := stage(t, nil)
+	var logs logBook
+	s := stage(t, func(s *Stage) { s.cfg.Log = log.New(io.MultiWriter(&logs, testLog{t}), "", 0) })
+	if !strings.Contains(logs.String(), " set up as number 1 (start): pids ") {
+		t.Fatalf("no line about the setup in the log:\n%s", logs.String())
+	}
 	for _, target := range []string{"leader", "follower"} {
 		t.Run(target, func(t *testing.T) {
 			before := s.State()
@@ -247,6 +198,9 @@ func TestKillHealsItself(t *testing.T) {
 			}
 			inOrder(t, lines(s, mark, "demo", "check"), fmt.Sprintf("SIGKILL an n%d (PID %d)", n, before.Nodes[n-1].Pid), fmt.Sprintf("n%d startet nach ", n), "Zählung nach der Störung: alle drei Knoten")
 			inOrder(t, lines(s, mark, fmt.Sprintf("n%d", n)), time.Now().UTC().Format("2006/"))
+			if healedLine := fmt.Sprintf("kill on node %d healed after ", n); !strings.Contains(logs.String(), healedLine) {
+				t.Fatalf("no %q in the log:\n%s", healedLine, logs.String())
+			}
 			if id == 0 {
 				elected := slices.ContainsFunc(lines(s, mark, "n1", "n2", "n3"), func(l Line) bool { return strings.Contains(l.Text, " leader in term ") })
 				if !elected {
@@ -273,7 +227,7 @@ func TestFreezeHealsItself(t *testing.T) {
 			if st.Nodes[n-1].Pid != before.Nodes[n-1].Pid || st.Nodes[n-1].Proc != "up" {
 				t.Fatalf("n%d runs as PID %d (%s), before %d", n, st.Nodes[n-1].Pid, st.Nodes[n-1].Proc, before.Nodes[n-1].Pid)
 			}
-			if got := procState(st.Nodes[n-1].Pid); got == "T" {
+			if got := localtest.ProcState(st.Nodes[n-1].Pid); got == "T" {
 				t.Fatalf("n%d is still stopped", n)
 			}
 			inOrder(t, lines(s, mark, "demo", "check"), fmt.Sprintf("SIGSTOP an n%d (PID %d)", n, before.Nodes[n-1].Pid), fmt.Sprintf("SIGCONT an n%d nach ", n), "Zählung nach der Störung: alle drei Knoten")
@@ -292,7 +246,7 @@ func TestFrozenNodeIsAskedOncePerSecond(t *testing.T) {
 	addrs := s.cur.c.Addrs()
 	s.mu.Unlock()
 	samples, answered, waiting := 0, 0, 0
-	await(t, 30*time.Second, "the freeze lifted", func() bool {
+	localtest.Await(t, 30*time.Second, "the freeze lifted", func() bool {
 		st := s.State()
 		a := st.Action
 		if a != nil && a.Phase == "struck" && time.Since(time.UnixMilli(a.LiftAt)) > -4500*time.Millisecond {
@@ -304,7 +258,7 @@ func TestFrozenNodeIsAskedOncePerSecond(t *testing.T) {
 		}
 		return a != nil && a.Phase != "struck"
 	})
-	await(t, 30*time.Second, "the freeze done", func() bool {
+	localtest.Await(t, 30*time.Second, "the freeze done", func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return !s.acting
@@ -483,8 +437,8 @@ func TestEveryFaultIsLifted(t *testing.T) {
 			lifted := func(how string) {
 				t.Helper()
 				n := r.c.Node(target)
-				if !n.Running() || procState(n.Pid()) == "T" {
-					t.Fatalf("%s: n%d runs %v, state %s", how, target, n.Running(), procState(n.Pid()))
+				if !n.Running() || localtest.ProcState(n.Pid()) == "T" {
+					t.Fatalf("%s: n%d runs %v, state %s", how, target, n.Running(), localtest.ProcState(n.Pid()))
 				}
 				s.mu.Lock()
 				cut := len(r.cut)
@@ -493,7 +447,7 @@ func TestEveryFaultIsLifted(t *testing.T) {
 					t.Fatalf("%s: %d links shown as cut", how, cut)
 				}
 			}
-			await(t, 10*time.Second, "a log for a flip", func() bool {
+			localtest.Await(t, 10*time.Second, "a log for a flip", func() bool {
 				_, size := newest(r.c.Node(target).Dir())
 				return size >= youngLog
 			})
@@ -515,7 +469,7 @@ func TestEveryFaultIsLifted(t *testing.T) {
 			s.act(r, wish{kind: kind, target: target})
 			s.during = nil
 			lifted("after the context ended")
-			await(t, 10*time.Second, "agreement after the context ended", func() bool {
+			localtest.Await(t, 10*time.Second, "agreement after the context ended", func() bool {
 				ctx, cancel := context.WithTimeout(context.Background(), sightWithin)
 				defer cancel()
 				sts := r.c.Statuses(ctx)
@@ -552,7 +506,7 @@ func TestFaultIsLiftedOnShutdown(t *testing.T) {
 				t.Fatalf("pids %v", pids)
 			}
 			for _, pid := range pids {
-				if st := procState(pid); st != "gone" {
+				if st := localtest.ProcState(pid); st != "gone" {
 					t.Fatalf("process %d is in state %s after Run ended", pid, st)
 				}
 			}
@@ -572,13 +526,13 @@ func TestNeverMoreThanThreeNodes(t *testing.T) {
 				return
 			case <-time.After(5 * time.Millisecond):
 			}
-			most = max(most, len(children(t)))
+			most = max(most, len(localtest.Children(t, os.Getpid())))
 		}
 	}()
 	for i := range 20 {
 		perform(t, s, kinds[i%4], i%4, byte(i))
 	}
-	await(t, 30*time.Second, "a third cluster", func() bool { return s.State().Cluster.N >= 3 })
+	localtest.Await(t, 30*time.Second, "a third cluster", func() bool { return s.State().Cluster.N >= 3 })
 	close(stop)
 	<-sampled
 	st := s.State()
@@ -592,7 +546,7 @@ func TestResetAtTheLimit(t *testing.T) {
 	s := stage(t, func(s *Stage) { s.pace.limit = 300 })
 	first := s.State()
 	var p Proof
-	await(t, 10*time.Second, "a proof", func() bool {
+	localtest.Await(t, 10*time.Second, "a proof", func() bool {
 		var err error
 		p, err = s.Proof(context.Background())
 		return err == nil
@@ -606,7 +560,7 @@ func TestResetAtTheLimit(t *testing.T) {
 	if _, err := ledger.VerifyProof(raw, id, keys); err != nil || p.Cluster != first.Cluster.ID {
 		t.Fatalf("proof of cluster %s: %v", p.Cluster, err)
 	}
-	await(t, 60*time.Second, "a second cluster", func() bool {
+	localtest.Await(t, 60*time.Second, "a second cluster", func() bool {
 		st := s.State()
 		return st.Cluster.N == 2 && st.Phase == "steady"
 	})
@@ -634,15 +588,25 @@ func TestResetAtTheLimit(t *testing.T) {
 }
 
 func TestNodeThatDiesIsAFinding(t *testing.T) {
-	s := stage(t, nil)
+	var logs logBook
+	s := stage(t, func(s *Stage) { s.cfg.Log = log.New(io.MultiWriter(&logs, testLog{t}), "", 0) })
+	s.mu.Lock()
+	r := s.cur
+	s.mu.Unlock()
 	pid := s.State().Nodes[1].Pid
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
+	localtest.Await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
 	st := s.State()
-	if f := st.Finding; f.Check != "F1" || !strings.Contains(f.Reason, "n2 hat sich selbst beendet (signal: killed)") || !strings.Contains(f.Reason, time.Now().UTC().Format("2006/")) {
-		t.Fatalf("finding %s: %s", f.Check, f.Reason)
+	s.mu.Lock()
+	newest := r.ears[1].lines[len(r.ears[1].lines)-1].text
+	s.mu.Unlock()
+	if f := st.Finding; f.Check != "F1" || !strings.Contains(f.Reason, "n2 endete, ohne dass das Steuerprogramm ihn beendet hat (signal: killed)") || !strings.HasSuffix(f.Reason, newest) {
+		t.Fatalf("finding %s: %s; the newest line of n2 is %q", f.Check, f.Reason, newest)
+	}
+	if !strings.Contains(logs.String(), "finding F1 in cluster ") {
+		t.Fatalf("no line about the finding in the log:\n%s", logs.String())
 	}
 	if _, err := s.Act(Kill, 1, addr(1)); !errors.Is(err, ErrRecovering) {
 		t.Fatalf("an action while the finding stands: %v", err)
@@ -650,13 +614,16 @@ func TestNodeThatDiesIsAFinding(t *testing.T) {
 	if _, err := s.Proof(context.Background()); !errors.Is(err, ErrFinding) {
 		t.Fatalf("a proof while the finding stands: %v", err)
 	}
-	await(t, 30*time.Second, "a new cluster", func() bool {
+	localtest.Await(t, 30*time.Second, "a new cluster", func() bool {
 		st := s.State()
 		return st.Cluster.N == 2 && st.Phase == "steady"
 	})
 	st = s.State()
 	if st.Finding != nil || st.Cluster.Why != "finding" || st.Totals.Found != 1 || st.Totals.Findings[0].Check != "F1" || st.Totals.Findings[0].Evidence == "" {
 		t.Fatalf("after the reset: finding %v, why %s, findings %+v", st.Finding, st.Cluster.Why, st.Totals.Findings)
+	}
+	if !strings.Contains(logs.String(), " set up as number 2 (finding): pids ") {
+		t.Fatalf("no line about the second setup in the log:\n%s", logs.String())
 	}
 	dir := filepath.Join(s.cfg.Dir, st.Totals.Findings[0].Evidence)
 	for _, name := range []string{"n1", "n2", "n3", "n2.log", "journal.txt", "state.json", "calls.json"} {
@@ -691,7 +658,7 @@ func TestRecountFindsAMissingTransfer(t *testing.T) {
 		})
 	})
 	armed.Store(true)
-	await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
+	localtest.Await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
 	if f := s.State().Finding; f.Check != "books" || !strings.Contains(f.Reason, "bestätigte Buchungen fehlen") {
 		t.Fatalf("finding %s: %s", f.Check, f.Reason)
 	}
@@ -699,13 +666,13 @@ func TestRecountFindsAMissingTransfer(t *testing.T) {
 
 func TestRecountSeesAStray(t *testing.T) {
 	s := stage(t, func(s *Stage) { s.pace.full = time.Second })
-	await(t, 10*time.Second, "a confirmed transfer", func() bool { return s.State().Books.Confirmed > 0 })
+	localtest.Await(t, 10*time.Second, "a confirmed transfer", func() bool { return s.State().Books.Confirmed > 0 })
 	s.mu.Lock()
 	r := s.cur
 	id := slices.Index(r.marks, confirmed)
 	r.marks[id] = refused
 	s.mu.Unlock()
-	await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
+	localtest.Await(t, 10*time.Second, "a finding", func() bool { return s.State().Finding != nil })
 	if f := s.State().Finding; f.Check != "books" || !strings.Contains(f.Reason, fmt.Sprintf("abgelehnt oder nie geschickt worden, die erste ist %d", id+1)) {
 		t.Fatalf("finding %s: %s", f.Check, f.Reason)
 	}
@@ -725,17 +692,18 @@ func TestViolationBecomesAFinding(t *testing.T) {
 		}
 	})
 	armed.Store(true)
-	await(t, 30*time.Second, "a finding", func() bool { return s.State().Finding != nil })
+	localtest.Await(t, 30*time.Second, "a finding", func() bool { return s.State().Finding != nil })
 	st := s.State()
 	if st.Finding.Check != "S8" {
 		t.Fatalf("finding %s: %s", st.Finding.Check, st.Finding.Reason)
 	}
 	for _, n := range st.Nodes {
-		if n.Proc != "frozen" || procState(n.Pid) != "T" {
-			t.Fatalf("n%d is %s, process %d in state %s", n.ID, n.Proc, n.Pid, procState(n.Pid))
+		if n.Proc != "frozen" {
+			t.Fatalf("n%d is %s", n.ID, n.Proc)
 		}
+		localtest.Await(t, time.Second, fmt.Sprintf("process %d of n%d stopped", n.Pid, n.ID), func() bool { return localtest.ProcState(n.Pid) == "T" })
 	}
-	await(t, 10*time.Second, "evidence", func() bool { return s.State().Finding.Evidence != "" })
+	localtest.Await(t, 10*time.Second, "evidence", func() bool { return s.State().Finding.Evidence != "" })
 	dir := filepath.Join(s.cfg.Dir, s.State().Finding.Evidence)
 	for id := 1; id <= 3; id++ {
 		segs, err := os.ReadDir(filepath.Join(dir, fmt.Sprintf("n%d", id), "wal"))
@@ -748,14 +716,14 @@ func TestViolationBecomesAFinding(t *testing.T) {
 func TestEvidenceIsCapped(t *testing.T) {
 	s := stage(t, func(s *Stage) { s.pace.stand = 200 * time.Millisecond })
 	for k := 1; k <= 4; k++ {
-		await(t, 30*time.Second, fmt.Sprintf("cluster %d", k), func() bool {
+		localtest.Await(t, 30*time.Second, fmt.Sprintf("cluster %d", k), func() bool {
 			st := s.State()
 			return st.Cluster.N == k && st.Phase == "steady"
 		})
 		if err := syscall.Kill(s.State().Nodes[0].Pid, syscall.SIGKILL); err != nil {
 			t.Fatal(err)
 		}
-		await(t, 10*time.Second, fmt.Sprintf("finding %d with its evidence", k), func() bool {
+		localtest.Await(t, 10*time.Second, fmt.Sprintf("finding %d with its evidence", k), func() bool {
 			st := s.State()
 			return st.Totals.Found == k && st.Totals.Findings[k-1].ResetAt != 0
 		})
@@ -771,7 +739,7 @@ func TestLoadRestsWithoutViewers(t *testing.T) {
 	b := started(t, func(s *Stage) { s.pace.rest = 2 * time.Second })
 	s := b.s
 	s.Watching(0)
-	await(t, 10*time.Second, "a resting load", func() bool { return s.State().Load == "resting" })
+	localtest.Await(t, 10*time.Second, "a resting load", func() bool { return s.State().Load == "resting" })
 	time.Sleep(500 * time.Millisecond)
 	resting := s.State()
 	time.Sleep(2 * time.Second)
@@ -782,10 +750,18 @@ func TestLoadRestsWithoutViewers(t *testing.T) {
 		t.Fatal("no line about the rest")
 	}
 	s.Watching(1)
-	await(t, 5*time.Second, "the load running again", func() bool {
+	localtest.Await(t, 5*time.Second, "the load running again", func() bool {
 		st := s.State()
 		return st.Load == "running" && st.Books.Confirmed > resting.Books.Confirmed && st.Rest.Until != 0
 	})
+}
+
+func TestLoadRestsWhileTheHubReportsNoViewers(t *testing.T) {
+	s := stage(t, func(s *Stage) { s.pace.rest = 2 * time.Second })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go newHub(s).run(ctx)
+	localtest.Await(t, 10*time.Second, "a resting load behind a hub without viewers", func() bool { return s.State().Load == "resting" })
 }
 
 func TestNodesListenOnLoopback(t *testing.T) {
@@ -851,7 +827,7 @@ func TestSetupFailureIsRetried(t *testing.T) {
 	if st := s.State(); failed != attempts || st.Phase != "setup" || st.Cluster.Failed == "" || st.Totals.Found != 0 {
 		t.Fatalf("%d failed attempts logged, phase %s, reason %q, %d findings", failed, st.Phase, st.Cluster.Failed, st.Totals.Found)
 	}
-	if kids := children(t); len(kids) > 0 {
+	if kids := localtest.Children(t, os.Getpid()); len(kids) > 0 {
 		t.Fatalf("ledgerd left: %v", kids)
 	}
 }

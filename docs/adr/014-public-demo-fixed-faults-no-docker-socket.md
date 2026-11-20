@@ -133,7 +133,7 @@ The tests named below are in `internal/demo` unless a package is given.
 | 24 | breaking out after taking over the controller | the container: no root, no capabilities, no new privileges, a read-only file system, no Docker socket, no host path, an internal network. The only secrets are the node keys of one cluster | kernel bugs. The reverse proxy is reachable from the container, and through it whatever else that proxy serves. See "The container" for what of this has run | none: configuration |
 | 25 | recognising or tracking visitors | no cookies, no storage in the browser, nothing loaded from another origin, no access log, and the error log of `net/http` is discarded because it would name the caller when a handler panics. The key of an address is in memory for 30 s after an accepted fault and as long as a stream from it is open, and nowhere else | the reverse proxy sees every address. What it logs is its own configuration | `TestNoCookies`, `TestServerLogsNoRequest`, `TestAddressIsForgottenWithoutAnotherAction`, `TestNoRequestDataInState` |
 | 26 | making the page lie | every value comes from a status frame, a line a node wrote, an answer to the load or a step the controller took itself; after 3 s without an event the page marks its values as old and locks the buttons; findings stay (decision 7) | whoever controls the controller, the operator included, can show anything. That is why the page tells how to run it oneself | `TestPageInChrome`, `TestNodeThatDiesIsAFinding` |
-| 27 | bots keep the load running | `X-Robots-Tag: noindex` and a `robots.txt` that disallows everything; the load runs only while an event stream is open; the page closes its stream when its tab has been hidden for 60 s | a bot that runs JavaScript is a viewer, and a viewer costs at most the fixed load | `TestLoadRestsWithoutViewers`, `TestLoadRestsWhileTheHubReportsNoViewers` |
+| 27 | bots keep the load running | `X-Robots-Tag: noindex` and a `robots.txt` that disallows everything; the load runs only while an event stream is open; the page closes its stream when its tab has been hidden for 60 s | a bot that runs JavaScript is a viewer, and a viewer costs at most the fixed load | `TestLoadRestsWithoutViewers`, `TestLoadRestsWhileTheHubReportsNoViewers`, `TestHiddenTabClosesItsStreamInChrome` |
 | 28 | the supply chain | no JavaScript dependency, no CDN, no build step for the page; the main module still has one dependency; both base images are pinned by digest; `govulncheck` runs in CI | | CI |
 | 29 | passing a receipt of the demo off as proof of something else | the cluster ID is in the signed message and random for every cluster; the keys are new for every cluster | a receipt of the demo proves something about the demo | |
 
@@ -172,7 +172,10 @@ terminates TLS.
 | a small build context | `.dockerignore` lets in `go.mod`, `go.sum`, `cmd`, `internal` and `ledger`, without tests and test data |
 
 The controller needs no capability to signal its children: they run under the same user. It is
-PID 1 in the container, reaps its children and handles `SIGTERM` itself.
+PID 1 in the container, reaps its children and handles `SIGTERM` itself. The `Dockerfile` sets
+the address of the repository with `-ldflags -X`, so the page in the image links to the source; a
+local `go build` leaves the links out. That flag came after the build described below and has not
+been built since.
 
 What has run, on the development laptop: the image builds; a container started with `docker run`
 and the switches of the table (user, read-only, no capabilities, no new privileges, one CPU,

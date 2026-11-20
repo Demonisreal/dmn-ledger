@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -259,6 +260,21 @@ func TestStreamEndsAfterTenMinutes(t *testing.T) {
 			t.Errorf("the stream ended after %v, want 10m0s", took)
 		}
 	})
+}
+
+func TestHubReportsTheLastViewerGone(t *testing.T) {
+	show := newFake()
+	h := newHub(show)
+	v := h.join(netip.MustParsePrefix("192.0.2.1/32"))
+	h.beat()
+	if _, _, watching := show.counted(); watching != 1 {
+		t.Fatalf("%d viewers reported with one stream", watching)
+	}
+	h.leave(v)
+	h.beat()
+	if _, _, watching := show.counted(); watching != 0 {
+		t.Fatalf("%d viewers reported after the last stream closed", watching)
+	}
 }
 
 func TestTickRate(t *testing.T) {
