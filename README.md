@@ -386,6 +386,19 @@ with real processes, the chaos test and the demo need Linux; `scripts/vectors.mj
 - [docs/demo-page.md](docs/demo-page.md): the tokens and components the demo page is built from,
   its states and its contrast figures.
 
+## Sources
+
+What the documents cite by a short name:
+
+- "The Raft paper": Diego Ongaro and John Ousterhout, *In Search of an Understandable Consensus
+  Algorithm (Extended Version)*, 2014. Figure numbers follow this version.
+- "The Raft dissertation": Diego Ongaro, *Consensus: Bridging Theory and Practice*, Stanford
+  University, 2014. Sections 3.10, 6.3 and 10.2.1 and chapter 4 are cited by their numbers there.
+- RFC 6962 and RFC 9162 (Certificate Transparency) for the Merkle tree and its paths, RFC 8032 for
+  Ed25519.
+- [TigerBeetle](https://tigerbeetle.com) for the data model of accounts and transfers, of which
+  the ledger rules here are a subset. The code is written independently.
+
 ## License
 
 All rights reserved. Prospective employers and clients may download, read and run the code to
