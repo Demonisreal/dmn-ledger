@@ -1,6 +1,7 @@
 # ADR-011: An audit trail: a hash chain over batches, a Merkle tree per batch, stamps on request
 
-Status: accepted, 2026-11-16.
+Status: accepted, 2026-11-16. Amended 2026-11-20: the share of the chain in the CPU time of a node
+under load (ADR-012).
 
 ## Context
 
@@ -114,8 +115,14 @@ status frame on its unauthenticated client port for that, which is trust on firs
   batches of 8000, still without an allocation apart from a block for every 256 links. Reading a
   snapshot of 1000 accounts and 100 000 transfers with the full check took 15 to 17 ms before and
   39.5 to 40.6 ms after. One transfer through one node with its disk in memory
-  (`BenchmarkProcessTransfer` in `internal/replica`) went from 1.5 to 1.6 µs to 2.2 µs. On a
-  real cluster a transfer waits for four fsyncs; the share of the chain there is not measured yet.
+  (`BenchmarkProcessTransfer` in `internal/replica`) went from 1.5 to 1.6 µs to 2.2 µs.
+- On a real cluster a transfer waits for four fsyncs, and the chain is a share of what is left
+  (ADR-012). At 2,000 transfers a second on three nodes the loop of the leader spends 0.5 % of its
+  time computing, and the SHA-256 of the chain is 3.9 to 5.6 % of the sampled CPU time of a node.
+  Where requests carry many transfers it shows: 20.2 to 27.8 % of the CPU time on three nodes at
+  50,000 a second and 26.5 % on one node at 120,000, of nodes that use 3.6 % and 6.8 % of their
+  hardware threads. A cluster with and without the chain was not compared, and receipts and
+  stamps under load were not measured: the plan of ADR-012 has no load for them.
 - Receipts: building one takes 0.27 µs for a batch of one record, 30 µs for 128 and 1.95 ms for
   8000 (`BenchmarkProve` in `internal/state`). Decoding a receipt of 484 bytes takes about 1.1 µs,
   a stamp 15 µs, checking one with its signature 35 µs (`BenchmarkSign`, `BenchmarkVerify` in

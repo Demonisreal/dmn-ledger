@@ -57,18 +57,128 @@ Works today:
   in its log; the program takes every fault back itself, counts the whole ledger afterwards and
   has every answer judged by the checker of the chaos test. A receipt is checked in the browser.
   It runs locally and in a local container (see "The demo" below).
+- Benchmarks, a module of their own in `bench/`: open load on `ledgerd` and on Postgres on the
+  same disk, one raw file per run and a report that is rebuilt from them. One run of the plan is
+  in the repository (see "Measurements" below).
 
 Not built yet:
 
 - TLS and authentication.
-- Published benchmark numbers. The plan that measures a cluster of processes on a real disk, with
-  Postgres next to it, is in `bench/`; its results are not in the repository yet, and a real
-  network is not measured.
+- Measurements beyond one laptop. The numbers come from one evening on one machine, with the
+  three nodes on one disk; a real network and server hardware are not measured.
 - A public instance of the demo. It is not deployed anywhere, and the files for that in
   `deploy/demo` have only run in part; see "The container" in
   [ADR-014](docs/adr/014-public-demo-fixed-faults-no-docker-socket.md).
 - Membership changes, leadership transfer and reads from followers.
 - Signatures of a majority, revocation of keys, a witness outside the cluster.
+
+## Measurements
+
+One run of the benchmark plan, on 2026-11-20 at commit `a6ee18b`, on a laptop: an i5-12500H, one
+NVMe disk with ext4, governor `powersave`, a desktop session next to it. The load generator, the
+nodes and Postgres ran on that one machine. The raw file of every run, the machine, the Postgres
+settings and the report built from them are in
+[docs/bench/2026-11-20-a6ee18b/](docs/bench/2026-11-20-a6ee18b/RESULTS.md). How it was measured,
+what follows from it and when Postgres is the better choice is in
+[ADR-012](docs/adr/012-benchmarks-open-load-one-machine-postgres.md).
+
+The load is open: transfers arrive at a fixed rate whether or not the system has answered, and
+latency counts from the moment a transfer was due. On both systems a transfer is confirmed only
+after it is synced to disk. A figure is the median of its runs, with the smallest and the
+largest in brackets. The table is the fixed load between 10,000 accounts: 2,000 transfers a
+second on 32 lanes and 20,000 a second on 4 lanes that bundle, each in two runs about an hour
+apart. A lane is a client session of the ledger or a connection to Postgres.
+
+| Target | Lanes | Transfers/s | p50 ms | p50 in flush times | p99 ms | fsync per transfer | Two runs |
+|---|---|---|---|---|---|---|---|
+| one node | 32 | 2,000 | 10.5 (9.47–11.5) | 6.4 (6.0–6.8) | 24.3 (15.9–32.8) | 0.153 (0.142–0.164) | missed |
+| three nodes | 32 | 2,000 | 58.4 (57.3–59.4) | 37.0 (36.4–37.5) | 99.3 (98.3–100) | 0.220 (0.217–0.224) | agreed |
+| Postgres, one transaction per transfer, read committed | 32 | 2,000 | 3.07 (3.07–3.07) | 1.9 (1.9–1.9) | 4.61 (4.61–4.61) | 0.296 (0.294–0.298) | agreed |
+| Postgres, one transaction per transfer, serializable | 32 | 2,000 | 3.17 (3.14–3.20) | 2.0 (1.9–2.0) | 4.99 (4.74–5.25) | 0.297 (0.282–0.311) | missed |
+| one node | 4 | 20,000 | 18.2 (17.4–18.9) | 11.7 (11.2–12.1) | 30.0 (29.7–30.2) | 0.017 (0.016–0.017) | agreed |
+| three nodes | 4 | 20,000 | 58.4 (53.2–63.5) | 36.8 (33.8–39.8) | 109 (106–111) | 0.023 (0.021–0.024) | missed |
+| Postgres, batched, read committed | 4 | 20,000 | 9.86 (9.73–9.98) | 6.1 (6.0–6.2) | 33.5 (32.3–34.8) | 0.024 (0.024–0.024) | agreed |
+| Postgres, batched, serializable | 4 | 20,000 | saturated at 20,000 | | | | agreed |
+
+"Flush times" is p50 divided by the mean flush time of the disk in the same run, 1.59 ms over all
+runs (1.50–2.31). "fsync per transfer" counts the sync calls of all nodes, or of Postgres on its
+WAL. Batched Postgres under `SERIALIZABLE` did not hold 20,000 a second: it confirmed 12,144
+(11,864–12,424) and gave up 7.4 % of the transfers (3.7 %–11.0 %).
+
+"Two runs" is the check the plan sets itself: two runs whose flush times were within 10 % of each
+other must also be within 10 % in throughput, p50 and fsyncs per transfer. **Three of the eight
+groups in the table missed it, and `bench check` therefore does not pass on this run.** One node
+at 2,000 a second had a p50 of 11.52 ms in one run and 9.472 ms in the other, three nodes at
+20,000 a second 63.488 and 53.248 ms, and Postgres under `SERIALIZABLE` 0.311 and 0.282 fsyncs
+per transfer. Outside the table 26 more groups missed, 22 of them single stages of the curves
+below. The criterion was not changed afterwards. Where a group missed, its spread is the result.
+
+**At a load both hold, a single Postgres answers faster.** At 2,000 transfers a second one node
+takes 3.4 times as long as Postgres and three nodes 19 times; at 20,000 a second batched Postgres
+under `READ COMMITTED` is at about half the p50 of one node. A node writes in rounds, and every
+round is two fsyncs one after the other, one for the log and one for the seal, on files that grow
+or are rewritten. Postgres commits with one `fdatasync` on a file that already exists. The three
+nodes also share one disk here, and Postgres ran as one instance without a replica.
+
+**The ledger goes on where Postgres stops.** On this load, Postgres with one transaction per
+transfer on 32 connections held 8,000 transfers a second, and batched under `READ COMMITTED`
+32,000, with 44,917 a second (44,833–45,000) confirmed under overload. One node held 256,000 a
+second, the highest stage the load generator could offer; at 512,000 the generator was the limit,
+not the node. At 256,000 its p50 was 23.6 ms (23.6–23.6) on 4 lanes and 28.2 ms (25.1–31.2) on
+32. Three nodes held 256,000 on 4 lanes as well and at least 192,000 (128,000–256,000) on 32;
+their runs end at the amount of data the plan lets a cluster write, not at a limit of the
+cluster.
+
+![p50 latency over the offered rate, 32 lanes](docs/bench/2026-11-20-a6ee18b/m1-p50-32-lanes.svg)
+
+![p50 latency over the offered rate, 4 lanes](docs/bench/2026-11-20-a6ee18b/m1-p50-4-lanes.svg)
+
+![fsync per transfer over the offered rate, 32 lanes](docs/bench/2026-11-20-a6ee18b/m1-fsync-32-lanes.svg)
+
+The curves show medians; p99 and the spread of every point are in the tables of the report. The
+third one shows grouping at work on both systems: the more transfers arrive during a sync, the
+more share the next.
+
+- **Hot accounts.** With 8 accounts on the receiving side of 80 % of the transfers, the p50 of
+  three nodes is 0.87 and 1.04 times that of the even load, which is no change. For Postgres with
+  one transaction per transfer the p50 grows 1.30 times under `READ COMMITTED` and 1.10 times
+  under `SERIALIZABLE`, and the p99 5.94 and 18.05 times, under `SERIALIZABLE` to 90.1 ms
+  (71.7–109) with 0.854 retries per transfer.
+- **The seal.** Without the fsync of the seal the p50 of one node is 0.51 times what it is with
+  it, 5.57 ms (5.50–5.63) against 10.9 ms (10.8–11.0), and that of three nodes 0.45 times. At
+  this load the seal is half the wait.
+- **Snapshots.** A node stops while it writes a snapshot: about 200 ms per 100 MB on one node,
+  between 174 and 250 in six runs. With three nodes and a million accounts the stop took 761 to
+  1,129 ms and the term changed in all four runs, so at that size a snapshot costs the leader its
+  role on this machine. Snapshots were switched off in every other run.
+
+What these numbers do not say:
+
+- They come from a laptop with a desktop session and an editor next to the run, on one evening.
+  The milliseconds and the transfers per second say little about a server. The ratios and the
+  shapes of the curves are what this section is for.
+- The disk has two speeds and changes between them on its own. Every second of a run is sorted by
+  the flush time of the device, and all figures here are from the slow speed, where the disk
+  stays under sustained load.
+- The three nodes ran on one machine and shared one disk. Their fsyncs queue on the same device,
+  and messages between them take no time. That shows what the protocol costs, not what a cluster
+  on three machines does.
+- Postgres ran as a single instance without a replica. Against three nodes that favours Postgres:
+  it writes one copy and the ledger three.
+- Postgres got the six hardware threads the three nodes share (one node has two), a schema with
+  constraints and foreign keys, row locks in a fixed order and its default durability. The
+  settings are in `postgres.txt` next to the results.
+- Batched, Postgres checks the limit on debits once per account and batch. The ledger checks it
+  after every transfer.
+- The rates at which Postgres stopped belong to this load and these variants: 10,000 accounts, a
+  pool of 32 connections, batches of at most 1,000 transfers. With a million accounts batched
+  Postgres was faster at 20,000 a second, 0.60 times the p50, and the rising rates were not run
+  on that load.
+- The load generator ran on the same machine. Where it was the limit, the report says "at least",
+  and the rate at which a node saturates is not in the data.
+- No window is longer than a minute, and no run writes more than 2 million transfers on three
+  nodes. Nothing here is about hours or about a large ledger.
+- Only writes were offered. Reads, receipts and behaviour during a fault were not measured.
 
 ## Try it
 
@@ -354,9 +464,10 @@ whoever can write to a node's files can rewrite a record together with its link,
 node or an earlier head shows it. The full account is in
 [ADR-011](docs/adr/011-audit-trail.md).
 
-There are no benchmark numbers for a cluster yet; the ADRs quote micro-benchmarks of single
-packages. The benchmarks are a module of their own: `cd bench && go test ./...`, and with
-`-tags pg` and Docker also the tests against Postgres.
+The benchmark numbers come from one run on one laptop, and that run does not pass its own check
+of agreement between two runs; "Measurements" above says where, and lists what the numbers do not
+cover. The benchmarks are a module of their own: `cd bench && go test ./...`, and with `-tags pg`
+and Docker also the tests against Postgres.
 
 These are not the only limits. What else is not built, from replacing a lost node to backups and
 queries, what each gap means for a user today and how it could be closed, is in
@@ -377,6 +488,8 @@ with real processes, the chaos test and the demo need Linux; `scripts/vectors.mj
 - [docs/adr/](docs/adr/): the decisions and what they cost.
   [ADR-009](docs/adr/009-disk-corruption-seal-and-repair.md) covers disk corruption,
   [ADR-011](docs/adr/011-audit-trail.md) the audit trail and what a receipt proves,
+  [ADR-012](docs/adr/012-benchmarks-open-load-one-machine-postgres.md) how the benchmarks
+  measure, what they found and when Postgres is the better choice,
   [ADR-013](docs/adr/013-non-goals.md) what is not built, what each gap means today and how it
   could be closed,
   [ADR-014](docs/adr/014-public-demo-fixed-faults-no-docker-socket.md) the demo and its threat
@@ -385,6 +498,9 @@ with real processes, the chaos test and the demo need Linux; `scripts/vectors.mj
   trail, invariants and the snapshot format of the state machine.
 - [docs/demo-page.md](docs/demo-page.md): the tokens and components the demo page is built from,
   its states and its contrast figures.
+- [docs/bench/2026-11-20-a6ee18b/](docs/bench/2026-11-20-a6ee18b/RESULTS.md): the measurement of
+  2026-11-20, with the report, the curves, the machine, the Postgres settings and the raw file of
+  every run.
 
 ## Sources
 

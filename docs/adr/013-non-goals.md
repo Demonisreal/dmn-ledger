@@ -1,6 +1,7 @@
 # ADR-013: Non-goals: what is not built, what that means today, and how it could be added
 
-Status: accepted, 2026-11-20.
+Status: accepted, 2026-11-20. Amended 2026-11-20: what the benchmarks of ADR-012 measured is no
+longer listed as open, and the snapshot pause that costs a leader its role is a measurement.
 
 ## Context
 
@@ -140,9 +141,12 @@ groups, and no transfer crosses clusters. A transfer touches two accounts, so sh
 commit protocol across groups, and the project is about one group.
 
 Today: capacity is one machine's. One core applies (ADR-001), one disk syncs, and the smallest
-node bounds the ledger (below). How many transfers a second that is, is not measured. Since a
-transfer never leaves its ledger (`AccountsMustHaveSameLedger`), separate ledgers can run on
-separate clusters with nothing built; what is lost is a linked chain across them.
+node bounds the ledger (below). How many transfers a second that is was looked for on a laptop
+and not found: one node held 256,000 a second, and three nodes on one disk at least 192,000
+(128,000–256,000) with 32 client sessions and 256,000 with 4. The load generator and the plan
+ended those runs, not the nodes (ADR-012). Since a transfer never leaves its ledger
+(`AccountsMustHaveSameLedger`), separate ledgers can run on separate clusters with nothing built;
+what is lost is a linked chain across them.
 
 To add it: pending transfers are already the first half of a two-phase commit: reserve on both
 sides, then post or void. A coordinator outside the clusters could move value between two groups
@@ -181,7 +185,8 @@ cache. ADR-001 gives the reason: a state machine in plain memory gives equal byt
 state, which is what `Digest`, the comparison with the oracle and the full `CheckInvariants` rest
 on.
 
-Today the ledger has three bounds, and none was measured on a large ledger:
+Today the ledger has three bounds. The pause is measured up to a million accounts and a snapshot
+of 614 MB (ADR-012); memory and the stream limit were not measured on a large ledger:
 
 - **Memory.** A transfer takes 136 bytes in its block and an entry in a map, a batch 152 bytes for
   its link (the first figure from the struct, not measured), and nothing is ever freed. `ledgerd`
@@ -191,11 +196,14 @@ Today the ledger has three bounds, and none was measured on a large ledger:
   whole state inside its loop and does nothing else meanwhile; the replies of that round wait as
   well. A restart reads the snapshot back with the full invariant check, and so does a follower
   that installs one. All three grow with the ledger. ADR-010 has the times for 100 000 transfers in
-  memory; on a real disk they are not measured. A node that writes for longer than an election
-  timeout, 0.5 to 1 s with the default tick, looks dead to the others for that time: a leader is
-  replaced, and a leader whose followers write at the same moment steps down by check-quorum (R9).
-  That follows from the rules. No test runs a snapshot that long, and at which size it begins is
-  not measured.
+  memory. On a real disk a single node stopped for about 200 ms per 100 MB of snapshot, 1,198 and
+  1,273 ms with 614 MB (ADR-012); a restart and an install were not measured. A node that writes
+  for longer than an election timeout, 0.5 to 1 s with the default tick, looks dead to the others
+  for that time: a leader is replaced, and a leader whose followers write at the same moment steps
+  down by check-quorum (R9). That follows from the rules, and it is measured: three nodes on one
+  disk with a million accounts and snapshots of 308 to 315 MB had rounds of 761 to 1,129 ms, and
+  the term changed in all four runs (ADR-012). No smaller state was run with three nodes, so at
+  which size it begins is still not known, and no test runs a snapshot that long.
 - **8 GiB per snapshot stream.** A node that receives a snapshot gives up above 8 GiB
   (`TestSnapshotOverTheLimitIsRefused`). A snapshot holds 101 bytes per transfer and 113 per
   batch, so the limit is near 85 million transfers, fewer with small batches. Beyond it a follower
@@ -503,16 +511,19 @@ two rules without a counterexample are needed. The distance between such a model
 stays, and the simulator is what covers it. For power loss: the three processes of the chaos test
 on block devices that drop what was not synced when the test cuts them.
 
-### Not measured
+### Measured once, on one laptop
 
-No benchmark numbers for a cluster are in the repository. The plan in `bench/` runs a cluster of
-processes on one machine next to Postgres on the same disk; its results are not in yet. Every
-number an ADR quotes is a micro-benchmark of one package on one laptop. Open, each named in its
-ADR: the commit latency of three nodes with four fsyncs in sequence (ADR-004, ADR-009), how far
-grouping goes under load and what reading each entry back costs (ADR-002), the pause of a snapshot
-on a real disk (ADR-010), the share of the audit trail in a real commit (ADR-011). Open and named
-only here: memory per transfer, the time of a restart against the size of the ledger, and anything
-over a real network.
+The benchmark numbers for a cluster come from one run of the plan in `bench/`, on one evening and
+one laptop, with the three nodes on one disk and Postgres next to them on the same disk (ADR-012).
+`bench check` does not pass on that run: in three required groups the two runs were more than
+10 % apart. Measured there, and quoted in the ADR of each: the commit latency of three nodes with
+four fsyncs in sequence (ADR-004), the price of the seal (ADR-009), how far grouping goes under
+load (ADR-002), the pause of a snapshot on a real disk (ADR-010) and the share of the audit trail
+in the CPU time of a node (ADR-011). Still open: what reading each entry back costs on its own
+(ADR-002), receipts and stamps under load (ADR-011), a follower that installs a snapshot
+(ADR-010), the rate at which a node saturates, memory per transfer, the time of a restart against
+the size of the ledger, a second run on another evening, a disk with power-loss protection, and
+anything over a real network.
 
 ### Not for production
 

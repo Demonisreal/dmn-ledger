@@ -1,6 +1,7 @@
 # ADR-009: Disk corruption: a seal on disk, repair as a non-voter
 
-Status: accepted, 2026-11-13. Amended 2026-11-16: seed counts measured again.
+Status: accepted, 2026-11-13. Amended 2026-11-16: seed counts measured again. Amended 2026-11-20:
+the price of the seal measured with one binary (ADR-012).
 
 ## Context
 
@@ -97,14 +98,17 @@ cores.
 - `BenchmarkProcessTransferDisk` runs one node on the real file system with one transfer per
   round and reports 2 fsync/op. The command is
   `TMPDIR=<dir> go test -run '^$' -bench ProcessTransferDisk -count 12 ./internal/replica/`,
-  with `<dir>` on a disk and not on a tmpfs. What the second fsync costs in time cannot be
-  measured from this repository alone, because the commit before the seal does not have the
-  benchmark. It was measured with the same benchmark added to the tree before the seal, both
-  programs run in turns on the NVMe disk (ext4) of an i5-12500H laptop: a transfer took between
-  one and a half times and twice as long, the lower end on a quiet machine, the upper end with
-  other work running. Only that ratio is worth quoting. The disk has two speeds: after some
-  seconds of load an fsync takes several times as long. A clean measurement of latency with
-  three nodes is still open.
+  with `<dir>` on a disk and not on a tmpfs.
+- What the second fsync costs in time is measured with one binary (ADR-012): `ledgerd` built with
+  the planted bugs, run in turns without one and with B13, which leaves out the fsync of `meta`
+  after the log. At 2,000 transfers a second from 32 client sessions, on the NVMe disk (ext4) of
+  an i5-12500H laptop at the slower of its two speeds, one node answers in 10.9 ms in the median
+  (10.8–11.0) with the seal and in 5.57 ms (5.50–5.63) without, 0.51 times. Three nodes on that
+  one disk answer in 58.4 ms (56.3–60.4) and 26.1 ms (24.1–28.2), 0.45 times; the two runs
+  without the seal were more than 10 % apart. The seal doubles the wait at this load. The number
+  of fsyncs per transfer stays the same, 0.99 and 1.08 times: the node waits for its disk either
+  way, so without the seal it makes twice as many rounds with half the transfers each. What the
+  seal costs a node near its limit is not measured.
 - Whatever arrives while a node waits for its disk still shares the next round (ADR-002). The
   second fsync is paid per round, not per request.
 - Slower rounds mean more retries from clients. A leader therefore drops the copy of a write that

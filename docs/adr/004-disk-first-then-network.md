@@ -2,6 +2,7 @@
 
 Status: accepted, 2026-11-11. Amended 2026-11-13: the seal is part of the order (ADR-009).
 Amended 2026-11-16: one place that sends in the server; seed counts measured again.
+Amended 2026-11-20: the commit latency of three nodes measured (ADR-012).
 
 ## Context
 
@@ -41,8 +42,12 @@ in a `Ready` is covered by the state the same `Ready` stores.
   node on the clone starts in repair on a disk that nobody damaged, which F2 reports.
 - Commit latency is two fsyncs on the leader, for the log and for the seal, then a round trip,
   then two on the follower, one after the other. Sending in parallel would overlap the leader's
-  with the rest. What that costs in a cluster is not measured yet; ADR-009 has the count of fsyncs
-  per round and a first measurement of one node on a real disk.
+  with the rest. Measured with three nodes on one machine and one disk (ADR-012): at 2,000
+  transfers a second from 32 client sessions a transfer waits 58.4 ms in the median (57.3–59.4),
+  which is 37.0 flushes of the device, where one node needs 10.5 ms (9.47–11.5) and 6.4 flushes.
+  That is 5.6 times as long for twice the fsyncs. The three nodes queue on the same disk, which
+  three machines would not, and they have no network between them, which three machines would;
+  what the order alone costs is not separated from either.
 - Batching needs no timer. Everything that arrives while a node waits for its disk shares the next
   fsync.
 - In the server the rule holds by construction. All three disk steps run inside `Node.Process`,

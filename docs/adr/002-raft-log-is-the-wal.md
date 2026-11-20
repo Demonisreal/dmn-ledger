@@ -1,7 +1,8 @@
 # ADR-002: The Raft log is the WAL, one request is one entry
 
 Status: accepted, 2026-11-11. Amended 2026-11-13: the metadata file and its seal (ADR-009).
-Amended 2026-11-16: grouping in the server.
+Amended 2026-11-16: grouping in the server. Amended 2026-11-20: grouping and the cost of an fsync
+measured on a real disk (ADR-012).
 
 ## Context
 
@@ -43,10 +44,23 @@ applied again.
 - Groups grow with load and with disk latency. Under light load every request costs its own
   round, two fsyncs with the seal. In the server a round takes everything that arrived during the
   previous one: `TestRequestsDuringASyncShareTheNext` holds an fsync, sends 50 requests meanwhile
-  and counts two log syncs for all 51. How far that goes on a cluster under load is not measured
-  here; the benchmarks under `bench/` count the fsyncs per transfer.
+  and counts two log syncs for all 51. On a real disk, with the fsyncs of the log and of `meta`
+  counted together (ADR-012): one node with 32 client sessions makes 0.314 fsyncs per transfer
+  (0.294–0.334) at 1,000 transfers a second, 0.022 (0.022–0.023) at 16,000 and 0.001 at 256,000.
+  Three nodes added up make 0.467 (0.431–0.503) at 1,000 a second and 0.030 (0.028–0.033) at
+  16,000. At 2,000 a second the loop of one node spends 50.2 % of its time in the fsync of the log
+  and 48.9 % in that of `meta`. One round follows the other without a gap, so a group is whatever
+  arrived during two fsyncs.
+- These fsyncs are the dear kind. A segment grows as it is written, and in the disk probe of that
+  run (`machine.txt` in its folder) an fsync on a growing file took 3.979 ms where an `fdatasync`
+  on a preallocated file took 1.74 ms. Postgres syncs its WAL the second way, which is part of why
+  it answers faster than one node at a load both hold (ADR-012). Preallocated segments are not
+  built.
 - Applying reads each entry back from the WAL, with a second read through the page cache and a
-  second CRC check. That is the price of applying only what is on disk; it is not measured.
+  second CRC check. That is the price of applying only what is on disk. It is not measured on its
+  own: the CPU profile of ADR-012 has one column for everything the log does, and it holds 11.6 %
+  of the CPU time of one node at 2,000 transfers a second and 15.7 % at 120,000, of a node that
+  uses 3.8 % and 6.8 % of its two hardware threads.
 - A checksum alone cannot tell a bit flip in the last synced batch from a torn write. The seal in
   the metadata file can (ADR-009): a broken frame up to the seal is damage, a broken frame after
   it at the end of the log is cut off (`TestOpenJudgesDamageByTheSeal`).
