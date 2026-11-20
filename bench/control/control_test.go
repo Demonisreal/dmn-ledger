@@ -292,6 +292,9 @@ func TestMeterOnThisMachine(t *testing.T) {
 	if err != nil {
 		t.Skipf("no block device under %s: %v", os.TempDir(), err)
 	}
+	if _, err := os.Stat("/sys/devices/system/cpu/cpu0/thermal_throttle"); err != nil {
+		t.Skipf("no thermal counters on this machine: %v", err)
+	}
 	m := NewMeter(os.DirFS("/"), Watch{Disk: disk, Pids: []int{os.Getpid()}, CPUs: []int{0, 1}})
 	time.Sleep(200 * time.Millisecond)
 	s := m.Tick()

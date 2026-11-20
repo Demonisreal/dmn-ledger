@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -252,6 +253,9 @@ func TestClusterStartsAndStops(t *testing.T) {
 }
 
 func TestSampleReadsEveryNode(t *testing.T) {
+	if n := runtime.NumCPU(); n < 6 {
+		t.Skipf("three pinned nodes take cpus 0 to 5, this machine has %d", n)
+	}
 	c := startCluster(t, Config{Nodes: 3, Lanes: 4, Pin: true})
 	leaderNow(t, c)
 	pids := c.Pids()

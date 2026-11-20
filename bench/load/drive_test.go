@@ -77,6 +77,9 @@ func TestSelftest(t *testing.T) {
 	if raceOn {
 		t.Skip("the race detector slows the dispatcher past the floor the selftest demands")
 	}
+	if testing.Short() {
+		t.Skip("the floor the selftest demands takes a quiet machine")
+	}
 	st, err := RunSelftest(context.Background())
 	t.Logf("floor at %d/s: p50 %v, p99 %v, dispatcher p99 %v", FloorRate, st.FloorP50, st.FloorP99, st.FloorLate)
 	t.Logf("stall at %d/s: %d due, %d open at its end, p50 %v, p99 %v, max %v; p99 %v the second before",
