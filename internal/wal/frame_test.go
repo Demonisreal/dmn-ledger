@@ -9,7 +9,7 @@ import (
 
 func TestFrameRoundTrip(t *testing.T) {
 	cases := []Entry{
-		{Index: 1, Term: 1},
+		{Index: 6, Term: 1},
 		{Index: 1 << 63, Term: 7, Kind: 3, Body: []byte("body")},
 		{Index: 9, Term: 2, Kind: 255, Body: bytes.Repeat([]byte{0xff}, 4096)},
 	}
@@ -51,6 +51,8 @@ func TestDecodeFrameRejects(t *testing.T) {
 		"synced bit":       flipped(good, offSynced+2),
 		"body bit":         flipped(good, len(good)-1),
 		"zeros":            make([]byte, 64),
+		"synced itself":    appendFrame(nil, Entry{Index: 3, Term: 1, Body: []byte("abc")}, 3, 77),
+		"synced beyond":    appendFrame(nil, Entry{Index: 3, Term: 1, Body: []byte("abc")}, 4, 77),
 	}
 	if _, ok := decodeFrame(good, 78); ok {
 		t.Error("other nonce: accepted")

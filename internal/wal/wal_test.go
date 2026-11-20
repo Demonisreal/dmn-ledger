@@ -387,6 +387,26 @@ func TestTornFirstFrameEmptiesLog(t *testing.T) {
 	}
 }
 
+func TestFrameThatVouchesForItselfEndsTheLog(t *testing.T) {
+	for _, synced := range []uint64{3, 9, 1 << 40} {
+		sim := newSim(1)
+		w := mustOpen(t, sim, opts(0))
+		mustAppend(t, w, span(1, 4, 1)...)
+		seed := w.active().seed
+		_ = w.Close()
+		f := lastSegment(t, sim)
+		if _, err := f.WriteAt(appendFrame(nil, ent(3, 1), synced, seed), frameOffset(1, 3, 1)); err != nil {
+			t.Fatal(err)
+		}
+		_ = f.Sync()
+
+		w = mustOpen(t, sim, opts(0))
+		if last := lastIndex(t, w); last != 2 {
+			t.Fatalf("entry 3 says the log was synced up to %d when it was written: last %d, want 2", synced, last)
+		}
+	}
+}
+
 func frameOffset(lo, i, term uint64) int64 {
 	off := int64(segHdrLen)
 	for k := lo; k < i; k++ {

@@ -93,7 +93,7 @@ func decodeFrame(b []byte, seed uint32) (frame, bool) {
 	if binary.LittleEndian.Uint32(b[offBodyCRC:]) != crc32.Update(seed, castagnoli, body) {
 		return frame{}, false
 	}
-	return frame{
+	fr := frame{
 		Entry: Entry{
 			Index: binary.LittleEndian.Uint64(b[offIndex:]),
 			Term:  binary.LittleEndian.Uint64(b[offTerm:]),
@@ -102,7 +102,8 @@ func decodeFrame(b []byte, seed uint32) (frame, bool) {
 		},
 		synced: binary.LittleEndian.Uint64(b[offSynced:]),
 		size:   frameHdrLen + int(n),
-	}, true
+	}
+	return fr, fr.synced < fr.Index
 }
 
 func provenSynced(tail []byte, want uint64, seed uint32) bool {
