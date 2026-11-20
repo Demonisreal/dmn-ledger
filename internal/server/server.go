@@ -123,6 +123,7 @@ func Open(cfg Config) (*Server, error) {
 	}
 	node, err := replica.Open(replica.Config{
 		ID:             cfg.ID,
+		Cluster:        cfg.Cluster,
 		Peers:          ids,
 		FS:             cfg.FS,
 		Dir:            cfg.Dir,

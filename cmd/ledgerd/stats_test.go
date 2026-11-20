@@ -65,7 +65,7 @@ func (p *proc) askStats(t *testing.T) map[string]uint64 {
 
 func TestStatsLine(t *testing.T) {
 	addrs := freeAddrs(t, 2)
-	p := launch(t, nodeEnv(1, addrs[:1], addrs[1], t.TempDir())...)
+	p := launch(t, nodeEnv(1, addrs[:1], addrs[1], dataDir(t, 1, 1))...)
 	awaitStatus(t, addrs[1], func(st ledger.NodeStatus) bool { return st.Role == ledger.Leader })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -37,7 +37,7 @@ type vault struct {
 }
 
 func startVault(env NodeEnv) (Process, error) {
-	meta, st, err := wal.OpenMeta(env.FS, vaultDir)
+	meta, st, err := wal.CreateMeta(env.FS, vaultDir, wal.Identity{Cluster: clusterID, Node: env.ID, Nodes: uint64(len(env.Peers))})
 	if err != nil {
 		return nil, err
 	}

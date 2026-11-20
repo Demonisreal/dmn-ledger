@@ -73,6 +73,7 @@ func (ct *counted) firstRun(t *testing.T, fsys disk.FS) *Node {
 	t.Helper()
 	cfg := ct.config(fsys)
 	cfg.ID, cfg.Peers, cfg.SnapshotEvery = 1, []uint64{1}, math.MaxUint64
+	cfg.Create, cfg.recount = false, true
 	n, _, err := recount(cfg, ct.head, audit.Head{})
 	if err != nil {
 		t.Fatalf("first run: %v", err)
@@ -318,5 +319,37 @@ func TestRecountOfADamagedDirFails(t *testing.T) {
 	}
 	if err := ct.recount(d, ct.head); !errors.Is(err, wal.ErrCorrupt) {
 		t.Fatalf("recount of a damaged log: %v, want ErrCorrupt", err)
+	}
+}
+
+func TestRecountOpensTheDirectoryOfAnyNode(t *testing.T) {
+	ct := countedNet(t)
+	runs, err := Recount(ct.config(ct.copy(1)), ct.head)
+	if err != nil {
+		t.Fatalf("recount of the copy of n2 as a cluster of one: %v", err)
+	}
+	if runs[0].Links != ct.head.Seq {
+		t.Fatalf("runs %+v, the head is link %d", runs, ct.head.Seq)
+	}
+}
+
+func TestRecountRefusesAnotherCluster(t *testing.T) {
+	ct := countedNet(t)
+	cfg := ct.config(ct.copy(1))
+	cfg.Cluster = 9
+	_, err := Recount(cfg, ct.head)
+	want := "replica: the directory belongs to another node or cluster: /n holds node 2 of 3 in cluster 7, not node 1 of 1 in cluster 9"
+	if !errors.Is(err, ErrIdentity) || err.Error() != want {
+		t.Fatalf("recount in cluster 9: %v, want %q", err, want)
+	}
+}
+
+func TestRecountDoesNotCreate(t *testing.T) {
+	tn := stoppedTestNet(t, 3, nil)
+	if _, err := Recount(tn.config(1), audit.Head{}); !errors.Is(err, wal.ErrNoMeta) {
+		t.Fatalf("recount of an empty copy: %v, want wal.ErrNoMeta", err)
+	}
+	if files := tn.disks[1].Durable(); len(files) != 0 {
+		t.Fatalf("recount of an empty copy left %v", files)
 	}
 }

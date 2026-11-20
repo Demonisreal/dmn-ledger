@@ -19,6 +19,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/state"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 	"github.com/Demonisreal/dmn-ledger/internal/wal"
@@ -312,6 +313,15 @@ func peerAddr(id uint64) string {
 
 func clientAddr(id uint64) string {
 	return fmt.Sprintf("client%d", id)
+}
+
+func dataDir(t *testing.T, id uint64, nodes int) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := replica.Init(disk.OS{}, dir, wal.Identity{Cluster: testCluster, Node: id, Nodes: uint64(nodes)}); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func (n *pipeNet) config(id uint64, nodes int, dir string) Config {

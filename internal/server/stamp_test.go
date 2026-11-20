@@ -155,7 +155,7 @@ func TestStampedRepliesWaitForTheirRound(t *testing.T) {
 		pn := newPipeNet()
 		two := pn.fake(t, 2, 1, following)
 		three := pn.fake(t, 3, 1, following)
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		cfg.Key = testKey
 		n := start(t, cfg)
 		c := pn.connect(t, clientAddr(1), 1)

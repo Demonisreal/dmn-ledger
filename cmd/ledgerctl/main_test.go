@@ -14,13 +14,24 @@ import (
 	"time"
 
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/server"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
+func dataDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := replica.Init(disk.OS{}, dir, wal.Identity{Cluster: 1, Node: 1, Nodes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func singleNode(t *testing.T) string {
 	t.Helper()
-	addr, _ := serveNode(t, nil, t.TempDir())
+	addr, _ := serveNode(t, nil, dataDir(t))
 	return addr
 }
 

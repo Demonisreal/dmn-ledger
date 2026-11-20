@@ -21,6 +21,7 @@ import (
 const (
 	tickNs   = 10_000_000
 	start    = 1_000_000_000_000
+	cluster  = 7
 	metaFile = "/n/" + wal.MetaName
 )
 
@@ -88,8 +89,10 @@ func stoppedTestNet(t testing.TB, size int, tune func(*Config)) *testNet {
 	for i := range size {
 		cfg := Config{
 			ID:             peers[i],
+			Cluster:        cluster,
 			Peers:          peers,
 			Dir:            "/n",
+			Create:         true,
 			MaxSessions:    16,
 			SnapshotEvery:  1000,
 			ClockStep:      tickNs + tickNs/4,

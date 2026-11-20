@@ -35,7 +35,7 @@ func TestSweepResumesWithTheSameNumberAfterLeading(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
 		fakes := []*fakePeer{pn.fake(t, 2, 1, following), pn.fake(t, 3, 1, following)}
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		cfg.Sweep = true
 		n := start(t, cfg)
 		c := pn.connect(t, clientAddr(1), 1)
@@ -116,7 +116,7 @@ func TestSweepResumesWithTheSameNumberAfterLeading(t *testing.T) {
 func sweeping(t *testing.T, fsys *hookFS) (*pipeNet, *testNode, *testClient) {
 	t.Helper()
 	pn := newPipeNet()
-	cfg := pn.config(1, 1, t.TempDir())
+	cfg := pn.config(1, 1, dataDir(t, 1, 1))
 	cfg.Sweep = true
 	if fsys != nil {
 		cfg.FS = fsys
@@ -173,7 +173,7 @@ func TestOnlyTheLeaderSweeps(t *testing.T) {
 		pn := newPipeNet()
 		nodes := make([]*testNode, 3)
 		for i := range nodes {
-			cfg := pn.config(uint64(i)+1, 3, t.TempDir())
+			cfg := pn.config(uint64(i)+1, 3, dataDir(t, uint64(i)+1, 3))
 			cfg.Sweep = true
 			nodes[i] = start(t, cfg)
 		}
@@ -236,7 +236,7 @@ func TestSweeperPausesWhileLedgerTimeTrails(t *testing.T) {
 func TestSweeperSurvivesEviction(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
-		cfg := pn.config(1, 1, t.TempDir())
+		cfg := pn.config(1, 1, dataDir(t, 1, 1))
 		cfg.Sweep = true
 		cfg.MaxSessions = 3
 		n := start(t, cfg)

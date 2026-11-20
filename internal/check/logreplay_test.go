@@ -49,9 +49,11 @@ func openSolo(t *testing.T, limit int) *solo {
 	}
 	n, err := replica.Open(replica.Config{
 		ID:             1,
+		Cluster:        1,
 		Peers:          []uint64{1},
 		FS:             s.fsys,
 		Dir:            "/n",
+		Create:         true,
 		Clock:          func() uint64 { return s.clock },
 		Rand:           rand.New(rand.NewPCG(1, 1)),
 		Nonces:         rand.NewChaCha8([32]byte{1}),

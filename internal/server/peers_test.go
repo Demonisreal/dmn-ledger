@@ -258,7 +258,7 @@ func (f *fakePeer) messages(t raft.MsgType) []raft.Message {
 func TestHelloFromAStrangerIsRefused(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
-		n := start(t, pn.config(1, 3, t.TempDir()))
+		n := start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 		for name, first := range map[string][]byte{
 			"unknown sender":  wire.AppendHello(nil, testCluster, wire.Hello{From: 9, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages}),
 			"own id":          wire.AppendHello(nil, testCluster, wire.Hello{From: 1, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages}),
@@ -301,7 +301,7 @@ func TestHelloIsReadWithItsOwnLimit(t *testing.T) {
 		pn := newPipeNet()
 		pn.fake(t, 3, 1, listening)
 		ear := pn.listen(peerAddr(2))
-		n := start(t, pn.config(1, 3, t.TempDir()))
+		n := start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 		hello := wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages})
 		for _, size := range []uint32{wire.HelloSize + 1, wire.MaxPeerBody} {
 			conn, err := pn.dial(t.Context(), peerAddr(1))
@@ -338,7 +338,7 @@ func TestPeerConnectionsBeforeTheHelloAreLimited(t *testing.T) {
 		pn := newPipeNet()
 		pn.fake(t, 2, 1, listening)
 		pn.fake(t, 3, 1, listening)
-		n := start(t, pn.config(1, 3, t.TempDir()))
+		n := start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 		knock := func() *testPeer {
 			conn, err := pn.dial(t.Context(), peerAddr(1))
 			if err != nil {
@@ -380,7 +380,7 @@ func TestMessageFromAnotherPeerIsRefused(t *testing.T) {
 		pn := newPipeNet()
 		pn.fake(t, 2, 1, listening)
 		pn.fake(t, 3, 1, listening)
-		n := start(t, pn.config(1, 3, t.TempDir()))
+		n := start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 		good := raft.Message{Type: raft.MsgAppResp, From: 2, To: 1, Term: 1}
 		p := pn.greet(t, 1, 2, wire.KindMessages)
 		p.send(good)
@@ -409,7 +409,7 @@ func TestNewPeerConnectionReplacesTheOld(t *testing.T) {
 		pn := newPipeNet()
 		pn.fake(t, 2, 1, listening)
 		pn.fake(t, 3, 1, listening)
-		n := start(t, pn.config(1, 3, t.TempDir()))
+		n := start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 		old := pn.greet(t, 1, 2, wire.KindMessages)
 		other := pn.greet(t, 1, 3, wire.KindMessages)
 		fresh := pn.greet(t, 1, 2, wire.KindMessages)
@@ -431,7 +431,7 @@ func TestPeerReconnectsWithBackoff(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
 		pn.fake(t, 3, 1, following)
-		n := start(t, pn.config(1, 3, t.TempDir()))
+		n := start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 		c := pn.connect(t, clientAddr(1), 1)
 		c.leading()
 		time.Sleep(4 * time.Second)
@@ -471,7 +471,7 @@ func deafPeer(t *testing.T) (*testNode, *testClient) {
 	pn := newPipeNet()
 	pn.fake(t, 2, 1, deaf)
 	pn.fake(t, 3, 1, following)
-	n := start(t, pn.config(1, 3, t.TempDir()))
+	n := start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 	c := pn.connect(t, clientAddr(1), 1)
 	c.leading()
 	c.register()
@@ -527,7 +527,7 @@ func TestFullPeerQueueDrops(t *testing.T) {
 func TestEveryStartDrawsItsOwnNonce(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
-		dir := t.TempDir()
+		dir := dataDir(t, 1, 3)
 		meta, _, err := wal.OpenMeta(disk.OS{}, dir)
 		if err != nil {
 			t.Fatal(err)
@@ -590,7 +590,7 @@ func TestFrozenFollowerDoesNotCampaign(t *testing.T) {
 			return nil
 		})
 		peers := []*fakePeer{pn.fake(t, 2, 1, listening), pn.fake(t, 3, 1, listening)}
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		cfg.FS = fsys
 		n := start(t, cfg)
 		lead := pn.greet(t, 1, 2, wire.KindMessages)
@@ -658,7 +658,7 @@ func TestStalledLeaderReadsAcksBeforeItChecksQuorum(t *testing.T) {
 			return nil
 		})
 		peers := []*fakePeer{pn.fake(t, 2, 1, following), pn.fake(t, 3, 1, following)}
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		cfg.FS = fsys
 		began := time.Now()
 		n := start(t, cfg)
@@ -722,7 +722,7 @@ func TestPeerWithAnotherMaxSessionsIsRefused(t *testing.T) {
 				}
 			}()
 		}
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		out := logged(&cfg)
 		n := start(t, cfg)
 

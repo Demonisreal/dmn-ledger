@@ -231,6 +231,7 @@ func (c *ctl) verifyDir(args []string) int {
 		return 2
 	}
 	runs, err := replica.Recount(replica.Config{
+		Cluster:        c.cluster,
 		FS:             copied,
 		Dir:            copyRoot,
 		Clock:          func() uint64 { return uint64(time.Now().UnixNano()) }, //nolint:gosec // G115: the wall clock is after 1970

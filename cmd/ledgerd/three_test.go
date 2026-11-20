@@ -95,7 +95,7 @@ func TestThreeProcesses(t *testing.T) {
 		if err := notary.WriteKey(keyFile, ed25519.NewKeyFromSeed(bytes.Repeat([]byte{byte(i + 1)}, ed25519.SeedSize))); err != nil {
 			t.Fatal(err)
 		}
-		dirs[i] = t.TempDir()
+		dirs[i] = dataDir(t, i+1, 3)
 		nodes[i] = launch(t, nodeEnv(i+1, peers, clients[i], dirs[i], "LEDGER_KEY_FILE="+keyFile, "LEDGER_SNAPSHOT_EVERY=4")...)
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), begin.Add(10*time.Second))

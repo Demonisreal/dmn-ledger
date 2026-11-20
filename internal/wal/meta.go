@@ -7,24 +7,40 @@ import (
 	"hash/crc32"
 	"io"
 	"io/fs"
+	"math"
 	"path/filepath"
 
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 )
 
 const (
-	MetaName      = "meta"
-	MetaStride    = 4096
-	metaOffTerm   = 8
-	metaOffVote   = 16
-	metaOffSealed = 24
-	metaOffFlags  = 32
-	metaOffCRC    = 36
-	MetaSlotLen   = 40
-	metaLen       = MetaStride + MetaSlotLen
+	MetaName       = "meta"
+	MetaStride     = 4096
+	metaOffTerm    = 8
+	metaOffSealed  = 16
+	metaOffCluster = 24
+	metaOffVote    = 32
+	metaOffNode    = 33
+	metaOffNodes   = 34
+	metaOffFlags   = 35
+	metaOffCRC     = 36
+	MetaSlotLen    = 40
+	metaLen        = MetaStride + MetaSlotLen
 
-	metaRepair uint32 = 1
+	metaRepair uint8 = 1
 )
+
+var ErrNoMeta = errors.New("wal: no meta")
+
+type Identity struct {
+	Cluster uint64
+	Node    uint64
+	Nodes   uint64
+}
+
+func (id Identity) String() string {
+	return fmt.Sprintf("node %d of %d in cluster %d", id.Node, id.Nodes, id.Cluster)
+}
 
 type Meta struct {
 	Term   uint64
@@ -39,17 +55,32 @@ type MetaFile struct {
 	f      disk.File
 	lock   io.Closer
 	seq    uint64
+	id     Identity
 	cur    Meta
 	intact bool
 	err    error
 	slot   [MetaSlotLen]byte
 }
 
-func OpenMeta(fsys disk.FS, dir string) (_ *MetaFile, _ Meta, err error) {
+func OpenMeta(fsys disk.FS, dir string) (*MetaFile, Meta, error) {
+	return openMeta(fsys, dir, nil)
+}
+
+func CreateMeta(fsys disk.FS, dir string, id Identity) (*MetaFile, Meta, error) {
+	if id.Cluster == 0 || id.Node == 0 || id.Node > id.Nodes || id.Nodes > math.MaxUint8 {
+		return nil, Meta{}, fmt.Errorf("wal: %s is not an identity", id)
+	}
 	if err := fsys.MkdirAll(dir); err != nil {
 		return nil, Meta{}, err
 	}
+	return openMeta(fsys, dir, &id)
+}
+
+func openMeta(fsys disk.FS, dir string, create *Identity) (_ *MetaFile, _ Meta, err error) {
 	lock, err := fsys.Lock(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, Meta{}, fmt.Errorf("%w: %s does not exist", ErrNoMeta, dir)
+	}
 	if err != nil {
 		return nil, Meta{}, err
 	}
@@ -61,8 +92,11 @@ func OpenMeta(fsys disk.FS, dir string) (_ *MetaFile, _ Meta, err error) {
 	}()
 	path := filepath.Join(dir, MetaName)
 	m.f, err = fsys.Open(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		m.f, err = createMeta(fsys, path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist) && create == nil:
+		return nil, Meta{}, fmt.Errorf("%w: %s", ErrNoMeta, path)
+	case errors.Is(err, fs.ErrNotExist):
+		m.f, err = createMeta(fsys, path, *create)
 	}
 	if err != nil {
 		return nil, Meta{}, err
@@ -73,7 +107,7 @@ func OpenMeta(fsys disk.FS, dir string) (_ *MetaFile, _ Meta, err error) {
 	return m, m.cur, nil
 }
 
-func createMeta(fsys disk.FS, path string) (disk.File, error) {
+func createMeta(fsys disk.FS, path string, id Identity) (disk.File, error) {
 	tmp := path + ".tmp"
 	f, err := fsys.Create(tmp)
 	if err != nil {
@@ -81,7 +115,7 @@ func createMeta(fsys disk.FS, path string) (disk.File, error) {
 	}
 	var raw [metaLen]byte
 	for seq := range uint64(2) {
-		encodeMeta(raw[seq*MetaStride:], seq, Meta{})
+		encodeMeta(raw[seq*MetaStride:], seq, id, Meta{})
 	}
 	_, err = f.WriteAt(raw[:], 0)
 	if err == nil {
@@ -105,16 +139,23 @@ func (m *MetaFile) load(path string) error {
 	valid := 0
 	for off := 0; off < metaLen; off += MetaStride {
 		slot := raw[off : off+MetaSlotLen]
-		seq, st, ok := decodeMeta(slot)
+		seq, id, st, ok := decodeMeta(slot)
 		if !ok {
 			continue
 		}
-		if flags := binary.LittleEndian.Uint32(slot[metaOffFlags:]); flags&^metaRepair != 0 {
+		if flags := slot[metaOffFlags]; flags&^metaRepair != 0 {
 			return fmt.Errorf("%w: %s has flags %#x", ErrVersion, path, flags)
+		}
+		if id.Node == 0 {
+			return fmt.Errorf("%w: %s holds no identity, an earlier build wrote it", ErrVersion, path)
+		}
+		if valid == 1 && id != m.id {
+			return &CorruptError{File: path, Offset: int64(off)}
 		}
 		if valid == 0 || seq > m.seq {
 			m.seq, m.cur = seq, st
 		}
+		m.id = id
 		valid++
 	}
 	if valid == 0 {
@@ -124,29 +165,39 @@ func (m *MetaFile) load(path string) error {
 	return nil
 }
 
-func encodeMeta(slot []byte, seq uint64, st Meta) {
+func encodeMeta(slot []byte, seq uint64, id Identity, st Meta) {
 	clear(slot[:MetaSlotLen])
 	binary.LittleEndian.PutUint64(slot, seq)
 	binary.LittleEndian.PutUint64(slot[metaOffTerm:], st.Term)
-	binary.LittleEndian.PutUint64(slot[metaOffVote:], st.Vote)
 	binary.LittleEndian.PutUint64(slot[metaOffSealed:], st.Sealed)
+	binary.LittleEndian.PutUint64(slot[metaOffCluster:], id.Cluster)
+	slot[metaOffVote], slot[metaOffNode], slot[metaOffNodes] = byte(st.Vote), byte(id.Node), byte(id.Nodes) //nolint:gosec // G115: CreateMeta and Save keep all three below 256
 	if st.Repair {
-		binary.LittleEndian.PutUint32(slot[metaOffFlags:], metaRepair)
+		slot[metaOffFlags] = metaRepair
 	}
 	binary.LittleEndian.PutUint32(slot[metaOffCRC:], crc32.Checksum(slot[:metaOffCRC], castagnoli))
 }
 
-func decodeMeta(slot []byte) (uint64, Meta, bool) {
+func decodeMeta(slot []byte) (uint64, Identity, Meta, bool) {
 	if binary.LittleEndian.Uint32(slot[metaOffCRC:]) != crc32.Checksum(slot[:metaOffCRC], castagnoli) {
-		return 0, Meta{}, false
+		return 0, Identity{}, Meta{}, false
+	}
+	id := Identity{
+		Cluster: binary.LittleEndian.Uint64(slot[metaOffCluster:]),
+		Node:    uint64(slot[metaOffNode]),
+		Nodes:   uint64(slot[metaOffNodes]),
 	}
 	st := Meta{
 		Term:   binary.LittleEndian.Uint64(slot[metaOffTerm:]),
-		Vote:   binary.LittleEndian.Uint64(slot[metaOffVote:]),
+		Vote:   uint64(slot[metaOffVote]),
 		Sealed: binary.LittleEndian.Uint64(slot[metaOffSealed:]),
-		Repair: binary.LittleEndian.Uint32(slot[metaOffFlags:])&metaRepair != 0,
+		Repair: slot[metaOffFlags]&metaRepair != 0,
 	}
-	return binary.LittleEndian.Uint64(slot), st, true
+	return binary.LittleEndian.Uint64(slot), id, st, true
+}
+
+func (m *MetaFile) Identity() Identity {
+	return m.id
 }
 
 func (m *MetaFile) Intact() bool {
@@ -176,6 +227,9 @@ func (m *MetaFile) Save(term, vote uint64, repair bool) error {
 	if m.err != nil {
 		return m.err
 	}
+	if vote > math.MaxUint8 {
+		return m.fail(fmt.Errorf("wal: vote for node %d does not fit a slot", vote))
+	}
 	st := Meta{Term: term, Vote: vote, Sealed: m.cur.Sealed, Repair: repair}
 	for range 2 {
 		if err := m.put(m.seq+1, st); err != nil {
@@ -195,7 +249,7 @@ func (m *MetaFile) Seal(index uint64) error {
 }
 
 func (m *MetaFile) put(seq uint64, st Meta) error {
-	encodeMeta(m.slot[:], seq, st)
+	encodeMeta(m.slot[:], seq, m.id, st)
 	if _, err := m.f.WriteAt(m.slot[:], int64(seq%2)*MetaStride); err != nil {
 		return m.fail(err)
 	}

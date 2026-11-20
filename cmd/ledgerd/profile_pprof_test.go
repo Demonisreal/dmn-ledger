@@ -23,7 +23,7 @@ func TestProfileIsWritten(t *testing.T) {
 	var logs lockedBuffer
 	exited := make(chan int)
 	go func() {
-		exited <- run(ctx, nodeEnv(1, addrs[:1], addrs[1], t.TempDir(), "LEDGER_PROFILE="+path), &logs)
+		exited <- run(ctx, nodeEnv(1, addrs[:1], addrs[1], dataDir(t, 1, 1), "LEDGER_PROFILE="+path), &logs)
 	}()
 	awaitStatus(t, addrs[1], func(st ledger.NodeStatus) bool { return st.Role == ledger.Leader })
 	calls, cancel := context.WithTimeout(ctx, 10*time.Second)

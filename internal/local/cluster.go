@@ -16,8 +16,11 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/faultnet"
 	"github.com/Demonisreal/dmn-ledger/internal/notary"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
@@ -116,6 +119,9 @@ func (c *Cluster) boot(peers, addrs []string) error {
 			n.env = append(n.env, "LEDGER_KEY_FILE="+keyFile)
 		}
 		n.env = append(n.env, c.cfg.Env...)
+		if err := replica.Init(disk.OS{}, n.dir, wal.Identity{Cluster: c.cfg.Cluster, Node: uint64(id), Nodes: nodes}); err != nil {
+			return err
+		}
 		c.nodes = append(c.nodes, n)
 		if err := n.Start(); err != nil {
 			return err

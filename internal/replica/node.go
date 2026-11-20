@@ -27,9 +27,11 @@ const (
 
 type Config struct {
 	ID            uint64
+	Cluster       uint64
 	Peers         []uint64
 	FS            disk.FS
 	Dir           string
+	Create        bool
 	Clock         func() uint64
 	Rand          *rand.Rand
 	Nonces        io.Reader
@@ -43,7 +45,11 @@ type Config struct {
 	SnapshotTicks  int
 	MaxAppendBytes int64
 	MaxUncommitted uint64
+
+	recount bool
 }
+
+var ErrIdentity = errors.New("replica: the directory belongs to another node or cluster")
 
 type Output struct {
 	Messages []raft.Message
@@ -137,7 +143,12 @@ func Open(cfg Config) (_ *Node, err error) {
 		incoming: make(map[raft.Snapshot]io.Reader),
 	}
 	var hs wal.Meta
-	n.meta, hs, err = wal.OpenMeta(cfg.FS, cfg.Dir)
+	own := wal.Identity{Cluster: cfg.Cluster, Node: cfg.ID, Nodes: uint64(len(cfg.Peers))}
+	if cfg.Create {
+		n.meta, hs, err = wal.CreateMeta(cfg.FS, cfg.Dir, own)
+	} else {
+		n.meta, hs, err = wal.OpenMeta(cfg.FS, cfg.Dir)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +157,9 @@ func Open(cfg Config) (_ *Node, err error) {
 			_ = n.Close()
 		}
 	}()
+	if held := n.meta.Identity(); held.Cluster != own.Cluster || (!cfg.recount && held != own) {
+		return nil, fmt.Errorf("%w: %s holds %s, not %s", ErrIdentity, cfg.Dir, held, own)
+	}
 
 	base, broken, err := wal.LoadSnapshot(cfg.FS, n.snapDir(), n.load)
 	switch {

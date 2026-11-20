@@ -37,7 +37,7 @@ type started struct {
 
 func (r *replica) start(fsys disk.FS) (started, *WAL, error) {
 	var st started
-	m, meta, err := OpenMeta(fsys, nodeDir)
+	m, meta, err := CreateMeta(fsys, nodeDir, ident)
 	if err != nil {
 		return st, nil, fmt.Errorf("meta: %w", err)
 	}
@@ -152,7 +152,7 @@ func replicaRun(t *testing.T, seed uint64, steps int) int {
 		}
 	}}
 
-	m, _, err := OpenMeta(fsys, nodeDir)
+	m, _, err := CreateMeta(fsys, nodeDir, ident)
 	if err != nil {
 		t.Fatal(err)
 	}

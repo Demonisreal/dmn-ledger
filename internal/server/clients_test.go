@@ -69,7 +69,7 @@ func TestBodyMustFollowTheHeader(t *testing.T) {
 func TestOversizedFrameClosesTheConnection(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
-		n := start(t, pn.config(1, 3, t.TempDir()))
+		n := start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 		request := wire.AppendRequest(nil, testCluster, client.Request{Op: client.Register})
 		for _, tc := range []struct {
 			size   uint32
@@ -121,7 +121,7 @@ func mustMessage(t *testing.T, m raft.Message) []byte {
 func TestOtherClusterIsClosed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
-		n := start(t, pn.config(1, 3, t.TempDir()))
+		n := start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 		for name, frame := range map[string][]byte{
 			"request":        wire.AppendRequest(nil, testCluster+1, client.Request{Client: u128.From64(1), Op: client.Register}),
 			"status request": wire.AppendStatusRequest(nil, testCluster+1),
@@ -159,7 +159,7 @@ func TestOtherClusterIsClosed(t *testing.T) {
 func TestPeerFrameOnTheClientPort(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
-		n := start(t, pn.config(1, 3, t.TempDir()))
+		n := start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 		id := u128.From64(1)
 		for name, frame := range map[string][]byte{
 			"hello":          wire.AppendHello(nil, testCluster, wire.Hello{From: 2, To: 1, MaxSessions: testSessions, Kind: wire.KindMessages}),

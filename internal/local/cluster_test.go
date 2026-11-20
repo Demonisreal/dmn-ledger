@@ -16,8 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/faultnet"
 	"github.com/Demonisreal/dmn-ledger/internal/local/localtest"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
@@ -283,6 +286,67 @@ func TestEnvIsExplicit(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("a node with LEDGER_SWEEP=nonsense from Env kept running")
 		}
+	}
+}
+
+func TestStartInitialisesEveryDirectory(t *testing.T) {
+	c := start(t, Config{Seed: 10})
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for id := 1; id <= nodes; id++ {
+		if err := replica.Init(disk.OS{}, c.Node(id).Dir(), wal.Identity{Cluster: clusterID, Node: uint64(id), Nodes: nodes}); !errors.Is(err, replica.ErrInitialised) {
+			t.Errorf("init on the directory of n%d after Close: %v, want replica.ErrInitialised", id, err)
+		}
+	}
+}
+
+func TestStartRefusesAUsedDirectory(t *testing.T) {
+	c := start(t, Config{Seed: 11})
+	localtest.Await(t, 5*time.Second, "a leader", func() bool { return leader(c) != 0 })
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Start(Config{Bin: bin, Dir: c.cfg.Dir, Cluster: clusterID, Seed: 12})
+	if err == nil {
+		_ = again.Close()
+		t.Fatal("a second Start on the same Dir went through")
+	}
+	if !errors.Is(err, replica.ErrInitialised) {
+		t.Fatalf("second Start on the same Dir: %v, want replica.ErrInitialised", err)
+	}
+}
+
+func TestNodeWithoutMetaDoesNotStart(t *testing.T) {
+	exited := make(chan error, nodes)
+	c := start(t, Config{Seed: 13, Exited: func(node int, err error) {
+		if node == 2 {
+			exited <- err
+		}
+	}})
+	n := c.Node(2)
+	localtest.Await(t, 5*time.Second, "n2 answers", func() bool { return statuses(c)[1] != nil })
+	n.Kill()
+	meta := filepath.Join(n.Dir(), wal.MetaName)
+	if err := os.Remove(meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Start(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-exited:
+		if err == nil {
+			t.Fatal("n2 without meta ended without an error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("n2 without meta kept running")
+	}
+	if tail := logTail(t, c, 2); !strings.Contains(tail, "wal: no meta") {
+		t.Fatalf("log of n2 ends with:\n%s", tail)
+	}
+	if _, err := os.Stat(meta); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("meta of n2 after the refused start: %v", err)
 	}
 }
 

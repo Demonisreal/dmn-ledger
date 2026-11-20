@@ -1383,7 +1383,7 @@ func TestCloseAfterFailedRemove(t *testing.T) {
 
 func TestOpenCreatesDirectories(t *testing.T) {
 	sim := disk.NewSim(rand.New(rand.NewPCG(1, 1)))
-	m, _, err := OpenMeta(sim, "/node/a")
+	m, _, err := CreateMeta(sim, "/node/a", ident)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1477,7 +1477,7 @@ func TestRealFilesystem(t *testing.T) {
 	_ = w.Close()
 
 	nodeDir := filepath.Join(root, "node")
-	m, st, err := OpenMeta(fsys, nodeDir)
+	m, st, err := CreateMeta(fsys, nodeDir, ident)
 	if err != nil || st != (Meta{}) || !m.Intact() {
 		t.Fatalf("meta: %+v, %v", st, err)
 	}

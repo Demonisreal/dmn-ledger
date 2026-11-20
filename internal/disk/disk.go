@@ -12,7 +12,7 @@ import (
 
 var ErrLocked = errors.New("disk: directory locked")
 
-const lockName = "LOCK"
+const LockName = "LOCK"
 
 type File interface {
 	io.ReaderAt
@@ -107,7 +107,7 @@ func (fsys OS) MkdirAll(dir string) error {
 }
 
 func (OS) Lock(dir string) (io.Closer, error) {
-	f, err := os.OpenFile(filepath.Join(filepath.Clean(dir), lockName), os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(filepath.Join(filepath.Clean(dir), LockName), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}

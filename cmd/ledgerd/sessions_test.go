@@ -22,7 +22,7 @@ func TestNodeWithAnotherMaxSessionsStaysOut(t *testing.T) {
 		if i == 2 {
 			extra = append(extra, "LEDGER_MAX_SESSIONS=17")
 		}
-		nodes[i] = launch(t, nodeEnv(i+1, peers, clients[i], t.TempDir(), extra...)...)
+		nodes[i] = launch(t, nodeEnv(i+1, peers, clients[i], dataDir(t, i+1, 3), extra...)...)
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), begin.Add(10*time.Second))
 	defer cancel()

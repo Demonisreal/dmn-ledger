@@ -146,7 +146,7 @@ func TestProofsAndTheirChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := t.TempDir()
+	data := dataDir(t)
 	addr, stop := serveNode(t, key, data)
 	t.Setenv("LEDGER_CLUSTER", "1")
 	t.Setenv("LEDGER_NODES", addr)

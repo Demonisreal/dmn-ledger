@@ -266,9 +266,11 @@ func (c *Cluster) startNode(env NodeEnv) (Process, error) {
 func (c *Cluster) openNode(env NodeEnv) (*replica.Node, error) {
 	return replica.Open(replica.Config{
 		ID:             env.ID,
+		Cluster:        clusterID,
 		Peers:          env.Peers,
 		FS:             env.FS,
 		Dir:            ledgerDir,
+		Create:         true,
 		Clock:          env.Clock,
 		Rand:           env.Rand,
 		Nonces:         env.Nonces,

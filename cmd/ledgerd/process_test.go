@@ -16,7 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/notary"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
@@ -113,6 +116,15 @@ func freeAddrs(t *testing.T, n int) []string {
 	return addrs
 }
 
+func dataDir(t *testing.T, id, nodes int) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := replica.Init(disk.OS{}, dir, wal.Identity{Cluster: 1, Node: uint64(id), Nodes: uint64(nodes)}); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func nodeEnv(id int, peers []string, client, dir string, extra ...string) []string {
 	return append([]string{
 		"LEDGER_ID=" + strconv.Itoa(id),
@@ -145,7 +157,7 @@ func anyStatus(ledger.NodeStatus) bool { return true }
 func TestExitCodes(t *testing.T) {
 	t.Run("0 after SIGTERM and SIGINT", func(t *testing.T) {
 		addrs := freeAddrs(t, 2)
-		env := nodeEnv(1, addrs[:1], addrs[1], t.TempDir())
+		env := nodeEnv(1, addrs[:1], addrs[1], dataDir(t, 1, 1))
 		for term, sig := range []os.Signal{syscall.SIGTERM, os.Interrupt} {
 			p := launch(t, env...)
 			awaitStatus(t, addrs[1], func(st ledger.NodeStatus) bool { return st.Role == ledger.Leader })
@@ -185,7 +197,7 @@ func TestExitCodes(t *testing.T) {
 	})
 	t.Run("2 when LEDGER_MAX_SESSIONS does not fit the directory", func(t *testing.T) {
 		addrs := freeAddrs(t, 2)
-		dir := t.TempDir()
+		dir := dataDir(t, 1, 1)
 		env := nodeEnv(1, addrs[:1], addrs[1], dir, "LEDGER_SNAPSHOT_EVERY=1")
 		p := launch(t, env...)
 		awaitStatus(t, addrs[1], func(st ledger.NodeStatus) bool { return st.Role == ledger.Leader })
@@ -211,7 +223,7 @@ func TestExitCodes(t *testing.T) {
 	})
 	t.Run("3 on a locked directory", func(t *testing.T) {
 		addrs := freeAddrs(t, 4)
-		dir := t.TempDir()
+		dir := dataDir(t, 1, 1)
 		first := launch(t, nodeEnv(1, addrs[:1], addrs[1], dir)...)
 		awaitStatus(t, addrs[1], anyStatus)
 		second := launch(t, nodeEnv(1, addrs[2:3], addrs[3], dir)...)
@@ -232,8 +244,8 @@ func TestExitCodes(t *testing.T) {
 		defer busy.Close()
 		addrs := freeAddrs(t, 1)
 		for name, env := range map[string][]string{
-			"client port": nodeEnv(1, addrs, busy.Addr().String(), t.TempDir()),
-			"peer port":   nodeEnv(1, []string{busy.Addr().String()}, addrs[0], t.TempDir()),
+			"client port": nodeEnv(1, addrs, busy.Addr().String(), dataDir(t, 1, 1)),
+			"peer port":   nodeEnv(1, []string{busy.Addr().String()}, addrs[0], dataDir(t, 1, 1)),
 		} {
 			p := launch(t, env...)
 			if code := p.exit(t); code != 3 || !strings.Contains(p.logs(t), "address already in use") {
@@ -247,7 +259,7 @@ func TestLedgerdRefusesStrangersAtThePeerPort(t *testing.T) {
 	addrs := freeAddrs(t, 4)
 	_, port, _ := net.SplitHostPort(addrs[0])
 	peers := []string{addrs[0], addrs[1], addrs[2]}
-	p := launch(t, nodeEnv(1, peers, addrs[3], t.TempDir())...)
+	p := launch(t, nodeEnv(1, peers, addrs[3], dataDir(t, 1, 3))...)
 	awaitStatus(t, addrs[3], anyStatus)
 	stranger := dialFrom(t, "127.0.0.2", net.JoinHostPort("127.0.0.1", port))
 	_ = stranger.SetReadDeadline(time.Now().Add(time.Second))

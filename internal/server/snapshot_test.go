@@ -65,7 +65,7 @@ func TestLaggingNodeGetsTheSnapshotAsAStream(t *testing.T) {
 		nodes := make([]*testNode, 3)
 		outs := make([]*logLines, 3)
 		for i := range cfgs {
-			cfgs[i] = pn.config(uint64(i)+1, 3, t.TempDir())
+			cfgs[i] = pn.config(uint64(i)+1, 3, dataDir(t, uint64(i)+1, 3))
 			cfgs[i].SnapshotEvery, cfgs[i].SegmentSize = 20, smallSegment
 			outs[i] = logged(&cfgs[i])
 			nodes[i] = start(t, cfgs[i])
@@ -122,7 +122,7 @@ func slowSnapshot(t *testing.T) (*testNode, *fakePeer) {
 	pn := newPipeNet()
 	behind := pn.fake(t, 2, 1, deaf)
 	pn.fake(t, 3, 1, following)
-	cfg := pn.config(1, 3, t.TempDir())
+	cfg := pn.config(1, 3, dataDir(t, 1, 3))
 	cfg.SnapshotEvery, cfg.SegmentSize = 10, smallSegment
 	n := start(t, cfg)
 	c := pn.connect(t, clientAddr(1), 1)
@@ -187,7 +187,7 @@ func TestSecondSnapshotIsDropped(t *testing.T) {
 		pn := newPipeNet()
 		pn.fake(t, 2, 1, listening)
 		pn.fake(t, 3, 1, listening)
-		n = start(t, pn.config(1, 3, t.TempDir()))
+		n = start(t, pn.config(1, 3, dataDir(t, 1, 3)))
 		first := pn.greet(t, 1, 2, wire.KindSnapshot)
 		first.send(raft.Message{Type: raft.MsgSnap, From: 2, To: 1, Term: 2, Index: 50, LogTerm: 2})
 		first.write(wire.AppendChunk(nil, testCluster, []byte("part of a snapshot")))
@@ -214,7 +214,7 @@ func TestSnapshotCutOffIsDiscarded(t *testing.T) {
 		pn := newPipeNet()
 		pn.fake(t, 2, 1, listening)
 		pn.fake(t, 3, 1, listening)
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		n := start(t, cfg)
 		probe := pn.connect(t, clientAddr(1), 1)
 		junk := []byte(strings.Repeat("not a snapshot ", 100))
@@ -261,7 +261,7 @@ func TestSnapshotOverTheLimitIsRefused(t *testing.T) {
 		pn := newPipeNet()
 		pn.fake(t, 2, 1, listening)
 		pn.fake(t, 3, 1, listening)
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		srv := open(t, cfg)
 		srv.spoolMax = 2 * wire.ChunkSize
 		n := run(t, srv)
@@ -300,7 +300,7 @@ func behindLeader(t *testing.T, pn *pipeNet, fsys *hookFS) (*testNode, *fakePeer
 	t.Helper()
 	behind := pn.fake(t, 2, 1, deaf)
 	pn.fake(t, 3, 1, following)
-	cfg := pn.config(1, 3, t.TempDir())
+	cfg := pn.config(1, 3, dataDir(t, 1, 3))
 	cfg.FS, cfg.SnapshotEvery, cfg.SegmentSize = fsys, 10, smallSegment
 	n := start(t, cfg)
 	c := pn.connect(t, clientAddr(1), 1)
@@ -446,7 +446,7 @@ func TestBrokenSnapshotStopsTheSender(t *testing.T) {
 		pn := newPipeNet()
 		behind := pn.fake(t, 2, 1, deaf)
 		pn.fake(t, 3, 1, following)
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		cfg.SnapshotEvery, cfg.SegmentSize = 10, smallSegment
 		n := start(t, cfg)
 		c := pn.connect(t, clientAddr(1), 1)

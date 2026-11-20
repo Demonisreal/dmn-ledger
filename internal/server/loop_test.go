@@ -19,7 +19,9 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/client"
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/raft"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/internal/wire"
 )
 
@@ -27,7 +29,7 @@ var errInjected = errors.New("injected fsync failure")
 
 func openTicks(t *testing.T) ticks {
 	t.Helper()
-	srv, err := Open(newPipeNet().config(1, 1, t.TempDir()))
+	srv, err := Open(newPipeNet().config(1, 1, dataDir(t, 1, 1)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +86,7 @@ func TestStallOwesLessThanAnElection(t *testing.T) {
 func single(t *testing.T, fsys disk.FS) (*pipeNet, Config) {
 	t.Helper()
 	pn := newPipeNet()
-	cfg := pn.config(1, 1, t.TempDir())
+	cfg := pn.config(1, 1, dataDir(t, 1, 1))
 	if fsys != nil {
 		cfg.FS = fsys
 	}
@@ -210,7 +212,7 @@ func TestNothingLeavesAnyNodeBeforeItIsSynced(t *testing.T) {
 				time.Sleep(time.Millisecond)
 				return nil
 			})
-			cfg := pn.config(id, 3, t.TempDir())
+			cfg := pn.config(id, 3, dataDir(t, id, 3))
 			cfg.FS = fsys
 			check := guard(t, id, fsys, book, session)
 			cfg.Clients.(*pipeListener).tap = check
@@ -403,7 +405,7 @@ func TestStatusShowsOnlyWhatIsSynced(t *testing.T) {
 		pn.fake(t, 2, 1, listening)
 		pn.fake(t, 3, 1, listening)
 		fsys := newHookFS()
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		cfg.FS = fsys
 		n := start(t, cfg)
 		lead := pn.greet(t, 1, 2, wire.KindMessages)
@@ -466,7 +468,7 @@ func TestStatusShowsOnlyWhatIsSynced(t *testing.T) {
 func TestStopLeavesNothingRunning(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
-		dirs := []string{t.TempDir(), t.TempDir(), t.TempDir()}
+		dirs := []string{dataDir(t, 1, 3), dataDir(t, 2, 3), dataDir(t, 3, 3)}
 		var nodes []*testNode
 		for i, dir := range dirs {
 			nodes = append(nodes, start(t, pn.config(uint64(i)+1, 3, dir)))
@@ -504,7 +506,7 @@ func TestStopLeavesNothingRunning(t *testing.T) {
 		behind := pn.fake(t, 2, 1, deaf)
 		pn.fake(t, 3, 1, following)
 		fsys := newHookFS()
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		cfg.FS, cfg.SnapshotEvery, cfg.SegmentSize = fsys, 10, smallSegment
 		n := start(t, cfg)
 		c := pn.connect(t, clientAddr(1), 1)
@@ -573,6 +575,30 @@ func TestSecondServerOnTheSameDirFails(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestServerDoesNotCreateADirectory(t *testing.T) {
+	pn := newPipeNet()
+	dir := t.TempDir()
+	if _, err := Open(pn.config(1, 1, dir)); !errors.Is(err, wal.ErrNoMeta) {
+		t.Fatalf("open on an empty directory: %v, want wal.ErrNoMeta", err)
+	}
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) > 1 || len(left) == 1 && left[0].Name() != disk.LockName {
+		t.Fatalf("a refused Open left %v", left)
+	}
+}
+
+func TestServerRefusesTheDirectoryOfAnotherCluster(t *testing.T) {
+	pn := newPipeNet()
+	cfg := pn.config(1, 1, dataDir(t, 1, 1))
+	cfg.Cluster = testCluster + 1
+	if _, err := Open(cfg); !errors.Is(err, replica.ErrIdentity) {
+		t.Fatalf("open in cluster %d on a directory of cluster %d: %v, want replica.ErrIdentity", cfg.Cluster, testCluster, err)
+	}
 }
 
 func TestLeftoverSpoolIsRemovedOnStart(t *testing.T) {

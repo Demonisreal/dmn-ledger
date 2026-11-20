@@ -75,7 +75,7 @@ func TestLogShowsRoleChangesAndNoRequests(t *testing.T) {
 func TestLogShowsTheEndOfRepair(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
-		dir := t.TempDir()
+		dir := dataDir(t, 1, 3)
 		meta, _, err := wal.OpenMeta(disk.OS{}, dir)
 		if err != nil {
 			t.Fatal(err)
@@ -129,7 +129,7 @@ func TestLogShowsANewLeader(t *testing.T) {
 		pn := newPipeNet()
 		pn.fake(t, 2, 1, listening)
 		pn.fake(t, 3, 1, listening)
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		out := logged(&cfg)
 		n := start(t, cfg)
 		for _, beat := range []struct{ from, term uint64 }{{2, 2}, {2, 2}, {3, 3}, {3, 3}} {
@@ -178,7 +178,7 @@ func TestRunDoesNotWaitForAStuckLog(t *testing.T) {
 func TestLogThrottlesRefusedConnections(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pn := newPipeNet()
-		cfg := pn.config(1, 3, t.TempDir())
+		cfg := pn.config(1, 3, dataDir(t, 1, 3))
 		cfg.MaxClients = 1
 		out := logged(&cfg)
 		n := start(t, cfg)

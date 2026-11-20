@@ -26,6 +26,7 @@ type Run struct {
 
 func Recount(cfg Config, want audit.Head) ([]Run, error) {
 	cfg.ID, cfg.Peers, cfg.SnapshotEvery = 1, []uint64{1}, math.MaxUint64
+	cfg.Create, cfg.recount = false, true
 	dir := filepath.Join(cfg.Dir, "snap")
 	if _, err := intact(cfg.FS, dir); err != nil {
 		return nil, err

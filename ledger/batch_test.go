@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/server"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 )
 
 func servedNode(t *testing.T) string {
@@ -21,12 +23,16 @@ func servedNode(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dir := t.TempDir()
+	if err := replica.Init(disk.OS{}, dir, wal.Identity{Cluster: cluster, Node: 1, Nodes: 1}); err != nil {
+		t.Fatal(err)
+	}
 	var d net.Dialer
 	srv, err := server.Open(server.Config{
 		ID:            1,
 		Cluster:       cluster,
 		Peers:         []string{peering.Addr().String()},
-		Dir:           t.TempDir(),
+		Dir:           dir,
 		FS:            disk.OS{},
 		Tick:          time.Millisecond,
 		SnapshotEvery: 100000,
