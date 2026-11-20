@@ -1,0 +1,59 @@
+commit a6ee18b4574a9466b7046948f374ce95ad8f85a9, tree with changes: no, go1.27.4
+cpu: 12th Gen Intel(R) Core(TM) i5-12500H, 16 threads; the plan ran on cpus 8-15 with GOMAXPROCS 8, the targets on cpus 0 to 5
+ram: 15669 MiB
+kernel: 6.12.117+deb13-amd64
+governor: powersave, turbo: on, power: mains
+file system: ext4 (rw,relatime) on nvme0n1 (PC801 NVMe SK hynix 512GB), 71% used
+disk speed: fast below 500µs, slow above 1ms, no verdict under 20 flushes a second
+
+disk probe probe-20261120T133456Z.json, 137 bytes written and synced in a loop, means per disk speed:
+  slow: fsync on a growing file 3.979ms over 10 s, fdatasync on a preallocated file 1.74ms over 10 s, ratio 2.29
+  fast: no second at this speed
+
+disk probe probe-20261120T154432Z.json, 137 bytes written and synced in a loop, means per disk speed:
+  slow: fsync on a growing file 3.592ms over 3 s, fdatasync on a preallocated file 1.846ms over 9 s, ratio 1.95
+  fast: fsync on a growing file 601µs over 6 s, fdatasync on a preallocated file 0s over 0 s, ratio 0.00
+
+heat at the start and the end of each session of the plan:
+  heat heat-20261120T133456Z.json: energy_performance_preference performance, platform_profile performance, intel_pstate max_perf_pct 100, x86_pkg_temp 57.0 °C; package 0: package_throttle_count 1740753, package_throttle_total_time_ms 7083028
+  heat heat-20261120T154432Z.json: energy_performance_preference performance, platform_profile performance, intel_pstate max_perf_pct 100, x86_pkg_temp 61.0 °C; package 0: package_throttle_count 1793598, package_throttle_total_time_ms 7415848
+
+pg_test_fsync -s 1 on the data directory of the container, pg-test-fsync-20261120T133456Z.txt, after the disk probe above:
+  1 second per test
+  O_DIRECT supported on this platform for open_datasync and open_sync.
+  
+  Compare file sync methods using one 8kB write:
+  (in "wal_sync_method" preference order, except fdatasync is Linux's default)
+          open_datasync                       527.909 ops/sec    1894 usecs/op
+          fdatasync                           528.852 ops/sec    1891 usecs/op
+          fsync                               251.694 ops/sec    3973 usecs/op
+          fsync_writethrough                              n/a
+          open_sync                           254.968 ops/sec    3922 usecs/op
+  
+  Compare file sync methods using two 8kB writes:
+  (in "wal_sync_method" preference order, except fdatasync is Linux's default)
+          open_datasync                       262.116 ops/sec    3815 usecs/op
+          fdatasync                           475.795 ops/sec    2102 usecs/op
+          fsync                               238.323 ops/sec    4196 usecs/op
+          fsync_writethrough                              n/a
+          open_sync                           120.337 ops/sec    8310 usecs/op
+  
+  Compare open_sync with different write sizes:
+  (This is designed to compare the cost of writing 16kB in different write
+  open_sync sizes.)
+           1 * 16kB open_sync write           258.168 ops/sec    3873 usecs/op
+           2 *  8kB open_sync writes          130.311 ops/sec    7674 usecs/op
+           4 *  4kB open_sync writes           60.914 ops/sec   16416 usecs/op
+           8 *  2kB open_sync writes           29.348 ops/sec   34074 usecs/op
+          16 *  1kB open_sync writes           14.816 ops/sec   67493 usecs/op
+  
+  Test if fsync on non-write file descriptor is honored:
+  (If the times are similar, fsync() can sync data written on a different
+  descriptor.)
+          write, fsync, close                 229.627 ops/sec    4355 usecs/op
+          write, close, fsync                 225.395 ops/sec    4437 usecs/op
+  
+  Non-sync'ed 8kB writes:
+          write                           2611861.105 ops/sec       0 usecs/op
+
+selftest selftest-20261120T133456Z.json: null target at 200000/s p50 36µs, p99 896µs, dispatcher late p99 896µs; a one second stall at 1000/s: 1000 due, 1000 open, p50 507.904ms, p99 999.424ms

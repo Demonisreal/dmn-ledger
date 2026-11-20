@@ -1,0 +1,2410 @@
+{
+  "schema": 3,
+  "id": "m1-v2x32-uniform-10k-1000-2",
+  "measurement": "m1",
+  "pass": 2,
+  "started": "2026-11-20T14:53:29.404317366Z",
+  "build": {
+    "commit": "a6ee18b4574a9466b7046948f374ce95ad8f85a9",
+    "dirty": false,
+    "tags": null,
+    "go": "go1.27.4"
+  },
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "threads": 16,
+    "allowed": "8-15",
+    "gomaxprocs": 8,
+    "ram": 16430473216,
+    "kernel": "6.12.117+deb13-amd64",
+    "governor": "powersave",
+    "turbo": "on",
+    "power": "mains",
+    "filesystem": "ext4",
+    "mount": "rw,relatime",
+    "disk": "nvme0n1",
+    "model": "PC801 NVMe SK hynix 512GB",
+    "used": 0.7136599044202139
+  },
+  "target": {
+    "kind": "postgres",
+    "nodes": 0,
+    "variant": "V2",
+    "lanes": 32,
+    "cores": "0-5",
+    "env": null,
+    "version": "PostgreSQL 18.7 (Debian 18.7-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit",
+    "settings": {
+      "DateStyle": "ISO, MDY",
+      "TimeZone": "Etc/UTC",
+      "autovacuum_worker_slots": "16",
+      "checkpoint_timeout": "900 s",
+      "config_file": "/var/lib/postgresql/18/docker/postgresql.conf",
+      "connections": "32",
+      "data_directory": "/var/lib/postgresql/18/docker",
+      "default_text_search_config": "pg_catalog.english",
+      "dynamic_shared_memory_type": "posix",
+      "hba_file": "/var/lib/postgresql/18/docker/pg_hba.conf",
+      "ident_file": "/var/lib/postgresql/18/docker/pg_ident.conf",
+      "lc_messages": "en_US.utf8",
+      "lc_monetary": "en_US.utf8",
+      "lc_numeric": "en_US.utf8",
+      "lc_time": "en_US.utf8",
+      "listen_addresses": "127.0.0.1",
+      "log_timezone": "Etc/UTC",
+      "max_connections": "100",
+      "max_wal_size": "8192 MB",
+      "min_wal_size": "4096 MB",
+      "port": "55439",
+      "shared_buffers": "131072 8kB",
+      "track_wal_io_timing": "on",
+      "transaction_deferrable": "off",
+      "transaction_isolation": "read committed",
+      "transaction_read_only": "off",
+      "wal_sync_method": "fdatasync"
+    }
+  },
+  "load": {
+    "workload": "uniform-10k",
+    "accounts": 10000,
+    "rate": 1000,
+    "stage": 1,
+    "stages": [
+      1000,
+      2000,
+      4000,
+      8000,
+      16000,
+      32000,
+      64000,
+      128000,
+      256000,
+      512000
+    ],
+    "warmup_ns": 5000000000,
+    "window_ns": 15000000000,
+    "max_window_ns": 30000000000,
+    "drain_ns": 5000000000,
+    "need": 8,
+    "seed": 5355307003328319772,
+    "budget_ends_chain": false
+  },
+  "probe": {
+    "growing": [
+      {
+        "syncs": 263,
+        "sync_ns": 1001635693,
+        "flushes": 263,
+        "flush_ns": 421000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 254,
+        "sync_ns": 1001082799,
+        "flushes": 254,
+        "flush_ns": 422000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 255,
+        "sync_ns": 998281528,
+        "flushes": 255,
+        "flush_ns": 428000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 238,
+        "sync_ns": 998277243,
+        "flushes": 240,
+        "flush_ns": 428000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 245,
+        "sync_ns": 1001650300,
+        "flushes": 245,
+        "flush_ns": 436000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 238,
+        "sync_ns": 999318820,
+        "flushes": 241,
+        "flush_ns": 414000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 257,
+        "sync_ns": 998912463,
+        "flushes": 257,
+        "flush_ns": 414000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 251,
+        "sync_ns": 1000719026,
+        "flushes": 251,
+        "flush_ns": 405000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 259,
+        "sync_ns": 998790408,
+        "flushes": 259,
+        "flush_ns": 428000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 253,
+        "sync_ns": 1000083029,
+        "flushes": 253,
+        "flush_ns": 413000000,
+        "speed": "slow"
+      }
+    ],
+    "prealloc": [
+      {
+        "syncs": 552,
+        "sync_ns": 1000056469,
+        "flushes": 552,
+        "flush_ns": 882000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 539,
+        "sync_ns": 1000194553,
+        "flushes": 539,
+        "flush_ns": 877000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 541,
+        "sync_ns": 999067618,
+        "flushes": 541,
+        "flush_ns": 889000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 562,
+        "sync_ns": 999084976,
+        "flushes": 562,
+        "flush_ns": 885000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 583,
+        "sync_ns": 999636710,
+        "flushes": 583,
+        "flush_ns": 889000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 602,
+        "sync_ns": 999916742,
+        "flushes": 603,
+        "flush_ns": 929000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 582,
+        "sync_ns": 999138883,
+        "flushes": 582,
+        "flush_ns": 914000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 616,
+        "sync_ns": 1000975794,
+        "flushes": 616,
+        "flush_ns": 936000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 570,
+        "sync_ns": 998820163,
+        "flushes": 570,
+        "flush_ns": 932000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 599,
+        "sync_ns": 1000948886,
+        "flushes": 599,
+        "flush_ns": 927000000,
+        "speed": "slow"
+      }
+    ],
+    "means": [
+      {
+        "speed": "slow",
+        "growing_seconds": 10,
+        "growing_ns": 3978810,
+        "prealloc_seconds": 10,
+        "prealloc_ns": 1739965,
+        "ratio": 2.28671841100252
+      },
+      {
+        "speed": "fast",
+        "growing_seconds": 0,
+        "growing_ns": 0,
+        "prealloc_seconds": 0,
+        "prealloc_ns": 0,
+        "ratio": 0
+      }
+    ]
+  },
+  "thresholds": {
+    "fast_ns": 500000,
+    "slow_ns": 1000000,
+    "min_flushes": 20
+  },
+  "allow_stalls": false,
+  "before": [
+    {
+      "name": "postgres",
+      "role": "",
+      "term": 0,
+      "syncs": 1018345,
+      "sync_ns": 1101237631000,
+      "requests": 0,
+      "counters": {
+        "accounts_hot_updates": 0,
+        "accounts_updates": 0,
+        "autoanalyze": 0,
+        "autovacuum": 0,
+        "checkpoints": 250,
+        "deadlock_retries": 0,
+        "deadlocks": 0,
+        "inserted": 0,
+        "serialization_retries": 0,
+        "transfers_hot_updates": 0,
+        "transfers_updates": 0,
+        "wal_bytes": 9912208410,
+        "wal_fpi": 72655,
+        "wal_init_syncs": 257,
+        "wal_records": 134200904,
+        "wal_writes": 1034576
+      },
+      "stale": false
+    }
+  ],
+  "seconds": [
+    {
+      "phase": "warmup",
+      "due": 1000,
+      "booked": 997,
+      "open": 3,
+      "retries": 1,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 3328000,
+      "p99_ns": 4608000,
+      "late_p99_ns": 352000,
+      "flushes": 542,
+      "flush_ns": 855000000,
+      "writes": 1086,
+      "write_ns": 889000000,
+      "cpu": {
+        "generator": 0.1492166492984787,
+        "target": 0.2506352267160067,
+        "foreign": 0
+      },
+      "mhz": [
+        2938,
+        400,
+        610,
+        2971,
+        3166,
+        1167
+      ],
+      "throttled": 54,
+      "available": 9237647360,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1018771,
+          "sync_ns": 1101999488000,
+          "requests": 999,
+          "counters": {
+            "accounts_hot_updates": 1574,
+            "accounts_updates": 1574,
+            "autoanalyze": 0,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 787,
+            "serialization_retries": 1,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9913333263,
+            "wal_fpi": 72765,
+            "wal_init_syncs": 257,
+            "wal_records": 134208598,
+            "wal_writes": 1035002
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "warmup",
+      "due": 1000,
+      "booked": 999,
+      "open": 2,
+      "retries": 2,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 3328000,
+      "p99_ns": 4480000,
+      "late_p99_ns": 360000,
+      "flushes": 541,
+      "flush_ns": 854000000,
+      "writes": 1081,
+      "write_ns": 889000000,
+      "cpu": {
+        "generator": 0.1500064810300129,
+        "target": 0.248578739844455,
+        "foreign": 0
+      },
+      "mhz": [
+        2847,
+        3039,
+        2928,
+        2828,
+        2585,
+        400
+      ],
+      "throttled": 0,
+      "available": 9248272384,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1019106,
+          "sync_ns": 1102599530000,
+          "requests": 1998,
+          "counters": {
+            "accounts_hot_updates": 2828,
+            "accounts_updates": 2828,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 1414,
+            "serialization_retries": 3,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9914031227,
+            "wal_fpi": 72819,
+            "wal_init_syncs": 257,
+            "wal_records": 134214767,
+            "wal_writes": 1035337
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "warmup",
+      "due": 1000,
+      "booked": 1001,
+      "open": 2,
+      "retries": 1,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 3328000,
+      "p99_ns": 4480000,
+      "late_p99_ns": 320000,
+      "flushes": 548,
+      "flush_ns": 855000000,
+      "writes": 1096,
+      "write_ns": 886000000,
+      "cpu": {
+        "generator": 0.14000026698050916,
+        "target": 0.23743745279322248,
+        "foreign": 0
+      },
+      "mhz": [
+        2778,
+        1430,
+        400,
+        2282,
+        2261,
+        400
+      ],
+      "throttled": 0,
+      "available": 9256034304,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1019703,
+          "sync_ns": 1103659895000,
+          "requests": 2998,
+          "counters": {
+            "accounts_hot_updates": 5072,
+            "accounts_updates": 5072,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 2536,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9914746900,
+            "wal_fpi": 72819,
+            "wal_init_syncs": 257,
+            "wal_records": 134225850,
+            "wal_writes": 1035934
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "warmup",
+      "due": 1000,
+      "booked": 1003,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 3328000,
+      "p99_ns": 4736000,
+      "late_p99_ns": 336000,
+      "flushes": 571,
+      "flush_ns": 803000000,
+      "writes": 1142,
+      "write_ns": 839000000,
+      "cpu": {
+        "generator": 0.1599775594678008,
+        "target": 0.226402241878325,
+        "foreign": 0
+      },
+      "mhz": [
+        858,
+        399,
+        400,
+        3201,
+        400,
+        400
+      ],
+      "throttled": 16,
+      "available": 9265831936,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1020143,
+          "sync_ns": 1104443315000,
+          "requests": 4001,
+          "counters": {
+            "accounts_hot_updates": 6664,
+            "accounts_updates": 6664,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 3332,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9915253496,
+            "wal_fpi": 72819,
+            "wal_init_syncs": 257,
+            "wal_records": 134233712,
+            "wal_writes": 1036374
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "warmup",
+      "due": 1000,
+      "booked": 1000,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 672000,
+      "p99_ns": 960000,
+      "late_p99_ns": 344000,
+      "flushes": 1001,
+      "flush_ns": 218000000,
+      "writes": 2005,
+      "write_ns": 237000000,
+      "cpu": {
+        "generator": 0.15002350298202416,
+        "target": 0.12459551938325762,
+        "foreign": 0
+      },
+      "mhz": [
+        1107,
+        605,
+        3050,
+        400,
+        562,
+        400
+      ],
+      "throttled": 0,
+      "available": 9271947264,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": false,
+      "why": [
+        "first second after a change"
+      ],
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1021122,
+          "sync_ns": 1104687888000,
+          "requests": 5001,
+          "counters": {
+            "accounts_hot_updates": 8626,
+            "accounts_updates": 8626,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 4313,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9915887047,
+            "wal_fpi": 72819,
+            "wal_init_syncs": 257,
+            "wal_records": 134243517,
+            "wal_writes": 1037353
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1000,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 528000,
+      "p99_ns": 720000,
+      "late_p99_ns": 272000,
+      "flushes": 1001,
+      "flush_ns": 216000000,
+      "writes": 2002,
+      "write_ns": 228000000,
+      "cpu": {
+        "generator": 0.10999364841677216,
+        "target": 0.12011706384014853,
+        "foreign": 0
+      },
+      "mhz": [
+        3412,
+        1618,
+        400,
+        400,
+        400,
+        400
+      ],
+      "throttled": 0,
+      "available": 9278828544,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1021192,
+          "sync_ns": 1104815237000,
+          "requests": 6001,
+          "counters": {
+            "accounts_hot_updates": 8868,
+            "accounts_updates": 8868,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 4434,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9915963896,
+            "wal_fpi": 72819,
+            "wal_init_syncs": 257,
+            "wal_records": 134244710,
+            "wal_writes": 1037423
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1000,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 560000,
+      "p99_ns": 752000,
+      "late_p99_ns": 288000,
+      "flushes": 1000,
+      "flush_ns": 217000000,
+      "writes": 2000,
+      "write_ns": 228000000,
+      "cpu": {
+        "generator": 0.13000025025048173,
+        "target": 0.1203342316433959,
+        "foreign": 0
+      },
+      "mhz": [
+        400,
+        3155,
+        2229,
+        400,
+        512,
+        1625
+      ],
+      "throttled": 0,
+      "available": 9287471104,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1022634,
+          "sync_ns": 1105152098000,
+          "requests": 7001,
+          "counters": {
+            "accounts_hot_updates": 11750,
+            "accounts_updates": 11750,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 5875,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9916896725,
+            "wal_fpi": 72819,
+            "wal_init_syncs": 257,
+            "wal_records": 134259117,
+            "wal_writes": 1038865
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1000,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 560000,
+      "p99_ns": 896000,
+      "late_p99_ns": 288000,
+      "flushes": 1000,
+      "flush_ns": 217000000,
+      "writes": 2000,
+      "write_ns": 229000000,
+      "cpu": {
+        "generator": 0.12999132073949687,
+        "target": 0.12623357163688895,
+        "foreign": 0
+      },
+      "mhz": [
+        2612,
+        3056,
+        2297,
+        400,
+        723,
+        2467
+      ],
+      "throttled": 0,
+      "available": 9296388096,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1023635,
+          "sync_ns": 1105386899000,
+          "requests": 8001,
+          "counters": {
+            "accounts_hot_updates": 13752,
+            "accounts_updates": 13752,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 6876,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9917544050,
+            "wal_fpi": 72819,
+            "wal_init_syncs": 257,
+            "wal_records": 134269115,
+            "wal_writes": 1039866
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1000,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 624000,
+      "p99_ns": 1152000,
+      "late_p99_ns": 304000,
+      "flushes": 995,
+      "flush_ns": 223000000,
+      "writes": 1990,
+      "write_ns": 240000000,
+      "cpu": {
+        "generator": 0.15001971469078637,
+        "target": 0.12626559306664728,
+        "foreign": 0
+      },
+      "mhz": [
+        850,
+        400,
+        400,
+        1598,
+        3199,
+        400
+      ],
+      "throttled": 0,
+      "available": 9300598784,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1023822,
+          "sync_ns": 1105522460000,
+          "requests": 9001,
+          "counters": {
+            "accounts_hot_updates": 14228,
+            "accounts_updates": 14228,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 7114,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9917697489,
+            "wal_fpi": 72819,
+            "wal_init_syncs": 257,
+            "wal_records": 134271482,
+            "wal_writes": 1040053
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1000,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 560000,
+      "p99_ns": 944000,
+      "late_p99_ns": 304000,
+      "flushes": 996,
+      "flush_ns": 223000000,
+      "writes": 1992,
+      "write_ns": 237000000,
+      "cpu": {
+        "generator": 0.10998610281596478,
+        "target": 0.12749389063694247,
+        "foreign": 0
+      },
+      "mhz": [
+        587,
+        611,
+        3166,
+        918,
+        1226,
+        2433
+      ],
+      "throttled": 0,
+      "available": 9305305088,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1025647,
+          "sync_ns": 1105974403000,
+          "requests": 10001,
+          "counters": {
+            "accounts_hot_updates": 17886,
+            "accounts_updates": 17886,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 8943,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9918884600,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134289768,
+            "wal_writes": 1041878
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1000,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 640000,
+      "p99_ns": 880000,
+      "late_p99_ns": 320000,
+      "flushes": 1000,
+      "flush_ns": 217000000,
+      "writes": 2231,
+      "write_ns": 284000000,
+      "cpu": {
+        "generator": 0.16000460509253916,
+        "target": 0.12296153895605269,
+        "foreign": 0
+      },
+      "mhz": [
+        3013,
+        400,
+        836,
+        400,
+        617,
+        1222
+      ],
+      "throttled": 0,
+      "available": 9311387648,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1026648,
+          "sync_ns": 1106210783000,
+          "requests": 11001,
+          "counters": {
+            "accounts_hot_updates": 19890,
+            "accounts_updates": 19890,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 9945,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9919534985,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134299787,
+            "wal_writes": 1042879
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1000,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 544000,
+      "p99_ns": 688000,
+      "late_p99_ns": 212000,
+      "flushes": 1000,
+      "flush_ns": 216000000,
+      "writes": 2000,
+      "write_ns": 227000000,
+      "cpu": {
+        "generator": 0.12000628664933241,
+        "target": 0.12029830194684578,
+        "foreign": 0
+      },
+      "mhz": [
+        2963,
+        2294,
+        1756,
+        400,
+        1168,
+        400
+      ],
+      "throttled": 0,
+      "available": 9315770368,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1027648,
+          "sync_ns": 1106447789000,
+          "requests": 12001,
+          "counters": {
+            "accounts_hot_updates": 21890,
+            "accounts_updates": 21890,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 10945,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9920184053,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134309785,
+            "wal_writes": 1043879
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1000,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 560000,
+      "p99_ns": 704000,
+      "late_p99_ns": 240000,
+      "flushes": 1000,
+      "flush_ns": 217000000,
+      "writes": 2000,
+      "write_ns": 229000000,
+      "cpu": {
+        "generator": 0.12000561914311075,
+        "target": 0.11870555826906039,
+        "foreign": 0
+      },
+      "mhz": [
+        3093,
+        400,
+        687,
+        400,
+        1214,
+        400
+      ],
+      "throttled": 0,
+      "available": 9321066496,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1028756,
+          "sync_ns": 1106878131000,
+          "requests": 13001,
+          "counters": {
+            "accounts_hot_updates": 24278,
+            "accounts_updates": 24278,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 12139,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9920957587,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134321700,
+            "wal_writes": 1044987
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 997,
+      "open": 3,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 576000,
+      "p99_ns": 4352000,
+      "late_p99_ns": 320000,
+      "flushes": 951,
+      "flush_ns": 282000000,
+      "writes": 1903,
+      "write_ns": 296000000,
+      "cpu": {
+        "generator": 0.13000158250926389,
+        "target": 0.1340636319565918,
+        "foreign": 0
+      },
+      "mhz": [
+        2484,
+        1759,
+        3291,
+        3324,
+        2743,
+        2418
+      ],
+      "throttled": 0,
+      "available": 9322086400,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1030089,
+          "sync_ns": 1107350211000,
+          "requests": 13999,
+          "counters": {
+            "accounts_hot_updates": 27102,
+            "accounts_updates": 27102,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 13551,
+            "serialization_retries": 4,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9921873116,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134335783,
+            "wal_writes": 1046320
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 999,
+      "open": 3,
+      "retries": 1,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 3456000,
+      "p99_ns": 4608000,
+      "late_p99_ns": 352000,
+      "flushes": 524,
+      "flush_ns": 855000000,
+      "writes": 1048,
+      "write_ns": 889000000,
+      "cpu": {
+        "generator": 0.17001306533405788,
+        "target": 0.23812329953744618,
+        "foreign": 0
+      },
+      "mhz": [
+        2947,
+        527,
+        3512,
+        2816,
+        868,
+        2335
+      ],
+      "throttled": 0,
+      "available": 9324363776,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": false,
+      "why": [
+        "first second after a change"
+      ],
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1030622,
+          "sync_ns": 1108322770000,
+          "requests": 14998,
+          "counters": {
+            "accounts_hot_updates": 29118,
+            "accounts_updates": 29118,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 14559,
+            "serialization_retries": 5,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9922520545,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134345731,
+            "wal_writes": 1046853
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1000,
+      "open": 3,
+      "retries": 1,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 3520000,
+      "p99_ns": 4736000,
+      "late_p99_ns": 352000,
+      "flushes": 516,
+      "flush_ns": 876000000,
+      "writes": 1034,
+      "write_ns": 900000000,
+      "cpu": {
+        "generator": 0.12996909088077582,
+        "target": 0.23582491635421754,
+        "foreign": 0
+      },
+      "mhz": [
+        2340,
+        2543,
+        2509,
+        3479,
+        692,
+        2155
+      ],
+      "throttled": 0,
+      "available": 9326399488,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1031125,
+          "sync_ns": 1109272944000,
+          "requests": 15998,
+          "counters": {
+            "accounts_hot_updates": 31092,
+            "accounts_updates": 31092,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 15546,
+            "serialization_retries": 6,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9923153906,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134355456,
+            "wal_writes": 1047356
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1002,
+      "open": 2,
+      "retries": 2,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 3392000,
+      "p99_ns": 4608000,
+      "late_p99_ns": 344000,
+      "flushes": 531,
+      "flush_ns": 861000000,
+      "writes": 1062,
+      "write_ns": 890000000,
+      "cpu": {
+        "generator": 0.1400060063976805,
+        "target": 0.23470706916797437,
+        "foreign": 0
+      },
+      "mhz": [
+        3163,
+        2150,
+        1109,
+        400,
+        541,
+        3585
+      ],
+      "throttled": 0,
+      "available": 9327874048,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1031688,
+          "sync_ns": 1109760966000,
+          "requests": 16999,
+          "counters": {
+            "accounts_hot_updates": 32636,
+            "accounts_updates": 32636,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 16318,
+            "serialization_retries": 8,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9923654022,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134363135,
+            "wal_writes": 1047919
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 999,
+      "open": 3,
+      "retries": 1,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 3328000,
+      "p99_ns": 4480000,
+      "late_p99_ns": 336000,
+      "flushes": 546,
+      "flush_ns": 855000000,
+      "writes": 1091,
+      "write_ns": 888000000,
+      "cpu": {
+        "generator": 0.1500135166678923,
+        "target": 0.23501517557236462,
+        "foreign": 0
+      },
+      "mhz": [
+        2440,
+        530,
+        3359,
+        3379,
+        864,
+        2125
+      ],
+      "throttled": 0,
+      "available": 9327067136,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1032239,
+          "sync_ns": 1110745729000,
+          "requests": 17999,
+          "counters": {
+            "accounts_hot_updates": 34584,
+            "accounts_updates": 34584,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 17292,
+            "serialization_retries": 9,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9924278645,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134372750,
+            "wal_writes": 1048470
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 1001,
+      "open": 2,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 3392000,
+      "p99_ns": 4608000,
+      "late_p99_ns": 344000,
+      "flushes": 540,
+      "flush_ns": 860000000,
+      "writes": 1081,
+      "write_ns": 897000000,
+      "cpu": {
+        "generator": 0.1399849237636956,
+        "target": 0.23195401878413097,
+        "foreign": 0
+      },
+      "mhz": [
+        2993,
+        2787,
+        3508,
+        3346,
+        505,
+        2450
+      ],
+      "throttled": 0,
+      "available": 9324482560,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1032719,
+          "sync_ns": 1111610500000,
+          "requests": 19000,
+          "counters": {
+            "accounts_hot_updates": 36366,
+            "accounts_updates": 36366,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 18183,
+            "serialization_retries": 9,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9924851688,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134381545,
+            "wal_writes": 1048950
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 1000,
+      "booked": 999,
+      "open": 2,
+      "retries": 3,
+      "failed": 0,
+      "shed": 0,
+      "count": 1000,
+      "p50_ns": 3392000,
+      "p99_ns": 4480000,
+      "late_p99_ns": 344000,
+      "flushes": 547,
+      "flush_ns": 855000000,
+      "writes": 1098,
+      "write_ns": 892000000,
+      "cpu": {
+        "generator": 0.16003902119426466,
+        "target": 0.23626360650132797,
+        "foreign": 0
+      },
+      "mhz": [
+        1123,
+        3377,
+        2820,
+        3247,
+        4162,
+        3917
+      ],
+      "throttled": 0,
+      "available": 9326333952,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1033265,
+          "sync_ns": 1112583061000,
+          "requests": 19998,
+          "counters": {
+            "accounts_hot_updates": 38376,
+            "accounts_updates": 38376,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 19188,
+            "serialization_retries": 12,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9925498078,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134391484,
+            "wal_writes": 1049496
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "drain",
+      "due": 1,
+      "booked": 4,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 1,
+      "p50_ns": 3712000,
+      "p99_ns": 3712000,
+      "late_p99_ns": 68000,
+      "flushes": 2,
+      "flush_ns": 3000000,
+      "writes": 20,
+      "write_ns": 10000000,
+      "cpu": {
+        "generator": 0,
+        "target": 0.0011761767068857744,
+        "foreign": 0.08876086969899331
+      },
+      "mhz": [
+        446,
+        2327,
+        400,
+        400,
+        763,
+        400
+      ],
+      "throttled": 0,
+      "available": 9325572096,
+      "swapped_out": 0,
+      "speed": "none",
+      "valid": false,
+      "why": [
+        "too few flushes"
+      ],
+      "parts": [
+        {
+          "name": "postgres",
+          "role": "",
+          "term": 0,
+          "syncs": 1033265,
+          "sync_ns": 1112583061000,
+          "requests": 20001,
+          "counters": {
+            "accounts_hot_updates": 38376,
+            "accounts_updates": 38376,
+            "autoanalyze": 1,
+            "autovacuum": 0,
+            "checkpoints": 250,
+            "deadlock_retries": 0,
+            "deadlocks": 0,
+            "inserted": 19188,
+            "serialization_retries": 12,
+            "transfers_hot_updates": 0,
+            "transfers_updates": 0,
+            "wal_bytes": 9925498078,
+            "wal_fpi": 72821,
+            "wal_init_syncs": 257,
+            "wal_records": 134391484,
+            "wal_writes": 1049496
+          },
+          "stale": false
+        }
+      ]
+    }
+  ],
+  "bands": {
+    "slow": {
+      "seconds": 5,
+      "throughput": 1000.2,
+      "histogram": {
+        "buckets": [
+          [
+            1952000,
+            1
+          ],
+          [
+            2016000,
+            3
+          ],
+          [
+            2048000,
+            2
+          ],
+          [
+            2112000,
+            10
+          ],
+          [
+            2176000,
+            19
+          ],
+          [
+            2240000,
+            31
+          ],
+          [
+            2304000,
+            56
+          ],
+          [
+            2368000,
+            70
+          ],
+          [
+            2432000,
+            89
+          ],
+          [
+            2496000,
+            93
+          ],
+          [
+            2560000,
+            97
+          ],
+          [
+            2624000,
+            75
+          ],
+          [
+            2688000,
+            72
+          ],
+          [
+            2752000,
+            103
+          ],
+          [
+            2816000,
+            100
+          ],
+          [
+            2880000,
+            110
+          ],
+          [
+            2944000,
+            136
+          ],
+          [
+            3008000,
+            121
+          ],
+          [
+            3072000,
+            165
+          ],
+          [
+            3136000,
+            190
+          ],
+          [
+            3200000,
+            237
+          ],
+          [
+            3264000,
+            282
+          ],
+          [
+            3328000,
+            291
+          ],
+          [
+            3392000,
+            257
+          ],
+          [
+            3456000,
+            193
+          ],
+          [
+            3520000,
+            156
+          ],
+          [
+            3584000,
+            127
+          ],
+          [
+            3648000,
+            119
+          ],
+          [
+            3712000,
+            95
+          ],
+          [
+            3776000,
+            107
+          ],
+          [
+            3840000,
+            111
+          ],
+          [
+            3904000,
+            117
+          ],
+          [
+            3968000,
+            132
+          ],
+          [
+            4032000,
+            122
+          ],
+          [
+            4096000,
+            140
+          ],
+          [
+            4224000,
+            354
+          ],
+          [
+            4352000,
+            355
+          ],
+          [
+            4480000,
+            175
+          ],
+          [
+            4608000,
+            56
+          ],
+          [
+            4736000,
+            9
+          ],
+          [
+            4864000,
+            3
+          ],
+          [
+            4992000,
+            4
+          ],
+          [
+            5120000,
+            3
+          ],
+          [
+            5248000,
+            2
+          ],
+          [
+            5376000,
+            1
+          ],
+          [
+            5504000,
+            2
+          ],
+          [
+            6016000,
+            1
+          ],
+          [
+            6400000,
+            1
+          ],
+          [
+            6528000,
+            1
+          ],
+          [
+            6784000,
+            1
+          ],
+          [
+            7424000,
+            1
+          ],
+          [
+            7680000,
+            1
+          ],
+          [
+            9472000,
+            1
+          ]
+        ],
+        "never": 0
+      },
+      "p50_ns": 3392000,
+      "p99_ns": 4608000,
+      "p999_ns": 6400000,
+      "max_ns": 9472000,
+      "unfinished": 0,
+      "reserve": null,
+      "reserve_p50_ns": 0,
+      "reserve_p99_ns": 0,
+      "syncs_per_transfer": 0.528494301139772,
+      "part_syncs_per_transfer": {
+        "postgres": 0.528494301139772
+      },
+      "transfers_per_request": 1.0002,
+      "flush_ns": 1607089,
+      "p50_flushes": 2.110648507954444
+    },
+    "fast": {
+      "seconds": 9,
+      "throughput": 999.6666666666666,
+      "histogram": {
+        "buckets": [
+          [
+            368000,
+            4
+          ],
+          [
+            376000,
+            4
+          ],
+          [
+            384000,
+            7
+          ],
+          [
+            392000,
+            22
+          ],
+          [
+            400000,
+            27
+          ],
+          [
+            408000,
+            41
+          ],
+          [
+            416000,
+            35
+          ],
+          [
+            424000,
+            56
+          ],
+          [
+            432000,
+            107
+          ],
+          [
+            440000,
+            159
+          ],
+          [
+            448000,
+            158
+          ],
+          [
+            456000,
+            143
+          ],
+          [
+            464000,
+            155
+          ],
+          [
+            472000,
+            217
+          ],
+          [
+            480000,
+            227
+          ],
+          [
+            488000,
+            305
+          ],
+          [
+            496000,
+            288
+          ],
+          [
+            504000,
+            222
+          ],
+          [
+            512000,
+            205
+          ],
+          [
+            528000,
+            550
+          ],
+          [
+            544000,
+            889
+          ],
+          [
+            560000,
+            823
+          ],
+          [
+            576000,
+            718
+          ],
+          [
+            592000,
+            563
+          ],
+          [
+            608000,
+            465
+          ],
+          [
+            624000,
+            389
+          ],
+          [
+            640000,
+            351
+          ],
+          [
+            656000,
+            293
+          ],
+          [
+            672000,
+            282
+          ],
+          [
+            688000,
+            268
+          ],
+          [
+            704000,
+            241
+          ],
+          [
+            720000,
+            215
+          ],
+          [
+            736000,
+            129
+          ],
+          [
+            752000,
+            72
+          ],
+          [
+            768000,
+            45
+          ],
+          [
+            784000,
+            35
+          ],
+          [
+            800000,
+            28
+          ],
+          [
+            816000,
+            26
+          ],
+          [
+            832000,
+            14
+          ],
+          [
+            848000,
+            9
+          ],
+          [
+            864000,
+            19
+          ],
+          [
+            880000,
+            3
+          ],
+          [
+            896000,
+            12
+          ],
+          [
+            912000,
+            6
+          ],
+          [
+            928000,
+            4
+          ],
+          [
+            944000,
+            10
+          ],
+          [
+            960000,
+            5
+          ],
+          [
+            976000,
+            5
+          ],
+          [
+            992000,
+            4
+          ],
+          [
+            1008000,
+            2
+          ],
+          [
+            1024000,
+            3
+          ],
+          [
+            1056000,
+            5
+          ],
+          [
+            1088000,
+            5
+          ],
+          [
+            1120000,
+            3
+          ],
+          [
+            1152000,
+            5
+          ],
+          [
+            1184000,
+            4
+          ],
+          [
+            1216000,
+            3
+          ],
+          [
+            1248000,
+            1
+          ],
+          [
+            1280000,
+            1
+          ],
+          [
+            1312000,
+            1
+          ],
+          [
+            1824000,
+            1
+          ],
+          [
+            2048000,
+            1
+          ],
+          [
+            2176000,
+            1
+          ],
+          [
+            2304000,
+            1
+          ],
+          [
+            2368000,
+            1
+          ],
+          [
+            2496000,
+            3
+          ],
+          [
+            2624000,
+            1
+          ],
+          [
+            2688000,
+            1
+          ],
+          [
+            2752000,
+            3
+          ],
+          [
+            2816000,
+            4
+          ],
+          [
+            2944000,
+            2
+          ],
+          [
+            3008000,
+            3
+          ],
+          [
+            3072000,
+            6
+          ],
+          [
+            3136000,
+            3
+          ],
+          [
+            3200000,
+            5
+          ],
+          [
+            3264000,
+            3
+          ],
+          [
+            3328000,
+            5
+          ],
+          [
+            3392000,
+            4
+          ],
+          [
+            3456000,
+            4
+          ],
+          [
+            3520000,
+            3
+          ],
+          [
+            3584000,
+            5
+          ],
+          [
+            3648000,
+            3
+          ],
+          [
+            3712000,
+            2
+          ],
+          [
+            3776000,
+            4
+          ],
+          [
+            3840000,
+            1
+          ],
+          [
+            3904000,
+            1
+          ],
+          [
+            3968000,
+            5
+          ],
+          [
+            4032000,
+            2
+          ],
+          [
+            4096000,
+            3
+          ],
+          [
+            4224000,
+            10
+          ],
+          [
+            4352000,
+            6
+          ],
+          [
+            4480000,
+            3
+          ],
+          [
+            4608000,
+            2
+          ],
+          [
+            4736000,
+            1
+          ],
+          [
+            4864000,
+            1
+          ],
+          [
+            5120000,
+            1
+          ],
+          [
+            5248000,
+            1
+          ],
+          [
+            5888000,
+            1
+          ],
+          [
+            6144000,
+            1
+          ],
+          [
+            6272000,
+            1
+          ],
+          [
+            6528000,
+            1
+          ],
+          [
+            6656000,
+            1
+          ],
+          [
+            6784000,
+            1
+          ]
+        ],
+        "never": 0
+      },
+      "p50_ns": 560000,
+      "p99_ns": 3008000,
+      "p999_ns": 4736000,
+      "max_ns": 6784000,
+      "unfinished": 0,
+      "reserve": null,
+      "reserve_p50_ns": 0,
+      "reserve_p99_ns": 0,
+      "syncs_per_transfer": 0.9966655551850617,
+      "part_syncs_per_transfer": {
+        "postgres": 0.9966655551850617
+      },
+      "transfers_per_request": 0.9998888641920427,
+      "flush_ns": 226769,
+      "p50_flushes": 2.469473340712355
+    },
+    "unpaced": {
+      "seconds": 0,
+      "throughput": 0,
+      "histogram": {
+        "buckets": [],
+        "never": 0
+      },
+      "p50_ns": 0,
+      "p99_ns": 0,
+      "p999_ns": 0,
+      "max_ns": 0,
+      "unfinished": 0,
+      "reserve": null,
+      "reserve_p50_ns": 0,
+      "reserve_p99_ns": 0,
+      "syncs_per_transfer": 0,
+      "part_syncs_per_transfer": null,
+      "transfers_per_request": 0,
+      "flush_ns": 0,
+      "p50_flushes": 0
+    }
+  },
+  "verdict": {
+    "valid": true,
+    "speed": "fast",
+    "saturated": false,
+    "capped": false,
+    "limit": "",
+    "open_at_end": 2,
+    "horizon_ns": 1000000000,
+    "throughput": 999.8,
+    "late_p50_ns": 156000,
+    "late_p99_ns": 328000,
+    "generator_share": 0.01708362295455096,
+    "target_share": 0.028092905198555954,
+    "excluded_seconds": 6,
+    "excluded_p99_ns": 4736000,
+    "throttled_seconds": 0,
+    "reasons": null,
+    "problems": null
+  },
+  "books": {
+    "confirmed": 20001,
+    "existed": 0,
+    "posted": 1012168,
+    "pending": 0,
+    "unsure": {
+      "single": {
+        "calls": 0,
+        "amount": 0
+      },
+      "reserve": {
+        "calls": 0,
+        "amount": 0
+      },
+      "post": {
+        "calls": 0,
+        "amount": 0
+      },
+      "void": {
+        "calls": 0,
+        "amount": 0
+      }
+    },
+    "sampled": 1000,
+    "verified": true,
+    "found": 1000,
+    "debits_posted": 10000000001012168,
+    "credits_posted": 10000000001012168,
+    "debits_pending": 0,
+    "credits_pending": 0
+  },
+  "bounce": null
+}

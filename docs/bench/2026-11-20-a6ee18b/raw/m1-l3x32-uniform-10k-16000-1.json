@@ -1,0 +1,3206 @@
+{
+  "schema": 3,
+  "id": "m1-l3x32-uniform-10k-16000-1",
+  "measurement": "m1",
+  "pass": 1,
+  "started": "2026-11-20T13:49:46.706004333Z",
+  "build": {
+    "commit": "a6ee18b4574a9466b7046948f374ce95ad8f85a9",
+    "dirty": false,
+    "tags": null,
+    "go": "go1.27.4"
+  },
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "threads": 16,
+    "allowed": "8-15",
+    "gomaxprocs": 8,
+    "ram": 16430473216,
+    "kernel": "6.12.117+deb13-amd64",
+    "governor": "powersave",
+    "turbo": "on",
+    "power": "mains",
+    "filesystem": "ext4",
+    "mount": "rw,relatime",
+    "disk": "nvme0n1",
+    "model": "PC801 NVMe SK hynix 512GB",
+    "used": 0.7136599044202139
+  },
+  "target": {
+    "kind": "ledger",
+    "nodes": 3,
+    "variant": "",
+    "lanes": 32,
+    "cores": "0,1 2,3 4,5",
+    "env": {
+      "GOMEMLIMIT": "1500MiB",
+      "LEDGER_CLUSTER": "1",
+      "LEDGER_MAX_CLIENTS": "128",
+      "LEDGER_SNAPSHOT_EVERY": "4294967296",
+      "LEDGER_SWEEP": "on"
+    },
+    "version": "",
+    "settings": null
+  },
+  "load": {
+    "workload": "uniform-10k",
+    "accounts": 10000,
+    "rate": 16000,
+    "stage": 5,
+    "stages": [
+      1000,
+      2000,
+      4000,
+      8000,
+      16000,
+      32000,
+      64000,
+      128000,
+      256000,
+      512000
+    ],
+    "warmup_ns": 5000000000,
+    "window_ns": 15000000000,
+    "max_window_ns": 30000000000,
+    "drain_ns": 5000000000,
+    "need": 8,
+    "seed": 5355307003328319772,
+    "budget_ends_chain": false
+  },
+  "probe": {
+    "growing": [
+      {
+        "syncs": 263,
+        "sync_ns": 1001635693,
+        "flushes": 263,
+        "flush_ns": 421000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 254,
+        "sync_ns": 1001082799,
+        "flushes": 254,
+        "flush_ns": 422000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 255,
+        "sync_ns": 998281528,
+        "flushes": 255,
+        "flush_ns": 428000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 238,
+        "sync_ns": 998277243,
+        "flushes": 240,
+        "flush_ns": 428000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 245,
+        "sync_ns": 1001650300,
+        "flushes": 245,
+        "flush_ns": 436000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 238,
+        "sync_ns": 999318820,
+        "flushes": 241,
+        "flush_ns": 414000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 257,
+        "sync_ns": 998912463,
+        "flushes": 257,
+        "flush_ns": 414000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 251,
+        "sync_ns": 1000719026,
+        "flushes": 251,
+        "flush_ns": 405000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 259,
+        "sync_ns": 998790408,
+        "flushes": 259,
+        "flush_ns": 428000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 253,
+        "sync_ns": 1000083029,
+        "flushes": 253,
+        "flush_ns": 413000000,
+        "speed": "slow"
+      }
+    ],
+    "prealloc": [
+      {
+        "syncs": 552,
+        "sync_ns": 1000056469,
+        "flushes": 552,
+        "flush_ns": 882000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 539,
+        "sync_ns": 1000194553,
+        "flushes": 539,
+        "flush_ns": 877000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 541,
+        "sync_ns": 999067618,
+        "flushes": 541,
+        "flush_ns": 889000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 562,
+        "sync_ns": 999084976,
+        "flushes": 562,
+        "flush_ns": 885000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 583,
+        "sync_ns": 999636710,
+        "flushes": 583,
+        "flush_ns": 889000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 602,
+        "sync_ns": 999916742,
+        "flushes": 603,
+        "flush_ns": 929000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 582,
+        "sync_ns": 999138883,
+        "flushes": 582,
+        "flush_ns": 914000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 616,
+        "sync_ns": 1000975794,
+        "flushes": 616,
+        "flush_ns": 936000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 570,
+        "sync_ns": 998820163,
+        "flushes": 570,
+        "flush_ns": 932000000,
+        "speed": "slow"
+      },
+      {
+        "syncs": 599,
+        "sync_ns": 1000948886,
+        "flushes": 599,
+        "flush_ns": 927000000,
+        "speed": "slow"
+      }
+    ],
+    "means": [
+      {
+        "speed": "slow",
+        "growing_seconds": 10,
+        "growing_ns": 3978810,
+        "prealloc_seconds": 10,
+        "prealloc_ns": 1739965,
+        "ratio": 2.28671841100252
+      },
+      {
+        "speed": "fast",
+        "growing_seconds": 0,
+        "growing_ns": 0,
+        "prealloc_seconds": 0,
+        "prealloc_ns": 0,
+        "ratio": 0
+      }
+    ]
+  },
+  "thresholds": {
+    "fast_ns": 500000,
+    "slow_ns": 1000000,
+    "min_flushes": 20
+  },
+  "allow_stalls": false,
+  "before": [
+    {
+      "name": "n1",
+      "role": "follower",
+      "term": 1,
+      "syncs": 19214,
+      "sync_ns": 52291238817,
+      "requests": 0,
+      "counters": {
+        "applied": 99977,
+        "logsync": 9603,
+        "logsync_ns": 24954263048,
+        "metasync": 9607,
+        "metasync_ns": 27335924542,
+        "othersync": 4,
+        "othersync_ns": 1051227,
+        "peak_rss": 120782848,
+        "process": 52936308366,
+        "rounds": 16587,
+        "slowest": 1963,
+        "up": 85613934723,
+        "wait": 32606337025,
+        "written": 40146955
+      },
+      "stale": false
+    },
+    {
+      "name": "n2",
+      "role": "follower",
+      "term": 1,
+      "syncs": 20168,
+      "sync_ns": 52526788093,
+      "requests": 0,
+      "counters": {
+        "applied": 99977,
+        "logsync": 10080,
+        "logsync_ns": 24861944893,
+        "metasync": 10084,
+        "metasync_ns": 27660284285,
+        "othersync": 4,
+        "othersync_ns": 4558915,
+        "peak_rss": 120705024,
+        "process": 53141057017,
+        "rounds": 17137,
+        "slowest": 1557,
+        "up": 85613938380,
+        "wait": 32402843508,
+        "written": 40166035
+      },
+      "stale": false
+    },
+    {
+      "name": "n3",
+      "role": "leader",
+      "term": 1,
+      "syncs": 35076,
+      "sync_ns": 77380339525,
+      "requests": 99977,
+      "counters": {
+        "applied": 99977,
+        "logsync": 17534,
+        "logsync_ns": 39770198646,
+        "metasync": 17538,
+        "metasync_ns": 37606918136,
+        "othersync": 4,
+        "othersync_ns": 3222743,
+        "peak_rss": 163680256,
+        "process": 78136012517,
+        "rounds": 26205,
+        "slowest": 1189319,
+        "up": 85613704327,
+        "wait": 7148195737,
+        "written": 40464195
+      },
+      "stale": false
+    }
+  ],
+  "seconds": [
+    {
+      "phase": "warmup",
+      "due": 16000,
+      "booked": 14861,
+      "open": 1139,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 67584000,
+      "p99_ns": 104448000,
+      "late_p99_ns": 122000,
+      "flushes": 336,
+      "flush_ns": 592000000,
+      "writes": 1155,
+      "write_ns": 968000000,
+      "cpu": {
+        "generator": 0.3496460697169907,
+        "target": 0.11987865247439682,
+        "foreign": 0
+      },
+      "mhz": [
+        2322,
+        2877,
+        1202,
+        2084,
+        1962,
+        3330
+      ],
+      "throttled": 0,
+      "available": 9513549824,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 19361,
+          "sync_ns": 53062377868,
+          "requests": 0,
+          "counters": {
+            "applied": 100685,
+            "logsync": 9677,
+            "logsync_ns": 25297158700,
+            "metasync": 9680,
+            "metasync_ns": 27764167941,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 122880000,
+            "process": 53718665965,
+            "rounds": 16723,
+            "slowest": 19475993,
+            "up": 86614909457,
+            "wait": 32822500573,
+            "written": 41693517
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 20321,
+          "sync_ns": 53310412021,
+          "requests": 0,
+          "counters": {
+            "applied": 100685,
+            "logsync": 10157,
+            "logsync_ns": 25214545777,
+            "metasync": 10160,
+            "metasync_ns": 28091307329,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 122847232,
+            "process": 53933940640,
+            "rounds": 17275,
+            "slowest": 18607696,
+            "up": 86615016934,
+            "wait": 32610831953,
+            "written": 41777579
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 35249,
+          "sync_ns": 78346735814,
+          "requests": 100686,
+          "counters": {
+            "applied": 100686,
+            "logsync": 17621,
+            "logsync_ns": 40249374956,
+            "metasync": 17624,
+            "metasync_ns": 38094138115,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 163684352,
+            "process": 79113675342,
+            "rounds": 26351,
+            "slowest": 20160970,
+            "up": 86614741826,
+            "wait": 7158542023,
+            "written": 42078417
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "warmup",
+      "due": 16000,
+      "booked": 15872,
+      "open": 1267,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 61440000,
+      "p99_ns": 108544000,
+      "late_p99_ns": 120000,
+      "flushes": 354,
+      "flush_ns": 627000000,
+      "writes": 1198,
+      "write_ns": 977000000,
+      "cpu": {
+        "generator": 0.3600002790002162,
+        "target": 0.1300001007500781,
+        "foreign": 0
+      },
+      "mhz": [
+        442,
+        1096,
+        3230,
+        1031,
+        2237,
+        3387
+      ],
+      "throttled": 0,
+      "available": 9478897664,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 19520,
+          "sync_ns": 53845088242,
+          "requests": 0,
+          "counters": {
+            "applied": 101487,
+            "logsync": 9756,
+            "logsync_ns": 25649946631,
+            "metasync": 9760,
+            "metasync_ns": 28194090384,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 131276800,
+            "process": 54519168506,
+            "rounds": 16861,
+            "slowest": 15696732,
+            "up": 87614941108,
+            "wait": 33028248759,
+            "written": 43348933
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 20450,
+          "sync_ns": 53972349122,
+          "requests": 0,
+          "counters": {
+            "applied": 101486,
+            "logsync": 10221,
+            "logsync_ns": 25511836319,
+            "metasync": 10225,
+            "metasync_ns": 28455953888,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 125054976,
+            "process": 54615784299,
+            "rounds": 17414,
+            "slowest": 16386967,
+            "up": 87614910633,
+            "wait": 32929818187,
+            "written": 43367533
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 35442,
+          "sync_ns": 79319273528,
+          "requests": 101488,
+          "counters": {
+            "applied": 101488,
+            "logsync": 17717,
+            "logsync_ns": 40715571671,
+            "metasync": 17721,
+            "metasync_ns": 38600479114,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 167886848,
+            "process": 80108276864,
+            "rounds": 26509,
+            "slowest": 15668452,
+            "up": 87614663276,
+            "wait": 7163691309,
+            "written": 43763813
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "warmup",
+      "due": 16000,
+      "booked": 16460,
+      "open": 807,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 62464000,
+      "p99_ns": 102400000,
+      "late_p99_ns": 204000,
+      "flushes": 360,
+      "flush_ns": 606000000,
+      "writes": 1211,
+      "write_ns": 963000000,
+      "cpu": {
+        "generator": 0.399983275099335,
+        "target": 0.10999540065231712,
+        "foreign": 0
+      },
+      "mhz": [
+        779,
+        3519,
+        899,
+        543,
+        2514,
+        1217
+      ],
+      "throttled": 0,
+      "available": 9442009088,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 19661,
+          "sync_ns": 54552792715,
+          "requests": 0,
+          "counters": {
+            "applied": 102256,
+            "logsync": 9827,
+            "logsync_ns": 25979316833,
+            "metasync": 9830,
+            "metasync_ns": 28572424655,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 139673600,
+            "process": 55239746749,
+            "rounds": 17007,
+            "slowest": 18172863,
+            "up": 88614877819,
+            "wait": 33305284305,
+            "written": 45058255
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 20612,
+          "sync_ns": 54757978772,
+          "requests": 0,
+          "counters": {
+            "applied": 102227,
+            "logsync": 10302,
+            "logsync_ns": 25862278762,
+            "metasync": 10306,
+            "metasync_ns": 28891141095,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 133451776,
+            "process": 55416682758,
+            "rounds": 17558,
+            "slowest": 15072286,
+            "up": 88614840912,
+            "wait": 33128377174,
+            "written": 45075177
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 35635,
+          "sync_ns": 80291849730,
+          "requests": 102256,
+          "counters": {
+            "applied": 102256,
+            "logsync": 17814,
+            "logsync_ns": 41186011759,
+            "metasync": 17817,
+            "metasync_ns": 39102615228,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 178388992,
+            "process": 81095524824,
+            "rounds": 26659,
+            "slowest": 18139879,
+            "up": 88614673581,
+            "wait": 7167009046,
+            "written": 45432097
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "warmup",
+      "due": 16000,
+      "booked": 15857,
+      "open": 950,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 56320000,
+      "p99_ns": 102400000,
+      "late_p99_ns": 120000,
+      "flushes": 342,
+      "flush_ns": 603000000,
+      "writes": 1175,
+      "write_ns": 971000000,
+      "cpu": {
+        "generator": 0.3300066430337243,
+        "target": 0.13000261695267926,
+        "foreign": 0
+      },
+      "mhz": [
+        2141,
+        3652,
+        1824,
+        2004,
+        1573,
+        1650
+      ],
+      "throttled": 0,
+      "available": 9434456064,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 19806,
+          "sync_ns": 55232758331,
+          "requests": 0,
+          "counters": {
+            "applied": 103093,
+            "logsync": 9899,
+            "logsync_ns": 26283253248,
+            "metasync": 9903,
+            "metasync_ns": 28948453856,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 141774848,
+            "process": 55938850383,
+            "rounds": 17157,
+            "slowest": 16269471,
+            "up": 89614932468,
+            "wait": 33607872975,
+            "written": 46765183
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 20740,
+          "sync_ns": 55376636955,
+          "requests": 0,
+          "counters": {
+            "applied": 103093,
+            "logsync": 10366,
+            "logsync_ns": 26155446564,
+            "metasync": 10370,
+            "metasync_ns": 29216631476,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 141848576,
+            "process": 56051068274,
+            "rounds": 17703,
+            "slowest": 20577623,
+            "up": 89614886099,
+            "wait": 33499022276,
+            "written": 46783863
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 35848,
+          "sync_ns": 81260068468,
+          "requests": 103123,
+          "counters": {
+            "applied": 103123,
+            "logsync": 17920,
+            "logsync_ns": 41674329256,
+            "metasync": 17924,
+            "metasync_ns": 39582516469,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 178388992,
+            "process": 82084834786,
+            "rounds": 26825,
+            "slowest": 19896542,
+            "up": 89614727319,
+            "wait": 7172627051,
+            "written": 47089179
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "warmup",
+      "due": 16000,
+      "booked": 16121,
+      "open": 829,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 57344000,
+      "p99_ns": 104448000,
+      "late_p99_ns": 120000,
+      "flushes": 345,
+      "flush_ns": 609000000,
+      "writes": 1183,
+      "write_ns": 962000000,
+      "cpu": {
+        "generator": 0.31998680214434555,
+        "target": 0.11999505080412957,
+        "foreign": 0
+      },
+      "mhz": [
+        2654,
+        2465,
+        2561,
+        1739,
+        3372,
+        2859
+      ],
+      "throttled": 0,
+      "available": 9421246464,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 19952,
+          "sync_ns": 55956762503,
+          "requests": 0,
+          "counters": {
+            "applied": 103960,
+            "logsync": 9972,
+            "logsync_ns": 26620013695,
+            "metasync": 9976,
+            "metasync_ns": 29335697581,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 143876096,
+            "process": 56678660046,
+            "rounds": 17300,
+            "slowest": 16481896,
+            "up": 90614973933,
+            "wait": 33864818275,
+            "written": 48391167
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 20885,
+          "sync_ns": 56093663206,
+          "requests": 0,
+          "counters": {
+            "applied": 103960,
+            "logsync": 10439,
+            "logsync_ns": 26487313481,
+            "metasync": 10442,
+            "metasync_ns": 29601790810,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 146059264,
+            "process": 56779814889,
+            "rounds": 17851,
+            "slowest": 18187312,
+            "up": 90614998258,
+            "wait": 33766979510,
+            "written": 48409847
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 36050,
+          "sync_ns": 82223496837,
+          "requests": 103961,
+          "counters": {
+            "applied": 103961,
+            "logsync": 18021,
+            "logsync_ns": 42153630773,
+            "metasync": 18025,
+            "metasync_ns": 40066643321,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 182591488,
+            "process": 83065723432,
+            "rounds": 26993,
+            "slowest": 15895881,
+            "up": 90614766880,
+            "wait": 7184450048,
+            "written": 48764745
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 16222,
+      "open": 607,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 55296000,
+      "p99_ns": 96256000,
+      "late_p99_ns": 168000,
+      "flushes": 353,
+      "flush_ns": 612000000,
+      "writes": 1237,
+      "write_ns": 962000000,
+      "cpu": {
+        "generator": 0.3899966432988911,
+        "target": 0.11999896716888957,
+        "foreign": 0
+      },
+      "mhz": [
+        1715,
+        2117,
+        3469,
+        400,
+        2149,
+        1069
+      ],
+      "throttled": 0,
+      "available": 9418485760,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 20092,
+          "sync_ns": 56641434698,
+          "requests": 0,
+          "counters": {
+            "applied": 104830,
+            "logsync": 10042,
+            "logsync_ns": 26934317041,
+            "metasync": 10046,
+            "metasync_ns": 29706066430,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 145977344,
+            "process": 57379772861,
+            "rounds": 17446,
+            "slowest": 15572143,
+            "up": 91614938380,
+            "wait": 34163693721,
+            "written": 50088067
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 21026,
+          "sync_ns": 56752162994,
+          "requests": 0,
+          "counters": {
+            "applied": 104859,
+            "logsync": 10509,
+            "logsync_ns": 26784736497,
+            "metasync": 10513,
+            "metasync_ns": 29962867582,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 148156416,
+            "process": 57458178940,
+            "rounds": 17999,
+            "slowest": 15772820,
+            "up": 91615020115,
+            "wait": 34092000283,
+            "written": 50106747
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 36268,
+          "sync_ns": 83194070537,
+          "requests": 104861,
+          "counters": {
+            "applied": 104861,
+            "logsync": 18130,
+            "logsync_ns": 42633177138,
+            "metasync": 18134,
+            "metasync_ns": 40557670656,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 182591488,
+            "process": 84053896183,
+            "rounds": 27168,
+            "slowest": 22545906,
+            "up": 91614804525,
+            "wait": 7193772842,
+            "written": 50453927
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 15922,
+      "open": 685,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 56320000,
+      "p99_ns": 118784000,
+      "late_p99_ns": 120000,
+      "flushes": 345,
+      "flush_ns": 608000000,
+      "writes": 1177,
+      "write_ns": 969000000,
+      "cpu": {
+        "generator": 0.3199996739203323,
+        "target": 0.1199998777201246,
+        "foreign": 0
+      },
+      "mhz": [
+        2348,
+        1834,
+        1730,
+        1895,
+        3492,
+        3447
+      ],
+      "throttled": 0,
+      "available": 9404416000,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 20220,
+          "sync_ns": 57273752867,
+          "requests": 0,
+          "counters": {
+            "applied": 105756,
+            "logsync": 10106,
+            "logsync_ns": 27228526697,
+            "metasync": 10110,
+            "metasync_ns": 30044174943,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 148078592,
+            "process": 58028096913,
+            "rounds": 17588,
+            "slowest": 17932198,
+            "up": 92614901448,
+            "wait": 34515088295,
+            "written": 51753293
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 21179,
+          "sync_ns": 57485797603,
+          "requests": 0,
+          "counters": {
+            "applied": 105756,
+            "logsync": 10586,
+            "logsync_ns": 27129069052,
+            "metasync": 10589,
+            "metasync_ns": 30352169636,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 150257664,
+            "process": 58203685323,
+            "rounds": 18143,
+            "slowest": 18877941,
+            "up": 92614859646,
+            "wait": 34342452203,
+            "written": 51770515
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 36470,
+          "sync_ns": 84152096226,
+          "requests": 105757,
+          "counters": {
+            "applied": 105757,
+            "logsync": 18231,
+            "logsync_ns": 43105130126,
+            "metasync": 18235,
+            "metasync_ns": 41043743357,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 190992384,
+            "process": 85030013107,
+            "rounds": 27340,
+            "slowest": 17643623,
+            "up": 92614698300,
+            "wait": 7208200641,
+            "written": 52080371
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 15879,
+      "open": 806,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 64512000,
+      "p99_ns": 118784000,
+      "late_p99_ns": 360000,
+      "flushes": 336,
+      "flush_ns": 594000000,
+      "writes": 1138,
+      "write_ns": 954000000,
+      "cpu": {
+        "generator": 0.38002735550913164,
+        "target": 0.14001007834546955,
+        "foreign": 0
+      },
+      "mhz": [
+        1331,
+        2258,
+        1781,
+        1580,
+        3697,
+        3943
+      ],
+      "throttled": 0,
+      "available": 9404039168,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 20350,
+          "sync_ns": 57961659967,
+          "requests": 0,
+          "counters": {
+            "applied": 106526,
+            "logsync": 10171,
+            "logsync_ns": 27542144386,
+            "metasync": 10175,
+            "metasync_ns": 30418464354,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 150175744,
+            "process": 58732101429,
+            "rounds": 17726,
+            "slowest": 18888126,
+            "up": 93614948445,
+            "wait": 34809930362,
+            "written": 53407931
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 21328,
+          "sync_ns": 58256615591,
+          "requests": 0,
+          "counters": {
+            "applied": 106526,
+            "logsync": 10660,
+            "logsync_ns": 27476487970,
+            "metasync": 10664,
+            "metasync_ns": 30775568706,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 152354816,
+            "process": 58992843060,
+            "rounds": 18283,
+            "slowest": 20770731,
+            "up": 93614854131,
+            "wait": 34551918257,
+            "written": 53424813
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 36656,
+          "sync_ns": 85123110628,
+          "requests": 106528,
+          "counters": {
+            "applied": 106528,
+            "logsync": 18324,
+            "logsync_ns": 43577620791,
+            "metasync": 18328,
+            "metasync_ns": 41542267094,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 190996480,
+            "process": 86019071627,
+            "rounds": 27493,
+            "slowest": 19080663,
+            "up": 93614694347,
+            "wait": 7211864927,
+            "written": 53738607
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 16702,
+      "open": 104,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 17920000,
+      "p99_ns": 79872000,
+      "late_p99_ns": 124000,
+      "flushes": 1516,
+      "flush_ns": 615000000,
+      "writes": 4587,
+      "write_ns": 1029000000,
+      "cpu": {
+        "generator": 0.3699771809174126,
+        "target": 0.19998766536076357,
+        "foreign": 0
+      },
+      "mhz": [
+        4035,
+        3003,
+        3298,
+        2979,
+        2836,
+        3153
+      ],
+      "throttled": 0,
+      "available": 9381576704,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": false,
+      "why": [
+        "first second after a change"
+      ],
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 20879,
+          "sync_ns": 58581952461,
+          "requests": 0,
+          "counters": {
+            "applied": 110253,
+            "logsync": 10436,
+            "logsync_ns": 27857770098,
+            "metasync": 10439,
+            "metasync_ns": 30723131136,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 154374144,
+            "process": 59377374104,
+            "rounds": 18089,
+            "slowest": 14319268,
+            "up": 94614923986,
+            "wait": 35167678895,
+            "written": 55378721
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 21860,
+          "sync_ns": 58895781408,
+          "requests": 0,
+          "counters": {
+            "applied": 110283,
+            "logsync": 10926,
+            "logsync_ns": 27788653372,
+            "metasync": 10930,
+            "metasync_ns": 31102569121,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 154456064,
+            "process": 59657180088,
+            "rounds": 18633,
+            "slowest": 14764241,
+            "up": 94614911137,
+            "wait": 34891539438,
+            "written": 55398321
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 37560,
+          "sync_ns": 86050471501,
+          "requests": 110284,
+          "counters": {
+            "applied": 110284,
+            "logsync": 18776,
+            "logsync_ns": 44072692872,
+            "metasync": 18780,
+            "metasync_ns": 41974555886,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 199393280,
+            "process": 86976138882,
+            "rounds": 28238,
+            "slowest": 14810836,
+            "up": 94614720626,
+            "wait": 7250168892,
+            "written": 55712499
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 15781,
+      "open": 323,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 14336000,
+      "p99_ns": 39936000,
+      "late_p99_ns": 3136000,
+      "flushes": 1698,
+      "flush_ns": 579000000,
+      "writes": 5086,
+      "write_ns": 994000000,
+      "cpu": {
+        "generator": 0.4199958958001062,
+        "target": 0.3099969707096022,
+        "foreign": 3.8599622804485945
+      },
+      "mhz": [
+        597,
+        1813,
+        3237,
+        1504,
+        1200,
+        590
+      ],
+      "throttled": 112,
+      "available": 9343131648,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": false,
+      "why": [
+        "foreign cpu"
+      ],
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 21488,
+          "sync_ns": 59162771120,
+          "requests": 0,
+          "counters": {
+            "applied": 114557,
+            "logsync": 10740,
+            "logsync_ns": 28151253296,
+            "metasync": 10744,
+            "metasync_ns": 31010466597,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 174768128,
+            "process": 59993410119,
+            "rounds": 18487,
+            "slowest": 12219272,
+            "up": 95614914787,
+            "wait": 35550425984,
+            "written": 57297753
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 22425,
+          "sync_ns": 59460721531,
+          "requests": 0,
+          "counters": {
+            "applied": 114557,
+            "logsync": 11209,
+            "logsync_ns": 28080516875,
+            "metasync": 11212,
+            "metasync_ns": 31375645741,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 168550400,
+            "process": 60249303355,
+            "rounds": 19007,
+            "slowest": 10279228,
+            "up": 95614934776,
+            "wait": 35291060273,
+            "written": 57326053
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 38547,
+          "sync_ns": 86925001543,
+          "requests": 114558,
+          "counters": {
+            "applied": 114558,
+            "logsync": 19270,
+            "logsync_ns": 44575450029,
+            "metasync": 19273,
+            "metasync_ns": 42346328771,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 201502720,
+            "process": 87882145112,
+            "rounds": 29077,
+            "slowest": 12098125,
+            "up": 95614751319,
+            "wait": 7326319531,
+            "written": 57649071
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 15585,
+      "open": 738,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 9728000,
+      "p99_ns": 73728000,
+      "late_p99_ns": 688000,
+      "flushes": 1915,
+      "flush_ns": 620000000,
+      "writes": 5665,
+      "write_ns": 1052000000,
+      "cpu": {
+        "generator": 0.4699994848805645,
+        "target": 0.2499997260003003,
+        "foreign": 1.1199987724813454
+      },
+      "mhz": [
+        1038,
+        3894,
+        3673,
+        1324,
+        4157,
+        1173
+      ],
+      "throttled": 143,
+      "available": 9311105024,
+      "swapped_out": 0,
+      "speed": "fast",
+      "valid": false,
+      "why": [
+        "foreign cpu"
+      ],
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 22090,
+          "sync_ns": 59747643334,
+          "requests": 0,
+          "counters": {
+            "applied": 119030,
+            "logsync": 11041,
+            "logsync_ns": 28455147507,
+            "metasync": 11045,
+            "metasync_ns": 31291444600,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 179920896,
+            "process": 60605607455,
+            "rounds": 18875,
+            "slowest": 11522949,
+            "up": 96614926589,
+            "wait": 35935529146,
+            "written": 59219765
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 23136,
+          "sync_ns": 60076375733,
+          "requests": 0,
+          "counters": {
+            "applied": 119030,
+            "logsync": 11564,
+            "logsync_ns": 28398575314,
+            "metasync": 11568,
+            "metasync_ns": 31673241504,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 182157312,
+            "process": 60897233654,
+            "rounds": 19447,
+            "slowest": 12798905,
+            "up": 96614872692,
+            "wait": 35647548113,
+            "written": 59240685
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 39646,
+          "sync_ns": 87835882897,
+          "requests": 119032,
+          "counters": {
+            "applied": 119032,
+            "logsync": 19819,
+            "logsync_ns": 45097073299,
+            "metasync": 19823,
+            "metasync_ns": 42735586855,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 214757376,
+            "process": 88830512245,
+            "rounds": 29975,
+            "slowest": 21813320,
+            "up": 96614693084,
+            "wait": 7373065389,
+            "written": 59628125
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 15664,
+      "open": 1074,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 52224000,
+      "p99_ns": 86016000,
+      "late_p99_ns": 1280000,
+      "flushes": 376,
+      "flush_ns": 590000000,
+      "writes": 1264,
+      "write_ns": 973000000,
+      "cpu": {
+        "generator": 0.3300231237302104,
+        "target": 0.14000981006736202,
+        "foreign": 2.070145048853138
+      },
+      "mhz": [
+        3546,
+        3600,
+        3600,
+        3600,
+        559,
+        946
+      ],
+      "throttled": 306,
+      "available": 9304649728,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": false,
+      "why": [
+        "first second after a change",
+        "foreign cpu"
+      ],
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 22211,
+          "sync_ns": 60302783259,
+          "requests": 0,
+          "counters": {
+            "applied": 119967,
+            "logsync": 11102,
+            "logsync_ns": 28718148739,
+            "metasync": 11105,
+            "metasync_ns": 31583583293,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 182054912,
+            "process": 61175826786,
+            "rounds": 19031,
+            "slowest": 12320178,
+            "up": 97614895011,
+            "wait": 36361113657,
+            "written": 60861213
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 23297,
+          "sync_ns": 60772994570,
+          "requests": 0,
+          "counters": {
+            "applied": 119967,
+            "logsync": 11645,
+            "logsync_ns": 28716503157,
+            "metasync": 11648,
+            "metasync_ns": 32051932498,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 184832000,
+            "process": 61608936640,
+            "rounds": 19603,
+            "slowest": 15444175,
+            "up": 97614883699,
+            "wait": 35931436775,
+            "written": 60882933
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 39873,
+          "sync_ns": 88790192167,
+          "requests": 119967,
+          "counters": {
+            "applied": 119967,
+            "logsync": 19933,
+            "logsync_ns": 45575229732,
+            "metasync": 19936,
+            "metasync_ns": 43211739692,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 218222592,
+            "process": 89800788962,
+            "rounds": 30164,
+            "slowest": 12105669,
+            "up": 97614685376,
+            "wait": 7391999820,
+            "written": 61286693
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 16381,
+      "open": 693,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 55296000,
+      "p99_ns": 88064000,
+      "late_p99_ns": 120000,
+      "flushes": 383,
+      "flush_ns": 604000000,
+      "writes": 1292,
+      "write_ns": 965000000,
+      "cpu": {
+        "generator": 0.3300005788210153,
+        "target": 0.12000021048036918,
+        "foreign": 0.8000014032024612
+      },
+      "mhz": [
+        1776,
+        3604,
+        1255,
+        1806,
+        3713,
+        1539
+      ],
+      "throttled": 356,
+      "available": 9289891840,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 22364,
+          "sync_ns": 61033187349,
+          "requests": 0,
+          "counters": {
+            "applied": 120866,
+            "logsync": 11178,
+            "logsync_ns": 29055559074,
+            "metasync": 11182,
+            "metasync_ns": 31976577048,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 184283136,
+            "process": 61927529276,
+            "rounds": 19182,
+            "slowest": 12856304,
+            "up": 98614949989,
+            "wait": 36611790802,
+            "written": 62572275
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 23462,
+          "sync_ns": 61505465218,
+          "requests": 0,
+          "counters": {
+            "applied": 120866,
+            "logsync": 11727,
+            "logsync_ns": 29043386768,
+            "metasync": 11731,
+            "metasync_ns": 32457519535,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 186122240,
+            "process": 62362219938,
+            "rounds": 19758,
+            "slowest": 12751883,
+            "up": 98614936451,
+            "wait": 36180616284,
+            "written": 62594235
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 40084,
+          "sync_ns": 89743156128,
+          "requests": 120867,
+          "counters": {
+            "applied": 120867,
+            "logsync": 20038,
+            "logsync_ns": 46040605733,
+            "metasync": 20042,
+            "metasync_ns": 43699327652,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 230846464,
+            "process": 90776566702,
+            "rounds": 30338,
+            "slowest": 12441054,
+            "up": 98614819838,
+            "wait": 7411113554,
+            "written": 62933209
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 15746,
+      "open": 947,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 62464000,
+      "p99_ns": 106496000,
+      "late_p99_ns": 188000,
+      "flushes": 330,
+      "flush_ns": 500000000,
+      "writes": 1151,
+      "write_ns": 944000000,
+      "cpu": {
+        "generator": 0.3899718627501589,
+        "target": 0.139989899448775,
+        "foreign": 0
+      },
+      "mhz": [
+        811,
+        2438,
+        2063,
+        1237,
+        2863,
+        1048
+      ],
+      "throttled": 0,
+      "available": 9264943104,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 22512,
+          "sync_ns": 61771305824,
+          "requests": 0,
+          "counters": {
+            "applied": 121638,
+            "logsync": 11252,
+            "logsync_ns": 29397402167,
+            "metasync": 11256,
+            "metasync_ns": 32372852430,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 186429440,
+            "process": 62682754199,
+            "rounds": 19318,
+            "slowest": 16008368,
+            "up": 99614981861,
+            "wait": 36857181702,
+            "written": 64211429
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 23612,
+          "sync_ns": 62216925092,
+          "requests": 0,
+          "counters": {
+            "applied": 121638,
+            "logsync": 11802,
+            "logsync_ns": 29367969726,
+            "metasync": 11806,
+            "metasync_ns": 32844396451,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 188264448,
+            "process": 63089518815,
+            "rounds": 19906,
+            "slowest": 15986451,
+            "up": 99615017891,
+            "wait": 36454050996,
+            "written": 64233429
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 40281,
+          "sync_ns": 90708589359,
+          "requests": 121640,
+          "counters": {
+            "applied": 121640,
+            "logsync": 20137,
+            "logsync_ns": 46526236108,
+            "metasync": 20140,
+            "metasync_ns": 44179130508,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 250560512,
+            "process": 91752871244,
+            "rounds": 30492,
+            "slowest": 14534788,
+            "up": 99614883142,
+            "wait": 7415162779,
+            "written": 64617113
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 15320,
+      "open": 1627,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 77824000,
+      "p99_ns": 116736000,
+      "late_p99_ns": 118000,
+      "flushes": 283,
+      "flush_ns": 470000000,
+      "writes": 965,
+      "write_ns": 949000000,
+      "cpu": {
+        "generator": 0.32000017696009786,
+        "target": 0.11000006083003364,
+        "foreign": 0
+      },
+      "mhz": [
+        1455,
+        2633,
+        1690,
+        1341,
+        2346,
+        2091
+      ],
+      "throttled": 0,
+      "available": 9263030272,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 22624,
+          "sync_ns": 62484392466,
+          "requests": 0,
+          "counters": {
+            "applied": 122249,
+            "logsync": 11308,
+            "logsync_ns": 29727440683,
+            "metasync": 11312,
+            "metasync_ns": 32755900556,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 188514304,
+            "process": 63411722197,
+            "rounds": 19440,
+            "slowest": 16152006,
+            "up": 100614937813,
+            "wait": 37125395579,
+            "written": 65873777
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 23738,
+          "sync_ns": 62994706978,
+          "requests": 0,
+          "counters": {
+            "applied": 122249,
+            "logsync": 11865,
+            "logsync_ns": 29718672581,
+            "metasync": 11869,
+            "metasync_ns": 33271475482,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 190353408,
+            "process": 63882675876,
+            "rounds": 20027,
+            "slowest": 15777569,
+            "up": 100614928069,
+            "wait": 36654291581,
+            "written": 65896057
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 40440,
+          "sync_ns": 91685141128,
+          "requests": 122276,
+          "counters": {
+            "applied": 122276,
+            "logsync": 20216,
+            "logsync_ns": 47008900399,
+            "metasync": 20220,
+            "metasync_ns": 44673017986,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 250576896,
+            "process": 92750616802,
+            "rounds": 30617,
+            "slowest": 15699766,
+            "up": 100614821457,
+            "wait": 7418304405,
+            "written": 66245287
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 16644,
+      "open": 959,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 75776000,
+      "p99_ns": 126976000,
+      "late_p99_ns": 132000,
+      "flushes": 293,
+      "flush_ns": 484000000,
+      "writes": 1028,
+      "write_ns": 968000000,
+      "cpu": {
+        "generator": 0.3298051306808757,
+        "target": 0.11992913842940933,
+        "foreign": 0
+      },
+      "mhz": [
+        3551,
+        2509,
+        2466,
+        2450,
+        1690,
+        3211
+      ],
+      "throttled": 0,
+      "available": 9246441472,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 22745,
+          "sync_ns": 63212955380,
+          "requests": 0,
+          "counters": {
+            "applied": 122927,
+            "logsync": 11369,
+            "logsync_ns": 30068255119,
+            "metasync": 11372,
+            "metasync_ns": 33143649034,
+            "othersync": 4,
+            "othersync_ns": 1051227,
+            "peak_rss": 190779392,
+            "process": 64152546424,
+            "rounds": 19560,
+            "slowest": 16286475,
+            "up": 101617021954,
+            "wait": 37382090237,
+            "written": 67512473
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 23869,
+          "sync_ns": 63757810959,
+          "requests": 0,
+          "counters": {
+            "applied": 122927,
+            "logsync": 11931,
+            "logsync_ns": 30063924172,
+            "metasync": 11934,
+            "metasync_ns": 33689327872,
+            "othersync": 4,
+            "othersync_ns": 4558915,
+            "peak_rss": 192614400,
+            "process": 64657106295,
+            "rounds": 20155,
+            "slowest": 15077040,
+            "up": 101617120743,
+            "wait": 36881269298,
+            "written": 67534953
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 40605,
+          "sync_ns": 92652129564,
+          "requests": 122928,
+          "counters": {
+            "applied": 122928,
+            "logsync": 20299,
+            "logsync_ns": 47487163417,
+            "metasync": 20302,
+            "metasync_ns": 45161743404,
+            "othersync": 4,
+            "othersync_ns": 3222743,
+            "peak_rss": 263487488,
+            "process": 93728459996,
+            "rounds": 30755,
+            "slowest": 16547398,
+            "up": 101616664828,
+            "wait": 7430225811,
+            "written": 67875629
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 15723,
+      "open": 1260,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 64512000,
+      "p99_ns": 118784000,
+      "late_p99_ns": 180000,
+      "flushes": 297,
+      "flush_ns": 467000000,
+      "writes": 1022,
+      "write_ns": 954000000,
+      "cpu": {
+        "generator": 0.3702436117809488,
+        "target": 0.1400921774306293,
+        "foreign": 0
+      },
+      "mhz": [
+        3327,
+        2452,
+        792,
+        465,
+        483,
+        1245
+      ],
+      "throttled": 0,
+      "available": 9239896064,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 22870,
+          "sync_ns": 63917924851,
+          "requests": 0,
+          "counters": {
+            "applied": 123639,
+            "logsync": 11432,
+            "logsync_ns": 30388997451,
+            "metasync": 11433,
+            "metasync_ns": 33520516785,
+            "othersync": 5,
+            "othersync_ns": 8410615,
+            "peak_rss": 192917504,
+            "process": 64870762798,
+            "rounds": 19690,
+            "slowest": 31736723,
+            "up": 102614932499,
+            "wait": 37660140121,
+            "written": 69215529
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 23976,
+          "sync_ns": 64358136321,
+          "requests": 0,
+          "counters": {
+            "applied": 123639,
+            "logsync": 11985,
+            "logsync_ns": 30349206102,
+            "metasync": 11986,
+            "metasync_ns": 33997410425,
+            "othersync": 5,
+            "othersync_ns": 11519794,
+            "peak_rss": 194756608,
+            "process": 65270424304,
+            "rounds": 20290,
+            "slowest": 35672300,
+            "up": 102614919919,
+            "wait": 37261062983,
+            "written": 69237649
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 40786,
+          "sync_ns": 93613675910,
+          "requests": 123639,
+          "counters": {
+            "applied": 123639,
+            "logsync": 20390,
+            "logsync_ns": 47968475887,
+            "metasync": 20391,
+            "metasync_ns": 45638547831,
+            "othersync": 5,
+            "othersync_ns": 6652192,
+            "peak_rss": 263876608,
+            "process": 94706466514,
+            "rounds": 30907,
+            "slowest": 24302081,
+            "up": 102614799071,
+            "wait": 7439307803,
+            "written": 69578005
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 15726,
+      "open": 1534,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 69632000,
+      "p99_ns": 106496000,
+      "late_p99_ns": 116000,
+      "flushes": 307,
+      "flush_ns": 466000000,
+      "writes": 1042,
+      "write_ns": 960000000,
+      "cpu": {
+        "generator": 0.30998096189926305,
+        "target": 0.09999385867718164,
+        "foreign": 0
+      },
+      "mhz": [
+        1583,
+        2394,
+        1096,
+        399,
+        1425,
+        1650
+      ],
+      "throttled": 0,
+      "available": 9239031808,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 22985,
+          "sync_ns": 64584097891,
+          "requests": 0,
+          "counters": {
+            "applied": 124346,
+            "logsync": 11489,
+            "logsync_ns": 30703418874,
+            "metasync": 11491,
+            "metasync_ns": 33872268402,
+            "othersync": 5,
+            "othersync_ns": 8410615,
+            "peak_rss": 195059712,
+            "process": 65559406787,
+            "rounds": 19821,
+            "slowest": 14681438,
+            "up": 103614913308,
+            "wait": 37972381659,
+            "written": 70849377
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 24108,
+          "sync_ns": 65087372571,
+          "requests": 0,
+          "counters": {
+            "applied": 124346,
+            "logsync": 12051,
+            "logsync_ns": 30676566833,
+            "metasync": 12052,
+            "metasync_ns": 34399285944,
+            "othersync": 5,
+            "othersync_ns": 11519794,
+            "peak_rss": 196894720,
+            "process": 66013998376,
+            "rounds": 20423,
+            "slowest": 15645608,
+            "up": 103614896886,
+            "wait": 37518312831,
+            "written": 70871857
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 40964,
+          "sync_ns": 94591781626,
+          "requests": 124375,
+          "counters": {
+            "applied": 124375,
+            "logsync": 20479,
+            "logsync_ns": 48456482400,
+            "metasync": 20480,
+            "metasync_ns": 46128647034,
+            "othersync": 5,
+            "othersync_ns": 6652192,
+            "peak_rss": 263876608,
+            "process": 95701287666,
+            "rounds": 31046,
+            "slowest": 14435613,
+            "up": 103614706728,
+            "wait": 7442987131,
+            "written": 71217111
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 16843,
+      "open": 691,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 69632000,
+      "p99_ns": 100352000,
+      "late_p99_ns": 280000,
+      "flushes": 318,
+      "flush_ns": 491000000,
+      "writes": 1055,
+      "write_ns": 982000000,
+      "cpu": {
+        "generator": 0.3900000222300013,
+        "target": 0.11000000627000037,
+        "foreign": 0
+      },
+      "mhz": [
+        2366,
+        982,
+        1443,
+        2443,
+        609,
+        3920
+      ],
+      "throttled": 0,
+      "available": 9216262144,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 23104,
+          "sync_ns": 65258344485,
+          "requests": 0,
+          "counters": {
+            "applied": 125051,
+            "logsync": 11549,
+            "logsync_ns": 31015877599,
+            "metasync": 11550,
+            "metasync_ns": 34234056271,
+            "othersync": 5,
+            "othersync_ns": 8410615,
+            "peak_rss": 201363456,
+            "process": 66243201306,
+            "rounds": 19951,
+            "slowest": 14383658,
+            "up": 104614986803,
+            "wait": 38286431166,
+            "written": 72513667
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 24237,
+          "sync_ns": 65807685119,
+          "requests": 0,
+          "counters": {
+            "applied": 125080,
+            "logsync": 12115,
+            "logsync_ns": 31002282875,
+            "metasync": 12117,
+            "metasync_ns": 34793882450,
+            "othersync": 5,
+            "othersync_ns": 11519794,
+            "peak_rss": 199262208,
+            "process": 66756338391,
+            "rounds": 20556,
+            "slowest": 13745108,
+            "up": 104614968145,
+            "wait": 37780514960,
+            "written": 72541363
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 41138,
+          "sync_ns": 95559562928,
+          "requests": 125080,
+          "counters": {
+            "applied": 125080,
+            "logsync": 20566,
+            "logsync_ns": 48939085707,
+            "metasync": 20567,
+            "metasync_ns": 46613825029,
+            "othersync": 5,
+            "othersync_ns": 6652192,
+            "peak_rss": 276971520,
+            "process": 96687395576,
+            "rounds": 31186,
+            "slowest": 14065519,
+            "up": 104614876664,
+            "wait": 7450150654,
+            "written": 72881381
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "window",
+      "due": 16000,
+      "booked": 15830,
+      "open": 861,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 16000,
+      "p50_ns": 75776000,
+      "p99_ns": 108544000,
+      "late_p99_ns": 114000,
+      "flushes": 308,
+      "flush_ns": 484000000,
+      "writes": 1052,
+      "write_ns": 982000000,
+      "cpu": {
+        "generator": 0.3099987234252569,
+        "target": 0.12999946466220452,
+        "foreign": 0
+      },
+      "mhz": [
+        1524,
+        1412,
+        2575,
+        2072,
+        3825,
+        3903
+      ],
+      "throttled": 0,
+      "available": 9198891008,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 23251,
+          "sync_ns": 66105893035,
+          "requests": 0,
+          "counters": {
+            "applied": 125720,
+            "logsync": 11622,
+            "logsync_ns": 31396987654,
+            "metasync": 11624,
+            "metasync_ns": 34700494766,
+            "othersync": 5,
+            "othersync_ns": 8410615,
+            "peak_rss": 209211392,
+            "process": 67114156063,
+            "rounds": 20076,
+            "slowest": 16878593,
+            "up": 105614911730,
+            "wait": 38421835675,
+            "written": 74152085
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 24363,
+          "sync_ns": 66543421799,
+          "requests": 0,
+          "counters": {
+            "applied": 125720,
+            "logsync": 12178,
+            "logsync_ns": 31352165646,
+            "metasync": 12180,
+            "metasync_ns": 35179736359,
+            "othersync": 5,
+            "othersync_ns": 11519794,
+            "peak_rss": 205549568,
+            "process": 67509232714,
+            "rounds": 20676,
+            "slowest": 17926366,
+            "up": 105615047132,
+            "wait": 38030767949,
+            "written": 74174325
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 41299,
+          "sync_ns": 96530018638,
+          "requests": 125721,
+          "counters": {
+            "applied": 125721,
+            "logsync": 20646,
+            "logsync_ns": 49417628483,
+            "metasync": 20648,
+            "metasync_ns": 47105737963,
+            "othersync": 5,
+            "othersync_ns": 6652192,
+            "peak_rss": 278237184,
+            "process": 97680257934,
+            "rounds": 31312,
+            "slowest": 17682844,
+            "up": 105614714570,
+            "wait": 7453105768,
+            "written": 74523257
+          },
+          "stale": false
+        }
+      ]
+    },
+    {
+      "phase": "drain",
+      "due": 10,
+      "booked": 871,
+      "open": 0,
+      "retries": 0,
+      "failed": 0,
+      "shed": 0,
+      "count": 10,
+      "p50_ns": 92160000,
+      "p99_ns": 92160000,
+      "late_p99_ns": 118000,
+      "flushes": 29,
+      "flush_ns": 45000000,
+      "writes": 129,
+      "write_ns": 103000000,
+      "cpu": {
+        "generator": 0.009998944981318186,
+        "target": 0.03999577992527274,
+        "foreign": 0.05999366988790911
+      },
+      "mhz": [
+        2096,
+        2355,
+        400,
+        1519,
+        767,
+        1257
+      ],
+      "throttled": 0,
+      "available": 9197404160,
+      "swapped_out": 0,
+      "speed": "slow",
+      "valid": true,
+      "why": null,
+      "parts": [
+        {
+          "name": "n1",
+          "role": "follower",
+          "term": 1,
+          "syncs": 23265,
+          "sync_ns": 66187401702,
+          "requests": 0,
+          "counters": {
+            "applied": 125782,
+            "logsync": 11629,
+            "logsync_ns": 31433698508,
+            "metasync": 11631,
+            "metasync_ns": 34745292579,
+            "othersync": 5,
+            "othersync_ns": 8410615,
+            "peak_rss": 209637376,
+            "process": 67197213875,
+            "rounds": 20198,
+            "slowest": 14251334,
+            "up": 106615210331,
+            "wait": 39333797372,
+            "written": 74241723
+          },
+          "stale": false
+        },
+        {
+          "name": "n2",
+          "role": "follower",
+          "term": 1,
+          "syncs": 24377,
+          "sync_ns": 66624023159,
+          "requests": 0,
+          "counters": {
+            "applied": 125782,
+            "logsync": 12185,
+            "logsync_ns": 31390563830,
+            "metasync": 12187,
+            "metasync_ns": 35221939535,
+            "othersync": 5,
+            "othersync_ns": 11519794,
+            "peak_rss": 205815808,
+            "process": 67591442598,
+            "rounds": 20796,
+            "slowest": 14479645,
+            "up": 106615114322,
+            "wait": 38941560121,
+            "written": 74263963
+          },
+          "stale": false
+        },
+        {
+          "name": "n3",
+          "role": "leader",
+          "term": 1,
+          "syncs": 41311,
+          "sync_ns": 96607711137,
+          "requests": 125782,
+          "counters": {
+            "applied": 125782,
+            "logsync": 20652,
+            "logsync_ns": 49455759112,
+            "metasync": 20654,
+            "metasync_ns": 47145299833,
+            "othersync": 5,
+            "othersync_ns": 6652192,
+            "peak_rss": 278241280,
+            "process": 97759059657,
+            "rounds": 31448,
+            "slowest": 14071497,
+            "up": 106614850679,
+            "wait": 8373499905,
+            "written": 74602643
+          },
+          "stale": false
+        }
+      ]
+    }
+  ],
+  "bands": {
+    "slow": {
+      "seconds": 11,
+      "throughput": 16021.454545454546,
+      "histogram": {
+        "buckets": [
+          [
+            17408000,
+            1
+          ],
+          [
+            17920000,
+            7
+          ],
+          [
+            18432000,
+            8
+          ],
+          [
+            18944000,
+            9
+          ],
+          [
+            19456000,
+            10
+          ],
+          [
+            19968000,
+            15
+          ],
+          [
+            20480000,
+            16
+          ],
+          [
+            20992000,
+            20
+          ],
+          [
+            21504000,
+            39
+          ],
+          [
+            22016000,
+            42
+          ],
+          [
+            22528000,
+            48
+          ],
+          [
+            23040000,
+            51
+          ],
+          [
+            23552000,
+            59
+          ],
+          [
+            24064000,
+            60
+          ],
+          [
+            24576000,
+            71
+          ],
+          [
+            25088000,
+            87
+          ],
+          [
+            25600000,
+            112
+          ],
+          [
+            26112000,
+            107
+          ],
+          [
+            26624000,
+            129
+          ],
+          [
+            27136000,
+            135
+          ],
+          [
+            27648000,
+            153
+          ],
+          [
+            28160000,
+            179
+          ],
+          [
+            28672000,
+            204
+          ],
+          [
+            29184000,
+            217
+          ],
+          [
+            29696000,
+            239
+          ],
+          [
+            30208000,
+            267
+          ],
+          [
+            30720000,
+            289
+          ],
+          [
+            31232000,
+            300
+          ],
+          [
+            31744000,
+            344
+          ],
+          [
+            32256000,
+            372
+          ],
+          [
+            32768000,
+            371
+          ],
+          [
+            33792000,
+            826
+          ],
+          [
+            34816000,
+            910
+          ],
+          [
+            35840000,
+            1009
+          ],
+          [
+            36864000,
+            1129
+          ],
+          [
+            37888000,
+            1218
+          ],
+          [
+            38912000,
+            1397
+          ],
+          [
+            39936000,
+            1607
+          ],
+          [
+            40960000,
+            1796
+          ],
+          [
+            41984000,
+            1989
+          ],
+          [
+            43008000,
+            2173
+          ],
+          [
+            44032000,
+            2266
+          ],
+          [
+            45056000,
+            2416
+          ],
+          [
+            46080000,
+            2455
+          ],
+          [
+            47104000,
+            2592
+          ],
+          [
+            48128000,
+            2670
+          ],
+          [
+            49152000,
+            2772
+          ],
+          [
+            50176000,
+            2866
+          ],
+          [
+            51200000,
+            3011
+          ],
+          [
+            52224000,
+            3126
+          ],
+          [
+            53248000,
+            3183
+          ],
+          [
+            54272000,
+            3377
+          ],
+          [
+            55296000,
+            3527
+          ],
+          [
+            56320000,
+            3516
+          ],
+          [
+            57344000,
+            3595
+          ],
+          [
+            58368000,
+            3629
+          ],
+          [
+            59392000,
+            3694
+          ],
+          [
+            60416000,
+            3674
+          ],
+          [
+            61440000,
+            3785
+          ],
+          [
+            62464000,
+            3666
+          ],
+          [
+            63488000,
+            3665
+          ],
+          [
+            64512000,
+            3532
+          ],
+          [
+            65536000,
+            3557
+          ],
+          [
+            67584000,
+            6857
+          ],
+          [
+            69632000,
+            6796
+          ],
+          [
+            71680000,
+            6552
+          ],
+          [
+            73728000,
+            6207
+          ],
+          [
+            75776000,
+            6016
+          ],
+          [
+            77824000,
+            5778
+          ],
+          [
+            79872000,
+            5379
+          ],
+          [
+            81920000,
+            5004
+          ],
+          [
+            83968000,
+            4594
+          ],
+          [
+            86016000,
+            4229
+          ],
+          [
+            88064000,
+            3975
+          ],
+          [
+            90112000,
+            3630
+          ],
+          [
+            92160000,
+            3289
+          ],
+          [
+            94208000,
+            2965
+          ],
+          [
+            96256000,
+            2707
+          ],
+          [
+            98304000,
+            2404
+          ],
+          [
+            100352000,
+            2115
+          ],
+          [
+            102400000,
+            1846
+          ],
+          [
+            104448000,
+            1569
+          ],
+          [
+            106496000,
+            1367
+          ],
+          [
+            108544000,
+            960
+          ],
+          [
+            110592000,
+            695
+          ],
+          [
+            112640000,
+            637
+          ],
+          [
+            114688000,
+            501
+          ],
+          [
+            116736000,
+            362
+          ],
+          [
+            118784000,
+            271
+          ],
+          [
+            120832000,
+            150
+          ],
+          [
+            122880000,
+            131
+          ],
+          [
+            124928000,
+            124
+          ],
+          [
+            126976000,
+            120
+          ],
+          [
+            129024000,
+            86
+          ],
+          [
+            131072000,
+            58
+          ],
+          [
+            135168000,
+            37
+          ]
+        ],
+        "never": 0
+      },
+      "p50_ns": 65536000,
+      "p99_ns": 114688000,
+      "p999_ns": 129024000,
+      "max_ns": 135168000,
+      "unfinished": 0,
+      "reserve": null,
+      "reserve_p50_ns": 0,
+      "reserve_p99_ns": 0,
+      "syncs_per_transfer": 0.028251889511791008,
+      "part_syncs_per_transfer": {
+        "n1": 0.008159513379786196,
+        "n2": 0.008562382260151161,
+        "n3": 0.01152999387185365
+      },
+      "transfers_per_request": 21.1796659055402,
+      "flush_ns": 1626794,
+      "p50_flushes": 40.285371104147174
+    },
+    "fast": {
+      "seconds": 0,
+      "throughput": 0,
+      "histogram": {
+        "buckets": [],
+        "never": 0
+      },
+      "p50_ns": 0,
+      "p99_ns": 0,
+      "p999_ns": 0,
+      "max_ns": 0,
+      "unfinished": 0,
+      "reserve": null,
+      "reserve_p50_ns": 0,
+      "reserve_p99_ns": 0,
+      "syncs_per_transfer": 0,
+      "part_syncs_per_transfer": null,
+      "transfers_per_request": 0,
+      "flush_ns": 0,
+      "p50_flushes": 0
+    },
+    "unpaced": {
+      "seconds": 0,
+      "throughput": 0,
+      "histogram": {
+        "buckets": [],
+        "never": 0
+      },
+      "p50_ns": 0,
+      "p99_ns": 0,
+      "p999_ns": 0,
+      "max_ns": 0,
+      "unfinished": 0,
+      "reserve": null,
+      "reserve_p50_ns": 0,
+      "reserve_p99_ns": 0,
+      "syncs_per_transfer": 0,
+      "part_syncs_per_transfer": null,
+      "transfers_per_request": 0,
+      "flush_ns": 0,
+      "p50_flushes": 0
+    }
+  },
+  "verdict": {
+    "valid": true,
+    "speed": "slow",
+    "saturated": false,
+    "capped": false,
+    "limit": "",
+    "open_at_end": 861,
+    "horizon_ns": 1000000000,
+    "throughput": 15997.866666666667,
+    "late_p50_ns": 60000,
+    "late_p99_ns": 188000,
+    "generator_share": 0.04525017022170222,
+    "target_share": 0.025000087906679055,
+    "excluded_seconds": 4,
+    "excluded_p99_ns": 86016000,
+    "throttled_seconds": 4,
+    "reasons": null,
+    "problems": null
+  },
+  "books": {
+    "confirmed": 320010,
+    "existed": 0,
+    "posted": 16172376,
+    "pending": 0,
+    "unsure": {
+      "single": {
+        "calls": 0,
+        "amount": 0
+      },
+      "reserve": {
+        "calls": 0,
+        "amount": 0
+      },
+      "post": {
+        "calls": 0,
+        "amount": 0
+      },
+      "void": {
+        "calls": 0,
+        "amount": 0
+      }
+    },
+    "sampled": 1000,
+    "verified": true,
+    "found": 1000,
+    "debits_posted": 10000000031322379,
+    "credits_posted": 10000000031322379,
+    "debits_pending": 0,
+    "credits_pending": 0
+  },
+  "bounce": null
+}
