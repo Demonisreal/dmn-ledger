@@ -1,7 +1,8 @@
 # ADR-014: A public demo that can only disturb itself: one program, four faults, no Docker socket
 
-Status: accepted, 2026-11-19. The demo is built and runs locally and in a local container. It is
-not deployed.
+Status: accepted, 2026-11-19. Amended 2026-11-20: deployed at
+[ledger.dmn-software.com](https://ledger.dmn-software.com); what was checked on that server is
+under "The container".
 
 ## Context
 
@@ -185,15 +186,17 @@ out. The subnet is an example and must be free on the host:
 docker network create --driver bridge --internal \
   --subnet 172.29.10.0/24 --ip-range 172.29.10.128/25 \
   --opt com.docker.network.bridge.name=br-ledger-demo \
+  --opt com.docker.network.bridge.gateway_mode_ipv4=isolated \
   ledger-demo
 ```
 
-The reverse proxy lists `ledger-demo` as an external network with `ipv4_address: 172.29.10.2` in
-its own compose file. The bridge carries an address of the host, and a service that listens on
-all addresses of the host would be reachable from a container that someone has taken over. A
-rule in the host's firewall drops what the bridge sends to the host itself, for example
-`iptables -I INPUT -i br-ledger-demo -j DROP`. Traffic between the proxy and the demo is
-forwarded, not input, and is not touched by it.
+The reverse proxy gets the address `172.29.10.2` in that network, in its own compose file or
+with `docker network connect --ip 172.29.10.2`. A bridge normally carries an address of the
+host, and a service that listens on all addresses of the host would then be reachable from a
+container that someone has taken over. With `gateway_mode_ipv4=isolated` the bridge of an
+internal network carries no address and the host has no route into the subnet. A Docker that
+does not know the option needs a rule in the host's firewall instead, which drops what the
+bridge sends to the host itself, for example `iptables -I INPUT -i br-ledger-demo -j DROP`.
 
 The controller needs no capability to signal its children: they run under the same user. It is
 PID 1 in the container, reaps its children and handles `SIGTERM` itself. The `Dockerfile` sets
@@ -216,23 +219,40 @@ compressed, a `POST` with a forged `X-Forwarded-For` 16 s after an accepted faul
 `limited`, and from a second container on the network neither an address outside nor a name
 could be reached, while the proxy could. `caddy validate` accepts the `Caddyfile` as it stands.
 
-What can only be checked where the demo is deployed: the host's firewall towards the bridge, TLS
-and the real name, the log limits over time, and everything the proxy serves besides. Open for
-that day:
+On the server, a shared machine with four cores and nineteen other sites behind the same
+reverse proxy, the image was not built: it was built on the laptop, copied and loaded. Before the
+proxy was attached, `TestSoak` drove the container there for 15 minutes through a second proxy on
+the loopback only: 9 019 transfers, 58 faults (15 kills, 21 freezes, 10 cuts, 12 flips, each
+flip repaired), 821 receipts verified, no finding; the longest fault with its count took 6.92 s
+and the longest count after an undo 1.95 s. While watched, the container used about a fifth of a
+core and 35 to 89 MiB. What was checked there:
 
-- That the proxy sees the visitor's own address. That holds if the DNS entry points at the host
-  and no CDN stands in front: with one, every visitor from a region arrives from a few of its
-  addresses and counts as one. It holds for IPv6 only if the proxy's network has IPv6 or the
-  entry has no AAAA record. If IPv6 visitors reach the proxy through an IPv4 hop, they share one
-  address, and with it four streams and one fault in 30 s.
-- That the proxy of the host behaves like the one in the local run. The address rule holds
-  either way, because the rightmost entry counts.
-- That what else the proxy serves does not treat the network of the demo as a trusted one. A
-  site that admits callers from private address ranges, or that trusts `X-Forwarded-For` from
-  them, is open to a taken-over container, and so is an administration endpoint of the proxy
-  that listens on more than the loopback.
-- That a container on the network cannot resolve names outside it: Docker's resolver forwards
-  them for internal networks in some versions.
+- **The network.** Docker 29.7 created it with `gateway_mode_ipv4=isolated`: the bridge has no
+  address and the host no route. From a second container on the network no address outside and
+  no name could be reached, nor the gateway address or the public address of the host on the
+  ports of its other services. Only the demo answered.
+- **The proxy.** Caddy 2.11 was attached with `docker network connect` and kept its default
+  route. After its reload every other site answered as before.
+- **From outside.** The page comes over TLS with HSTS once and the policy of the demo; the first
+  event of the stream arrives after 0.11 s and the next ones 0.27 s apart on average; a second
+  `POST` with another forged `X-Forwarded-For` 17 s after an accepted fault is refused as
+  `limited`; a request without `Origin` or with a foreign one gets 403, one with a body 400,
+  `HEAD /events` 405. The log of the container names no address.
+- **The visitor's address.** The name has one A record that points at the host, no AAAA record
+  and no CDN in front, so the proxy sees every visitor's own IPv4 address and nobody arrives
+  over IPv6.
+- **What else the proxy serves.** Its sites behind a VPN admit one address range by the address
+  of the connection, so they refuse the network of the demo, and none trusts `X-Forwarded-For`
+  from private ranges. Its administration endpoint listens on the loopback of its container.
+
+What remains there:
+
+- The machine is shared and busy. A moment in which the nodes get no CPU for seconds can end as
+  a finding on the public page (decision 7), although the ledger did nothing wrong.
+- The proxy keeps its own log without a size limit, and a failed request is named there with its
+  address for as long as the operator keeps that log.
+- The proxy was attached by hand and not in its compose file. If its container is created anew,
+  the connection has to be made again, or the site answers 502.
 
 ## What the demo does not show
 

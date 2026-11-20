@@ -56,7 +56,8 @@ Works today:
   serves a page that shows them. A visitor can kill a node, freeze it, cut it off or flip a bit
   in its log; the program takes every fault back itself, counts the whole ledger afterwards and
   has every answer judged by the checker of the chaos test. A receipt is checked in the browser.
-  It runs locally and in a local container (see "The demo" below).
+  It runs locally, in a container and as a public instance at
+  [ledger.dmn-software.com](https://ledger.dmn-software.com) (see "The demo" below).
 - Benchmarks, a module of their own in `bench/`: open load on `ledgerd` and on Postgres on the
   same disk, one raw file per run and a report that is rebuilt from them. One run of the plan is
   in the repository (see "Measurements" below).
@@ -66,9 +67,6 @@ Not built yet:
 - TLS and authentication.
 - Measurements beyond one laptop. The numbers come from one evening on one machine, with the
   three nodes on one disk; a real network and server hardware are not measured.
-- A public instance of the demo. It is not deployed anywhere, and the files for that in
-  `deploy/demo` have only run in part; see "The container" in
-  [ADR-014](docs/adr/014-public-demo-fixed-faults-no-docker-socket.md).
 - Membership changes, leadership transfer and reads from followers.
 - Signatures of a majority, revocation of keys, a witness outside the cluster.
 
@@ -417,8 +415,10 @@ directory on a real disk for real fsyncs.
 
 The demo is one program that starts the three nodes itself, books a small load on them and
 serves a page with four buttons: kill a node, freeze it, cut it off from the others, or flip a
-bit in its log. It needs Linux. Build it next to `ledgerd`, which it looks for in its own
-directory, and give it a data directory of its own:
+bit in its log. A public instance runs at
+[ledger.dmn-software.com](https://ledger.dmn-software.com); its page is in German. To run it
+yourself it needs Linux. Build it next to `ledgerd`, which it looks for in its own directory, and
+give it a data directory of its own:
 
 ```
 $ dir=$(mktemp -d)
