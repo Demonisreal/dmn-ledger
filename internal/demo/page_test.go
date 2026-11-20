@@ -123,7 +123,7 @@ func TestPageStates(t *testing.T) {
 		if !regexp.MustCompile(`<p class="note" id="conn" hidden></p>`).MatchString(r.page) {
 			t.Error("the hint about the connection is not empty and hidden")
 		}
-		r.hides(t, "Die Verbindung ist unterbrochen", "Gerade sehen zu viele zu")
+		r.hides(t, "Die Verbindung ist unterbrochen", "Gerade sehen zu viele zu", "Von dieser Adresse sehen schon")
 	})
 
 	t.Run("no event for three seconds", func(t *testing.T) {
@@ -131,7 +131,8 @@ func TestPageStates(t *testing.T) {
 	})
 
 	t.Run("no room in the stream", func(t *testing.T) {
-		render(t, nil).knows(t, "Gerade sehen zu viele zu. Das ist der Stand von {at}; die Seite versucht es weiter.")
+		render(t, nil).knows(t, "Gerade sehen zu viele zu. Das ist der Stand von {at}; die Seite versucht es weiter.",
+			"Von dieser Adresse sehen schon vier zu. Das ist der Stand von {at}; die Seite versucht es weiter, bis einer der vier Plätze frei wird.")
 	})
 
 	t.Run("without javascript", func(t *testing.T) {
@@ -267,7 +268,7 @@ func TestPageStates(t *testing.T) {
 			since = st.Now - 90_000
 			st.Load, st.Rest = "resting", Rest{Since: since}
 		})
-		r.shows(t, "Es hat niemand zugesehen, deshalb ruhte die Last seit "+hm(since)+". Sie läuft wieder an.")
+		r.shows(t, "Es hat niemand zugesehen, deshalb ruhte die Last seit "+hm(since)+". Sie läuft wieder an, sobald jemand zusieht.")
 		render(t, nil).hides(t, "deshalb ruhte die Last")
 	})
 

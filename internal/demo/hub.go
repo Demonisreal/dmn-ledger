@@ -44,16 +44,19 @@ func newHub(show Show) *hub {
 	return &hub{show: show, viewers: map[*viewer]struct{}{}, per: map[netip.Prefix]int{}}
 }
 
-func (h *hub) join(from netip.Prefix) *viewer {
+func (h *hub) join(from netip.Prefix) (*viewer, int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.viewers) >= maxStreams || h.per[from] >= streamsPerAddr {
-		return nil
+	switch {
+	case h.per[from] >= streamsPerAddr:
+		return nil, http.StatusTooManyRequests
+	case len(h.viewers) >= maxStreams:
+		return nil, http.StatusServiceUnavailable
 	}
 	v := &viewer{from: from, events: make(chan []byte, viewerBacklog), fresh: true}
 	h.viewers[v] = struct{}{}
 	h.per[from]++
-	return v
+	return v, http.StatusOK
 }
 
 func (h *hub) leave(v *viewer) {
@@ -156,9 +159,9 @@ func (web *Web) events(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	v := web.hub.join(visitor(r, web.proxies))
+	v, status := web.hub.join(visitor(r, web.proxies))
 	if v == nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
+		w.WriteHeader(status)
 		return
 	}
 	defer web.hub.leave(v)

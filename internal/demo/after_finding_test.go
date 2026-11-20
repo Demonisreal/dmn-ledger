@@ -128,7 +128,7 @@ func TestFlipSparesAHaltedNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		s.quiet(r)
+		s.quiet(ctx, r)
 		s.lower(r)
 	}()
 	n := r.c.Node(2)

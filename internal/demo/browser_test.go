@@ -317,28 +317,40 @@ func TestLogInChrome(t *testing.T) {
 }
 
 func TestReconnectKeepsItsDistanceInChrome(t *testing.T) {
-	web := NewWeb(newFake(), "", nil)
-	var opened atomic.Int32
-	done := make(chan struct{})
-	mux := http.NewServeMux()
-	mux.Handle("GET /static/", web)
-	mux.HandleFunc("GET /{$}", pageWith(t, web, appScript+`<img src="/held.svg" alt="" hidden>`))
-	mux.HandleFunc("GET /held.svg", held(done))
-	mux.HandleFunc("GET /events", func(w http.ResponseWriter, _ *http.Request) {
-		if opened.Add(1) == 1 {
-			time.AfterFunc(2*time.Second, func() { close(done) })
-		}
-		w.WriteHeader(http.StatusServiceUnavailable)
-	})
-	srv := httptest.NewServer(guarded(mux))
-	defer srv.Close()
-	dom, stderr := chrome(t, "--dump-dom", srv.URL+"/")
-	clean(t, stderr)
-	if n := opened.Load(); n != 1 {
-		t.Errorf("the page asked for the stream %d times within 2.3 s of a 503, want once and then 3 s of waiting", n)
-	}
-	if !strings.Contains(dom, "Gerade sehen zu viele zu.") {
-		t.Error("the page does not say that the stream is full")
+	everyone, here := "Gerade sehen zu viele zu.", "Von dieser Adresse sehen schon vier zu."
+	for _, tc := range []struct {
+		status    int
+		says, not string
+	}{
+		{http.StatusServiceUnavailable, everyone, here},
+		{http.StatusTooManyRequests, here, everyone},
+	} {
+		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
+			web := NewWeb(newFake(), "", nil)
+			var opened atomic.Int32
+			done := make(chan struct{})
+			mux := http.NewServeMux()
+			mux.Handle("GET /static/", web)
+			mux.HandleFunc("GET /{$}", pageWith(t, web, appScript+`<img src="/held.svg" alt="" hidden>`))
+			mux.HandleFunc("GET /held.svg", held(done))
+			mux.HandleFunc("GET /events", func(w http.ResponseWriter, _ *http.Request) {
+				if opened.Add(1) == 1 {
+					time.AfterFunc(2*time.Second, func() { close(done) })
+				}
+				w.WriteHeader(tc.status)
+			})
+			srv := httptest.NewServer(guarded(mux))
+			defer srv.Close()
+			dom, stderr := chrome(t, "--dump-dom", srv.URL+"/")
+			clean(t, stderr)
+			if n := opened.Load(); n != 1 {
+				t.Errorf("the page asked for the stream %d times within 2.3 s of a %d, want once and then 3 s of waiting", n, tc.status)
+			}
+			shown, _, _ := strings.Cut(dom, `<div id="texts"`)
+			if !strings.Contains(shown, tc.says) || strings.Contains(shown, tc.not) {
+				t.Errorf("after a %d the page does not say %q, or says %q", tc.status, tc.says, tc.not)
+			}
+		})
 	}
 }
 

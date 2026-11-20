@@ -1605,8 +1605,9 @@ has passed is a failed attempt with its reason on the page, not a finding.
 
 A cluster is replaced for three reasons: the start, a finding, and the limit of 20 000 confirmed
 transfers. At the limit the load stops for good, a last full count judges the whole cluster, the
-recorder is closed and the checker gets up to 30 s for the windows that are left. Then the
-clients and the cluster are closed and the next one is set up with a new ID and new keys.
+recorder is closed and the checker gets up to 30 s for the windows that are left; a window it has
+not judged by then is a finding `replay`. Then the clients and the cluster are closed and the next
+one is set up with a new ID and new keys.
 `State.Cluster` names the reason (`start`, `limit`, `finding`), and `State.Totals` runs on across
 clusters.
 
@@ -1654,10 +1655,11 @@ nodes run on. With the first stream the load continues after its current pause.
 Every 100 ms the stage asks all three nodes for their status, with 300 ms for the answers, and
 once a second it reads the size of each node's newest WAL segment. A node the controller has
 frozen itself is asked once a second only, so status connections do not pile up at a process
-that cannot accept them. `State.Nodes` holds per node what the status frame says (role, term,
-leader, commit, applied and last index, the first eight bytes of apply hash and head, head
-number, repair, key) and what only the controller knows: the PID, since when the process runs,
-whether the controller has it down or frozen, and a note on the last fault that hit it.
+that cannot accept them, and an answer to a question asked before the freeze is dropped.
+`State.Nodes` holds per node what the status frame says (role, term, leader, commit, applied and
+last index, the first eight bytes of apply hash and head, head number, repair, key) and what only
+the controller knows: the PID, since when the process runs, whether the controller has it down or
+frozen, and a note on the last fault that hit it.
 `State.Links` holds the six links and which of them the controller has cut.
 
 The stderr of every node is read line by line. A line, cut to 400 bytes, goes into a ring of 200
@@ -1721,7 +1723,7 @@ A finding is whatever ends a run of the chaos test, with the same names where th
 | Check | What happened |
 |---|---|
 | `S8`, `S9`, `S13` | a violation from `Replayer.Window`, with its wording |
-| `replay` | the checker ended with another error |
+| `replay` | the checker ended with another error, or left windows unjudged 30 s after the load stopped for good |
 | `call` | a call of the load or of a count returned an error |
 | `L1` | calls still open 15 s after the load was held |
 | `L2` | the nodes do not agree 10 s after the load was held |
@@ -1753,7 +1755,7 @@ which asks once a second, ends with 1.
 | Route | Answer | Cost |
 |---|---|---|
 | `GET /` | the page, rendered from the state with `html/template` | one rendering a second however many ask; the same bytes in between |
-| `GET /events` | the event stream | a seat in the hub, limited |
+| `GET /events` | the event stream; 429 when the address has 4 open, 503 when 200 are open | a seat in the hub, limited |
 | `POST /act/{kind}/{node}` | 202 with the time until which this address is limited, or a refusal | a check in memory |
 | `GET /proof` | a receipt with the keys, as JSON | one `Prove` a second at the cluster however many ask |
 | `GET /static/{name}` | an embedded file from `web/` | none; `ETag` from the content, `Cache-Control: no-cache` |
@@ -1815,9 +1817,9 @@ There is no resuming: every stream starts with `state`, so a late visitor, a rec
 restart of the controller are the same case. Lines carry their number, and the page appends only
 numbers above the last one it shows. The hub encodes an event once for all streams and never
 waits: each stream has a buffer of 32 events, and a stream whose buffer is full is closed. At
-most 4 streams per address and 200 in all are open, beyond that the answer is 503 without a
-body; a stream ends after 10 minutes and the page connects again. `HEAD /events` is answered
-with 405.
+most 4 streams per address and 200 in all are open; the fifth of one address gets 429, one beyond
+the 200 gets 503, both without a body; a stream ends after 10 minutes and the page connects again.
+`HEAD /events` is answered with 405.
 
 Times in the state are Unix milliseconds, amounts are decimal strings in hundredths, hashes and
 keys are lower-case hex, transfer IDs are decimal strings. The fields are the Go type
@@ -1832,10 +1834,10 @@ script needs for roles, phases and refusals into `<template>` elements, and the 
 from there.
 
 Three ES modules, no library and no build step. `app.js` reads the stream with `fetch` (so it
-can tell a 503 for a full hub from a lost connection), writes the values into the rendered HTML
-as text, appends lines and sends the four requests. After 3 s without an event it marks every
-value as old, with the time of the last one, and locks the buttons; when its tab has been hidden
-for 60 s it closes the stream. `proof.js` fetches `/proof`, shows each step of the check and can
+can tell a 429 for a full address and a 503 for a full hub from a lost connection), writes the
+values into the rendered HTML as text, appends lines and sends the four requests. After 3 s
+without an event it marks every value as old, with the time of the last one, and locks the
+buttons; when its tab has been hidden for 60 s it closes the stream. `proof.js` fetches `/proof`, shows each step of the check and can
 change one byte of its copy of the receipt to show the check fail. `receipt.js` is the verifier
 and nothing else: `check` returns every value it computed and the first step that failed,
 `verify` is the form `scripts/vectors.mjs` runs the test vectors through. No hash is computed

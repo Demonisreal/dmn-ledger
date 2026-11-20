@@ -160,7 +160,7 @@ func (s *Stage) Run(ctx context.Context) error {
 			return err
 		}
 		why = s.stage(ctx, r)
-		s.quiet(r)
+		s.quiet(ctx, r)
 		if s.finding(r) != nil {
 			why = "finding"
 			s.stand(ctx, r)
@@ -208,7 +208,7 @@ func (s *Stage) setup(ctx context.Context, why string) (*run, error) {
 	if err == nil {
 		err = s.boot(r)
 		if err != nil {
-			s.quiet(r)
+			s.quiet(ctx, r)
 			s.lower(r)
 		}
 	}
@@ -281,7 +281,7 @@ func (s *Stage) prepare(ctx context.Context, dir, why string) (*run, error) {
 		Exited:  func(id int, err error) { s.exited(r, id, err) },
 	})
 	if err != nil {
-		s.quiet(r)
+		s.quiet(ctx, r)
 		return nil, err
 	}
 	r.c = c
@@ -466,7 +466,7 @@ func (s *Stage) tires(r *run) bool {
 	return true
 }
 
-func (s *Stage) quiet(r *run) {
+func (s *Stage) quiet(ctx context.Context, r *run) {
 	s.beat()
 	r.cancel()
 	r.wg.Wait()
@@ -479,6 +479,16 @@ func (s *Stage) quiet(r *run) {
 	}
 	r.stopJudge()
 	<-r.judged
+	if ctx.Err() != nil {
+		return
+	}
+	_, judged := r.rec.Judged()
+	s.mu.Lock()
+	sealed := r.ruled + len(r.sealed)
+	s.mu.Unlock()
+	if sealed > judged {
+		s.fail(r, "replay", fmt.Sprintf(failUnjudged, sealed-judged, sealed, judgedWithin))
+	}
 }
 
 func (s *Stage) lower(r *run) {

@@ -278,6 +278,38 @@ func TestFrozenNodeIsAskedOncePerSecond(t *testing.T) {
 	}
 }
 
+func TestAnswerAskedBeforeAFreezeIsDropped(t *testing.T) {
+	s := New(Config{Dir: t.TempDir(), Ledgerd: bin, Log: log.New(testLog{t}, "", 0)})
+	s.pace = quick
+	s.resting = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, err := s.setup(ctx, "start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		s.quiet(ctx, r)
+		s.lower(r)
+	}()
+	n := r.c.Node(2)
+	n.Signal(syscall.SIGSTOP)
+	looked := make(chan struct{})
+	go func() {
+		s.look(ctx, false)
+		close(looked)
+	}()
+	localtest.Await(t, sightWithin/2, "the look asking n2", func() bool { return queued(t, r.c.Addrs()[1]) > 0 })
+	s.mu.Lock()
+	r.frozen[1], r.asked[1] = true, time.Time{}
+	s.mu.Unlock()
+	n.Signal(syscall.SIGCONT)
+	<-looked
+	if st := s.State(); st.Nodes[1].Answers {
+		t.Fatalf("n2 is shown as answering (%s in term %d) after it was frozen, from a look that asked before", st.Nodes[1].Role, st.Nodes[1].Term)
+	}
+}
+
 func TestCutHealsItself(t *testing.T) {
 	s := stage(t, nil)
 	for _, target := range []string{"leader", "follower"} {
@@ -430,7 +462,7 @@ func TestEveryFaultIsLifted(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() {
-				s.quiet(r)
+				s.quiet(ctx, r)
 				s.lower(r)
 			}()
 			target := 2
@@ -710,6 +742,35 @@ func TestViolationBecomesAFinding(t *testing.T) {
 		if err != nil || len(segs) == 0 {
 			t.Fatalf("evidence of n%d: %v", id, err)
 		}
+	}
+}
+
+func TestUnjudgedWindowsAreAFinding(t *testing.T) {
+	var logs logBook
+	s := New(Config{Dir: t.TempDir(), Ledgerd: bin, Log: log.New(io.MultiWriter(&logs, testLog{t}), "", 0)})
+	s.pace = quick
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, err := s.setup(ctx, "start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.stopJudge()
+	<-r.judged
+	_, judged := r.rec.Judged()
+	localtest.Await(t, 20*time.Second, "a window the checker never got to", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return r.ruled+len(r.sealed) > judged
+	})
+	s.quiet(ctx, r)
+	f := s.finding(r)
+	s.lower(r)
+	if f == nil || f.Check != "replay" || !strings.Contains(f.Reason, "nach dem Anhalten der Last nicht nachgespielt") {
+		t.Fatalf("finding %+v; %d windows were judged before the checker stopped", f, judged)
+	}
+	if !strings.Contains(logs.String(), "finding replay in cluster ") {
+		t.Fatalf("no line about the finding in the log:\n%s", logs.String())
 	}
 }
 

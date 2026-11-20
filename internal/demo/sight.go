@@ -44,10 +44,11 @@ func (s *Stage) watch(ctx context.Context) {
 func (s *Stage) look(ctx context.Context, measure bool) {
 	s.mu.Lock()
 	r := s.cur
-	var skip [3]bool
+	var skip, frozen [3]bool
 	if r != nil {
+		frozen = r.frozen
 		for i := range skip {
-			skip[i] = r.frozen[i] && time.Since(r.asked[i]) < frozenEvery
+			skip[i] = frozen[i] && time.Since(r.asked[i]) < frozenEvery
 		}
 	}
 	s.mu.Unlock()
@@ -81,7 +82,7 @@ func (s *Stage) look(ctx context.Context, measure bool) {
 	s.sight.at = now
 	s.sight.leader = 0
 	for i, st := range sts {
-		if !skip[i] {
+		if !skip[i] && (frozen[i] || !r.frozen[i]) {
 			s.sight.sts[i], r.asked[i] = st, now
 		}
 		if st := s.sight.sts[i]; st != nil && st.Role == ledger.Leader {

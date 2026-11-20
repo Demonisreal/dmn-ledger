@@ -70,6 +70,7 @@ const (
 	failProof      = "Beleg für Buchung %d: %v"
 	failProofOther = "Beleg für Buchung %d nennt %v von Konto %v an Konto %v über %v, geschickt war %d von Konto %d an Konto %d über %d"
 	failJudge      = "Prüfer: %v"
+	failUnjudged   = "der Prüfer hat %d von %d Fenstern binnen %v nach dem Anhalten der Last nicht nachgespielt"
 )
 
 var roleNames = map[ledger.Role]string{

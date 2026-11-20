@@ -129,9 +129,14 @@ func TestStreamCaps(t *testing.T) {
 			}
 			return s
 		}
-		refused := func(s *stream) bool {
-			if s.res.StatusCode != http.StatusServiceUnavailable {
+		refused := func(s *stream, status int) bool {
+			if s.res.StatusCode != status {
 				return false
+			}
+			for key, want := range wantGuards {
+				if s.res.Header.Get(key) != want {
+					return false
+				}
 			}
 			body, _ := io.ReadAll(s.res.Body)
 			return len(body) == 0
@@ -144,16 +149,16 @@ func TestStreamCaps(t *testing.T) {
 			}
 			first = append(first, s)
 		}
-		if !refused(open("198.51.100.1:9")) {
-			t.Error("the fifth stream of one address was not refused with an empty 503")
+		if !refused(open("198.51.100.1:9"), http.StatusTooManyRequests) {
+			t.Error("the fifth stream of one address was not refused with an empty 429")
 		}
 		for i := range streamsPerAddr {
 			if s := open(fmt.Sprintf("[2001:db8:1:2::%x]:1", i+1)); s.res.StatusCode != http.StatusOK {
 				t.Fatalf("stream %d of one /64: status %d", i+1, s.res.StatusCode)
 			}
 		}
-		if !refused(open("[2001:db8:1:2::ff]:1")) {
-			t.Error("the fifth stream of one /64 was not refused")
+		if !refused(open("[2001:db8:1:2::ff]:1"), http.StatusTooManyRequests) {
+			t.Error("the fifth stream of one /64 was not refused with an empty 429")
 		}
 		if s := open("[2001:db8:1:3::1]:1"); s.res.StatusCode != http.StatusOK {
 			t.Errorf("a stream of the next /64: status %d", s.res.StatusCode)
@@ -163,8 +168,8 @@ func TestStreamCaps(t *testing.T) {
 				t.Fatalf("stream %d: status %d", n+1, s.res.StatusCode)
 			}
 		}
-		if !refused(open("203.0.113.200:1")) {
-			t.Errorf("stream %d was not refused", maxStreams+1)
+		if !refused(open("203.0.113.200:1"), http.StatusServiceUnavailable) {
+			t.Errorf("stream %d was not refused with an empty 503", maxStreams+1)
 		}
 		time.Sleep(beatEvery)
 		synctest.Wait()
@@ -177,7 +182,7 @@ func TestStreamCaps(t *testing.T) {
 		if s := open("203.0.113.200:2"); s.res.StatusCode != http.StatusOK {
 			t.Errorf("after a stream closed, a new one got status %d", s.res.StatusCode)
 		}
-		if !refused(open("203.0.113.201:1")) {
+		if !refused(open("203.0.113.201:1"), http.StatusServiceUnavailable) {
 			t.Error("the closed stream freed two places")
 		}
 		_ = first[1].conn.Close()
@@ -265,7 +270,7 @@ func TestStreamEndsAfterTenMinutes(t *testing.T) {
 func TestHubReportsTheLastViewerGone(t *testing.T) {
 	show := newFake()
 	h := newHub(show)
-	v := h.join(netip.MustParsePrefix("192.0.2.1/32"))
+	v, _ := h.join(netip.MustParsePrefix("192.0.2.1/32"))
 	h.beat()
 	if _, _, watching := show.counted(); watching != 1 {
 		t.Fatalf("%d viewers reported with one stream", watching)

@@ -384,7 +384,7 @@ function show(next, full) {
 }
 
 function lose(how) {
-  if (lost === 'crowded' && how === 'stale') return
+  if ((lost === 'crowded' || lost === 'address-full') && how === 'stale') return
   lost = how
   patch(conn, fill(how, { at: seen }))
   conn.hidden = false
@@ -432,6 +432,7 @@ async function listen() {
   if (signal.aborted) return
   if (!res?.ok) {
     if (res?.status === 503) lose('crowded')
+    else if (res?.status === 429) lose('address-full')
     later(wait)
     return
   }

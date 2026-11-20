@@ -120,7 +120,7 @@ next to a list; steps on a rail; a list with square marks; prose with code.
 | link | site.css 67 | normal (white, red 1px underline), hover (underline white), focus 2px `--red` offset 3px |
 | header, brand, crumb | site.css 120, 169, 2424 | static, not sticky |
 | large figure | new, sized like `.page-head h1`, tabular figures | normal; wrong sum in `--red-hi` with the sentence that says so; replaced by the setup sentence or the finding |
-| note | status page `.note`, border 1px instead of a 2px side bar | no JavaScript, stale connection, crowded stream, load rested |
+| note | status page `.note`, border 1px instead of a 2px side bar | no JavaScript, stale connection, crowded stream or full address, load rested |
 | finding | note with a 1px `--red` border, wording in mono with line breaks kept | |
 | fact rows | site.css 1098 (`.uptime`) | empty row hidden |
 | node column | new, lines like status page `.svc-s` | answers, catching up, silent, down, frozen, cut, repair, halted by a finding, starting; the leader carries the site's 5px red square (site.css 413), only while it answers |
@@ -177,6 +177,7 @@ browser's zone, counted against `now` of the server, and only change when an eve
 | connected | values follow the stream; the stream is not mentioned |
 | no event for three seconds | note in the verdict and in the status line, "Stand `<zeit>`" with the server time of the last event; values in the verdict, the nodes and the books turn `--muted`; fault buttons locked |
 | no room in the stream (503) | the same with the sentence "Gerade sehen zu viele zu"; the page asks again after the server's `retry` |
+| no room for this address (429) | the same with the sentence "Von dieser Adresse sehen schon vier zu"; the page asks again after the server's `retry` |
 | tab was hidden | after one minute in the background the page closes its stream and shows the old-values state; on return it connects again and the first `state` makes everything current |
 | click sent | all fault buttons locked, the pressed one keeps its red border and `aria-busy`; after 202 they stay locked until an event shows the action |
 | refused | the sentence for `limited`, `cooling`, `recovering`, `young`, or "Das hat der Server nicht angenommen (`<status>`)" in place of "Bereit"; with `until` (or `Retry-After`) the buttons stay locked until then |

@@ -109,8 +109,8 @@ func TestSecurityHeaders(t *testing.T) {
 				check("events", open.res.Header, false)
 			}
 		}
-		if open.res.StatusCode != http.StatusServiceUnavailable {
-			t.Fatalf("fifth stream: status %d, want 503", open.res.StatusCode)
+		if open.res.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("fifth stream: status %d, want 429", open.res.StatusCode)
 		}
 		check("events refused", open.res.Header, false)
 		res, _ := l.open(t, "203.0.113.9:9").do(t, request("POST", "/act/kill/1", "Content-Length", "1")+"x")

@@ -355,6 +355,7 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <template data-t="resting">{{template "resting" (args "since" "{since}")}}</template>
 <template data-t="stale">{{template "stale" (args "at" "{at}")}}</template>
 <template data-t="crowded">{{template "crowded" (args "at" "{at}")}}</template>
+<template data-t="address-full">{{template "address-full" (args "at" "{at}")}}</template>
 <template data-t="role-leader">{{template "role" "leader"}}</template>
 <template data-t="role-follower">{{template "role" "follower"}}</template>
 <template data-t="role-candidate">{{template "role" "candidate"}}</template>
@@ -454,9 +455,10 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "finding"}}Befund um {{template "t" .at}}: <span class="check">{{.check}}</span>, <span class="said">{{.reason}}.</span>{{end}}
 {{define "finding-reset"}} Der Cluster steht und wird um {{template "t" .reset}} neu aufgesetzt.{{end}}
 {{define "finding-kept"}} Die Daten der Knoten sind gesichert.{{end}}
-{{define "resting"}}Es hat niemand zugesehen, deshalb ruhte die Last seit {{template "t" .since}}. Sie läuft wieder an.{{end}}
+{{define "resting"}}Es hat niemand zugesehen, deshalb ruhte die Last seit {{template "t" .since}}. Sie läuft wieder an, sobald jemand zusieht.{{end}}
 {{define "stale"}}Stand {{template "t" .at}}. Die Verbindung ist unterbrochen, ein neuer Versuch läuft.{{end}}
 {{define "crowded"}}Gerade sehen zu viele zu. Das ist der Stand von {{template "t" .at}}; die Seite versucht es weiter.{{end}}
+{{define "address-full"}}Von dieser Adresse sehen schon vier zu. Das ist der Stand von {{template "t" .at}}; die Seite versucht es weiter, bis einer der vier Plätze frei wird.{{end}}
 {{define "nojs"}}Das ist der Stand von {{template "t" .at}} (UTC). Mit JavaScript läuft die Seite mit, und die Knöpfe erscheinen.{{end}}
 
 {{define "role"}}{{if eq . "leader"}}Leader{{else if eq . "follower"}}Follower{{else if eq . "candidate"}}Kandidat{{else if eq . "precandidate"}}bittet um Stimmen (Pre-Vote){{end}}{{end}}
