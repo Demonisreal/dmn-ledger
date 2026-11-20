@@ -28,6 +28,7 @@ internal/simbug      switch for the planted bugs, only in builds with -tags simb
 internal/workload    batch generator for the model test, the simulator and the chaos test
 internal/faultnet    TCP proxy that delays, drops, swallows, stalls or corrupts whole frames
 internal/local       three ledgerd as children on loopback, a faultnet link per direction, on Linux
+  internal/local/localtest  builds ledgerd once for the tests that start it
 internal/history     calls of real clients in windows, each closed window handed to check.Replayer
 internal/chaos       three ledgerd processes under faults, only with -tags chaos on Linux
 internal/demo        controller of the demo: cluster, load, counts, four faults, HTTP, the page
@@ -997,6 +998,10 @@ does not know, so a typo does not let a default apply in silence.
 | `LEDGER_MAX_CLIENTS` | 1 to 4096 | `128` |
 | `LEDGER_SWEEP` | `on` or `off` | `on` |
 | `LEDGER_KEY_FILE` | absolute path of a key file | none: receipts without a stamp |
+
+Any other `LEDGER_` variable is a configuration error. A `ledgerd` built with `-tags pprof` also
+takes `LEDGER_PROFILE`, the absolute path of a file it writes a CPU profile to until it stops;
+the benchmarks use it.
 
 Addresses are IP and port, never host names. A node listens for peers on its own entry in
 `LEDGER_PEERS`. It exits with 0 after `SIGTERM` or `SIGINT`, 1 when the node halted (the reason is

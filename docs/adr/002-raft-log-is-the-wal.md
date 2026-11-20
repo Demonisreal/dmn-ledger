@@ -43,14 +43,10 @@ applied again.
 - Groups grow with load and with disk latency. Under light load every request costs its own
   round, two fsyncs with the seal. In the server a round takes everything that arrived during the
   previous one: `TestRequestsDuringASyncShareTheNext` holds an fsync, sends 50 requests meanwhile
-  and counts two log syncs for all 51. Measured with an early load program that is not part of the
-  repository (the benchmarks under `bench/` came later), sessions booking single transfers without a pause over loopback TCP, the servers in
-  one process on the NVMe disk (ext4) of an i5-12500H laptop: on one node 8 sessions shared a log
-  fsync four ways and 64 sessions 32 ways; on three nodes the log fsyncs per transfer fell from 3
-  with one session to 0.12 with 64. Only these counts are worth quoting. The mean fsync went from
-  0.45 to 4.6 ms between runs of the same code, so throughput and latency are not measured yet.
+  and counts two log syncs for all 51. How far that goes on a cluster under load is not measured
+  here; the benchmarks under `bench/` count the fsyncs per transfer.
 - Applying reads each entry back from the WAL, with a second read through the page cache and a
-  second CRC check. That is the price of applying only what is on disk; it is not measured either.
+  second CRC check. That is the price of applying only what is on disk; it is not measured.
 - A checksum alone cannot tell a bit flip in the last synced batch from a torn write. The seal in
   the metadata file can (ADR-009): a broken frame up to the seal is damage, a broken frame after
   it at the end of the log is cut off (`TestOpenJudgesDamageByTheSeal`).
