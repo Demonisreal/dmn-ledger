@@ -134,7 +134,8 @@ no two nodes at the same index
 
 Node 2 won the election in term 2, and the client found the new leader on its own. Node 1 had not
 applied the last transfer yet when it was asked, so no two nodes could be compared;
-`ledgerctl status` exits with 1 here because node 3 does not answer. Start node 3 again on its old directory:
+`ledgerctl status` exits with 1 here because node 3 does not answer. Start node 3 again on its
+old directory:
 
 ```
 $ env -u LEDGER_NODES LEDGER_ID=$leader LEDGER_PEERS=$peers LEDGER_CLIENT_ADDR=127.0.0.1:710$leader \
@@ -171,7 +172,7 @@ ok 12 at 2026-11-16T09:48:25.222160410Z
 $ ledgerctl head -o new.head
 wrote 146 bytes to new.head
 $ ledgerctl verify chain old.head new.head -keys cluster.keys
-connected: head 4 1f3501e41522b668 leads to head 5 2c46727a9cd5cd6f over 1 links
+connected: head 4 1f3501e41522b668 leads to head 5 2c46727a9cd5cd6f over 1 link
 ```
 
 `connected` is shown by SHA-256, wherever the links came from. Links that do not connect show
@@ -382,8 +383,8 @@ with real processes, the chaos test and the demo need Linux; `scripts/vectors.mj
   model, [ADR-015](docs/adr/015-binary-protocol-over-plain-tcp.md) the protocol and the network.
 - [docs/ledger-rules.md](docs/ledger-rules.md): fields, check order, time, chains, the audit
   trail, invariants and the snapshot format of the state machine.
-- [DESIGN.md](DESIGN.md): the tokens and components the demo page is built from, its states and
-  its contrast figures.
+- [docs/demo-page.md](docs/demo-page.md): the tokens and components the demo page is built from,
+  its states and its contrast figures.
 
 ## License
 

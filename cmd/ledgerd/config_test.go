@@ -77,7 +77,7 @@ func TestConfig(t *testing.T) {
 		{"LEDGER_CLUSTER", "18446744073709551615", "", func(c config) any { return c.cluster }, uint64(1<<64 - 1)},
 		{"LEDGER_CLUSTER", "0xffffffffffffffff", "", func(c config) any { return c.cluster }, uint64(1<<64 - 1)},
 		{"LEDGER_CLUSTER", "0x1", "", func(c config) any { return c.cluster }, uint64(1)},
-		{"LEDGER_CLUSTER", "0", `LEDGER_CLUSTER="0": want a number from 1 to 18446744073709551615`, nil, nil},
+		{"LEDGER_CLUSTER", "0", `LEDGER_CLUSTER="0": want a number from 1 to 2^64-1, decimal or 0x`, nil, nil},
 		{"LEDGER_CLUSTER", "0x0", `LEDGER_CLUSTER="0x0"`, nil, nil},
 		{"LEDGER_CLUSTER", "18446744073709551616", `LEDGER_CLUSTER="18446744073709551616"`, nil, nil},
 		{"LEDGER_CLUSTER", "0x10000000000000000", `LEDGER_CLUSTER="0x10000000000000000"`, nil, nil},

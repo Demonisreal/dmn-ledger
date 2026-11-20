@@ -105,13 +105,13 @@ func (s *Stage) stand(ctx context.Context, r *run) {
 }
 
 func (s *Stage) keep(r *run) string {
-	kept, _ := filepath.Glob(filepath.Join(s.cfg.Dir, "befund-*"))
+	kept, _ := filepath.Glob(filepath.Join(s.cfg.Dir, "finding-*"))
 	if len(kept) >= evidenceMax {
 		return ""
 	}
 	st := s.State()
 	s.mu.Lock()
-	name := fmt.Sprintf("befund-%d-%d", time.Now().Unix(), s.st.Totals.Found)
+	name := fmt.Sprintf("finding-%d-%d", time.Now().Unix(), s.st.Totals.Found)
 	var logs [3]string
 	for i := range r.ears {
 		logs[i] = r.ears[i].tail(earSize)

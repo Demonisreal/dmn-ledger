@@ -177,7 +177,11 @@ func (c *ctl) verifyChain(args []string) int {
 		fmt.Fprintln(c.stderr, "ledgerctl:", err)
 		return 2
 	}
-	fmt.Fprintf(c.stdout, "connected: head %d %x leads to head %d %x over %d links\n", older.HeadSeq, older.Head[:8], newer.HeadSeq, newer.Head[:8], newer.HeadSeq-older.HeadSeq)
+	n, unit := newer.HeadSeq-older.HeadSeq, "links"
+	if n == 1 {
+		unit = "link"
+	}
+	fmt.Fprintf(c.stdout, "connected: head %d %x leads to head %d %x over %d %s\n", older.HeadSeq, older.Head[:8], newer.HeadSeq, newer.Head[:8], n, unit)
 	return 0
 }
 

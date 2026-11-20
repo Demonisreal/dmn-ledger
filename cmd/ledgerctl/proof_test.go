@@ -220,6 +220,7 @@ func TestProofsAndTheirChecks(t *testing.T) {
 	}
 	output(t, "head -o "+at("later"))
 	step{args("verify chain " + at("transfer") + " " + at("later") + " -keys " + at("keys")), 0, `^connected: head 3 [0-9a-f]{16} leads to head 9 [0-9a-f]{16} over 6 links\n$`}.check(t)
+	step{args("verify chain " + at("transfer") + " " + at("head") + " -keys " + at("keys")), 0, `^connected: head 3 [0-9a-f]{16} leads to head 4 [0-9a-f]{16} over 1 link\n$`}.check(t)
 
 	cl, err := ledger.Dial(context.Background(), ledger.Config{Cluster: 1, Nodes: []string{addr}})
 	if err != nil {

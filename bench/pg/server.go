@@ -40,10 +40,6 @@ const (
 //go:embed image.txt
 var image string
 
-func Image() string {
-	return strings.TrimSpace(image)
-}
-
 var settings = []string{
 	"listen_addresses=127.0.0.1",
 	"port=" + strconv.Itoa(Port),
@@ -99,7 +95,7 @@ func Start(ctx context.Context, dir string) (*Server, error) {
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-v", data + ":" + volume,
 		"-e", "POSTGRES_PASSWORD_FILE=/run/secrets/pw", "-v", secret + ":/run/secrets/pw:ro",
-		Image()}
+		strings.TrimSpace(image)}
 	for _, kv := range settings {
 		args = append(args, "-c", kv)
 	}

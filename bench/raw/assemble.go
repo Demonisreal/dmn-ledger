@@ -138,7 +138,7 @@ func Assemble(h Head, run *load.Run, ctl []control.Second) (*File, error) {
 		}
 		v.TargetShare = target / float64(n*max(cores, 1))
 	}
-	backlog := 100*shed > due || v.OpenAtEnd > uint64(h.Load.Rate) //nolint:gosec // G115: a rate is never negative
+	backlog := 100*shed > load.MaxShedPercent*due || v.OpenAtEnd > uint64(h.Load.Rate) //nolint:gosec // G115: a rate is never negative
 	limited := v.GeneratorShare > CPULimit || v.LateP50 > LateLimit && (!v.Saturated || !backlog)
 	switch {
 	case v.Saturated && limited:

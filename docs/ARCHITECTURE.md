@@ -1106,6 +1106,16 @@ events with equal time. The nodes are `replica.Node` on `disk.Sim`, the clients 
 `client.Session`. A trace line is written for every event, and `TraceHash` is the SHA-256 over all
 of them; the same seed gives the same hash.
 
+A node or a client is a `Process`. `Tick` and `Receive` only change memory; `Run` does the disk
+work and returns the messages to send. The world sets `From`, deep-copies every `Body` through
+`Clone` when the message leaves, and holds a node's messages back until the fsync time its `Run`
+cost has passed. An error from a node's `Run` stops that node, which later restarts through
+`Config.Node` on the same disk, after a process crash or a power loss. A process takes time from
+`Clock` or `Now`, randomness from `Rand` and `Nonces`, and keeps no state outside itself, or the
+run stops being reproducible. Nodes have the addresses 1 to `Nodes`, clients follow them. The
+`String` of a `Body` must not print pointers or map contents: every copy that is sent becomes a
+line of the trace.
+
 - **Fault plan.** A storm of 2 to 6 seconds with up to twelve windows (partitions of several
   kinds, process crashes, power loss on one or all nodes, crashes after the k-th disk access,
   failing and slow fsync, EIO, clock jumps, paused nodes, leader crashes), then five quiet seconds
@@ -1337,8 +1347,8 @@ The twins are kept equal by hand and checked by pinned trace hashes: `TestTraces
 `internal/check/golden_test.go` runs eight seeds of each of the ten profiles through `check.Run`
 and compares the 80 hashes with `internal/check/testdata/traces.golden`. The test has no build
 tag, so it runs in the normal build and in the `simbug` build with no bug switched on, against the
-same file. A twin that drifts from its original changes a hash. After a change in behaviour that is meant,
-`go test ./internal/check -run TestTracesStayPinned -update` writes the file again.
+same file. A twin that drifts from its original changes a hash. After a change in behaviour that is
+meant, `go test ./internal/check -run TestTracesStayPinned -update` writes the file again.
 
 The table gives the first failing seed counted from 0, measured with
 `go run -tags simbug ./cmd/sim -bug Bn -seeds N -profile P`, and the checker that reports it.
@@ -1738,7 +1748,7 @@ A finding is whatever ends a run of the chaos test, with the same names where th
 
 On a finding the state gets it with time, check and wording (cut to 300 bytes), all three nodes
 are stopped with `SIGSTOP` and locked, and the stage copies the evidence to
-`<DEMO_DIR>/befund-<unix time>-<number>`: the three data directories, `n1.log` to `n3.log` with
+`<DEMO_DIR>/finding-<unix time>-<number>`: the three data directories, `n1.log` to `n3.log` with
 the last 200 lines of each node, `journal.txt`, `state.json` and `calls.json` with the windows
 not judged yet and the calls of the open one. At most three such folders are kept; a fourth
 finding is counted and shown, not copied. The cluster stands for 30 s with the finding first on
@@ -1838,11 +1848,11 @@ Three ES modules, no library and no build step. `app.js` reads the stream with `
 can tell a 429 for a full address and a 503 for a full hub from a lost connection), writes the
 values into the rendered HTML as text, appends lines and sends the four requests. After 3 s
 without an event it marks every value as old, with the time of the last one, and locks the
-buttons; when its tab has been hidden for 60 s it closes the stream. `proof.js` fetches `/proof`, shows each step of the check and can
-change one byte of its copy of the receipt to show the check fail. `receipt.js` is the verifier
-and nothing else: `check` returns every value it computed and the first step that failed,
-`verify` is the form `scripts/vectors.mjs` runs the test vectors through. No hash is computed
-outside this module.
+buttons; when its tab has been hidden for 60 s it closes the stream. `proof.js` fetches `/proof`,
+shows each step of the check and can change one byte of its copy of the receipt to show the check
+fail. `receipt.js` is the verifier and nothing else: `check` returns every value it computed and the
+first step that failed, `verify` is the form `scripts/vectors.mjs` runs the test vectors through. No
+hash is computed outside this module.
 
 `Stage.Proof` picks the newest confirmed transfer from a call with more than one transfer, so the
 path is not empty, or else the newest confirmed one. It fetches the receipt through the teller
@@ -1889,9 +1899,10 @@ health check.
 as user 65532), a `compose.yml`, an `.env.example` and a site block for a reverse proxy.
 `compose.yml` reads `DEMO_ORIGIN` and `PROXY_IP` from a `.env` next to it, passes `PROXY_IP/32`
 as `DEMO_PROXIES` and attaches the service to a network that is created beforehand; the command
-is in ADR-014. The `Dockerfile` sets the address of the repository with `-ldflags -X …/internal/demo.repo=…`, and only then does the page
-show the links to the source and the `git clone` line; a plain `go build` leaves them out. What
-they restrict and what of that has run is in ADR-014.
+is in ADR-014. The `Dockerfile` sets the address of the repository with
+`-ldflags -X …/internal/demo.repo=…`, and only then does the page show the links to the source and
+the `git clone` line; a plain `go build` leaves them out. What they restrict and what of that has
+run is in ADR-014.
 
 ### Tests
 

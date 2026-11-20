@@ -26,12 +26,12 @@ const intro = "# Benchmark results\n\n" +
 	"of a second that was left out. \"target cpu\" is the CPU time of the target processes divided by the hardware " +
 	"threads they were given, the mean over the window. \"fsync per transfer, all nodes\" adds up the fsyncs of every " +
 	"node of a cluster and divides them by the confirmed transfers. \"given up\" is the share of the transfers due in the " +
-	"counted seconds that Postgres gave up after 20 tries; a stage where more than 1 % of the transfers due in the window were " +
+	"counted seconds that Postgres gave up after 20 tries; a stage where more than %d %% of the transfers due in the window were " +
 	"given up counts as saturated. \"retries per transfer\" adds up the retries of the transfers due in the counted seconds, " +
-	"booked or given up, and divides them by the transfers booked in them. thermal limit: seconds in which the thermal counter of a target core rose. On this laptop " +
-	"that is every second in which a core runs at turbo; the clock stayed between 4.0 and 4.5 GHz.\n\n"
+	"booked or given up, and divides them by the transfers booked in them. \"thermal limit\" counts the seconds in which the " +
+	"thermal counter of a target core rose.\n\n"
 
-const unpacedNote = "unpaced: in most seconds of the window the target flushed the disk fewer than 20 times. The speed of the disk " +
+const unpacedNote = "unpaced: in most seconds of the window the target flushed the disk fewer than %d times. The speed of the disk " +
 	"cannot be told from so few flushes, and it mattered little: in each of these seconds the target used at least half a core, " +
 	"so it was computing, not waiting for the disk. Every second of the window counts, and such runs are compared with each " +
 	"other without asking for an equally fast disk.\n\n"
@@ -49,8 +49,6 @@ var known = []section{
 	{"m4", "", ""},
 	{"m5", "Price of the seal (m5)", "The same binary built with simbug, without and with LEDGER_BUG=B13, which leaves out " +
 		"the fsync of meta after the log. Ratios are B against A, the medians at the same disk speed."},
-	{"m6", "Chain and stamp (m6)", "Fixed load without and with a signing key. Ratios are B against A, the medians at the " +
-		"same disk speed."},
 	{"m7", "One follower missing (m7)", "Three nodes with one follower stopped after the setup, next to the healthy runs of m2."},
 }
 
@@ -60,9 +58,9 @@ func render(in []*run) map[string][]byte {
 	gs := groups(runs)
 	out := make(map[string][]byte)
 	var b strings.Builder
-	b.WriteString(intro)
+	fmt.Fprintf(&b, intro, load.MaxShedPercent)
 	if unpaced(gs) {
-		b.WriteString(unpacedNote)
+		fmt.Fprintf(&b, unpacedNote, control.Defaults().MinFlushes)
 	}
 	var ms []string
 	for _, g := range gs {
@@ -90,7 +88,7 @@ func render(in []*run) map[string][]byte {
 		case "m2":
 			writeTwoPhase(&b, of("m2"))
 			writeAgainstUniform(&b, of("m2"))
-		case "m5", "m6":
+		case "m5":
 			writeAB(&b, of(k.m))
 		case "m7":
 			b.WriteString("The healthy runs of m2 with the same load:\n\n")
@@ -165,7 +163,7 @@ func writeContext(b *strings.Builder, runs []*run, gs []*group) {
 			"second at most about a tenth in fast ones.\n\n")
 	}
 	if unpaced(gs) {
-		b.WriteString(unpacedNote)
+		fmt.Fprintf(b, unpacedNote, control.Defaults().MinFlushes)
 	}
 }
 

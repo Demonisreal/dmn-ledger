@@ -4,7 +4,6 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"math"
 	"net/netip"
 	"path/filepath"
 	"slices"
@@ -140,7 +139,7 @@ func number(s string, lo, hi uint64) (uint64, error) {
 func clusterID(s string) (uint64, error) {
 	u, err := ledger.Parse(s)
 	if err != nil || u.Hi != 0 || u.Lo == 0 {
-		return 0, fmt.Errorf("want a number from 1 to %d, decimal or 0x", uint64(math.MaxUint64))
+		return 0, errors.New("want a number from 1 to 2^64-1, decimal or 0x")
 	}
 	return u.Lo, nil
 }

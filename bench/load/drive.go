@@ -19,11 +19,12 @@ var (
 )
 
 const (
-	MaxOpen     = 100_000
-	MaxDrain    = 5 * time.Second
-	sampleSize  = 1000
-	maxProblems = 10
-	coarse      = 2 * time.Millisecond
+	MaxOpen        = 100_000
+	MaxDrain       = 5 * time.Second
+	MaxShedPercent = 1
+	sampleSize     = 1000
+	maxProblems    = 10
+	coarse         = 2 * time.Millisecond
 )
 
 type Plan struct {
@@ -182,7 +183,7 @@ func Drive(ctx context.Context, t Target, s *Stream, p Plan) (*Run, error) {
 	for i := warm; i < end; i++ {
 		due, shed = due+d.slots[i].due.Load(), shed+d.slots[i].shed.Load()
 	}
-	run.Saturated = run.Capped || run.OpenAtEnd > uint64(p.Rate) || 100*shed > due //nolint:gosec // G115: Rate is at least 1
+	run.Saturated = run.Capped || run.OpenAtEnd > uint64(p.Rate) || 100*shed > MaxShedPercent*due //nolint:gosec // G115: Rate is at least 1
 	run.Horizon = time.Duration(total-end) * time.Second
 	run.Seconds = make([]Second, total)
 	for i := range run.Seconds {

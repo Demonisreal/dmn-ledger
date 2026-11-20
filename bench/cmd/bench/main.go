@@ -66,7 +66,7 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		}
 		return check(args[1], stdout, stderr)
 	case "-h", "-help", "help":
-		fmt.Fprintln(stdout, usage)
+		fmt.Fprintln(stderr, usage)
 		return 0
 	}
 	fmt.Fprintln(stderr, usage)

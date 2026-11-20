@@ -789,7 +789,7 @@ func TestEvidenceIsCapped(t *testing.T) {
 			return st.Totals.Found == k && st.Totals.Findings[k-1].ResetAt != 0
 		})
 	}
-	kept, _ := filepath.Glob(filepath.Join(s.cfg.Dir, "befund-*"))
+	kept, _ := filepath.Glob(filepath.Join(s.cfg.Dir, "finding-*"))
 	st := s.State()
 	if len(kept) != evidenceMax || st.Totals.Findings[3].Evidence != "" || st.Totals.Findings[2].Evidence == "" {
 		t.Fatalf("%d evidence folders %v; findings %+v", len(kept), kept, st.Totals.Findings)

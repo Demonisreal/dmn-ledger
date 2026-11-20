@@ -10,30 +10,30 @@ Files: `internal/demo/web/page.html` (Go `html/template`), `internal/demo/web/pa
 
 ## Tokens
 
-Copied from `site.css` of dmn-software.com, `:root`, as they stand there. Line numbers refer to that file.
+Copied from `site.css` of dmn-software.com, `:root`, as they stand there.
 
-| Token | Value | Role | site.css |
-|---|---|---|---|
-| `--dark` | `#0b0b0d` | page ground | 2 |
-| `--card` | `#14151a` | raised surface: notes, buttons, the finding | 3 |
-| `--red` | `#e11d2e` | the one accent: focus ring, link underline, leader mark, warn border | 4 |
-| `--white` | `#ffffff` | headings, figures, values, current state | 5 |
-| `--text` | `#b9bcc4` | body text | 6 |
-| `--muted` | `#8f939c` | captions, sources, secondary lines, button border | 7 |
-| `--line` | `#3f4249` | stronger rule (sum row of the table, step rail), disabled border | 8 |
-| `--ink` | `#101114` | sunken panel: log, code, receipt steps | 10 |
-| `--edge` | `#25272d` | hairlines between rows and columns | 11 |
-| `--red-hi` | `#f0414f` | text in red: something is wrong or a node is hit | 12 |
-| `--green` | `#3fb27f` | semantic "holds" (receipt step), nothing else | 13 |
-| `--sans` | `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif` | all text | 15 |
-| `--mono` | `ui-monospace, "SF Mono", "JetBrains Mono", Consolas, monospace` | data only: ids, hashes, PIDs, times in the log, code | 16 |
-| `--ease` | `cubic-bezier(.23, 1, .32, 1)` | the press on a button | 18 |
+| Token | Value | Role |
+|---|---|---|
+| `--dark` | `#0b0b0d` | page ground |
+| `--card` | `#14151a` | raised surface: notes, buttons, the finding |
+| `--red` | `#e11d2e` | the one accent: focus ring, link underline, leader mark, warn border |
+| `--white` | `#ffffff` | headings, figures, values, current state |
+| `--text` | `#b9bcc4` | body text |
+| `--muted` | `#8f939c` | captions, sources, secondary lines, button border |
+| `--line` | `#3f4249` | stronger rule (sum row of the table, step rail), disabled border |
+| `--ink` | `#101114` | sunken panel: log, code, receipt steps |
+| `--edge` | `#25272d` | hairlines between rows and columns |
+| `--red-hi` | `#f0414f` | text in red: something is wrong or a node is hit |
+| `--green` | `#3fb27f` | semantic "holds" (receipt step), nothing else |
+| `--sans` | `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif` | all text |
+| `--mono` | `ui-monospace, "SF Mono", "JetBrains Mono", Consolas, monospace` | data only: ids, hashes, PIDs, times in the log, code |
+| `--ease` | `cubic-bezier(.23, 1, .32, 1)` | the press on a button |
 
 Only a dark scheme, because the site has only one (`prefers-color-scheme` does not occur in `site.css`).
 System fonts, so nothing is loaded and there is no licence question.
 
 Spacing, radii and type sizes are the site's values, not a new scale: `.wrap` 72rem with
-`clamp(1.25rem, 4vw, 2.5rem)` (site.css 60), radius 8px for buttons and panels (status page `.btn`, site
+`clamp(1.25rem, 4vw, 2.5rem)`, radius 8px for buttons and panels (status page `.btn`, site
 `.flow`, `.cite`), 6px for the skip link, h2 1.375rem/1.625rem like the status page's `.blk h2`, body 1rem/1.65.
 The h1 starts like the status page's `.now h1` (1.75rem) but stops at 2rem from 48rem, where the status page goes to
 2.5rem: there the h1 is a service name, here it is a sentence of two clauses, and at 2.5rem it takes three lines in
@@ -43,7 +43,7 @@ h2, h1, the sum), at 360 they are 16, 22, 28 and 44px.
 ## Contrast
 
 Computed with the WCAG 2 formula from the token values (script: relative luminance, `(L1 + .05) / (L2 + .05)`).
-The grain overlay (site.css 48, `opacity: .05`, white noise) sits behind content (`z-index: -1`) and only
+The grain overlay (`opacity: .05`, white noise) sits behind content (`z-index: -1`) and only
 lightens the bare page ground; the column "with grain" is the worst case of a fully white grain pixel at 5 %.
 
 | Text | Ground | Ratio | with grain | Where | AA |
@@ -117,23 +117,23 @@ next to a list; steps on a rail; a list with square marks; prose with code.
 
 | Component | Taken from | States |
 |---|---|---|
-| link | site.css 67 | normal (white, red 1px underline), hover (underline white), focus 2px `--red` offset 3px |
-| header, brand, crumb | site.css 120, 169, 2424 | static, not sticky |
+| link | site | normal (white, red 1px underline), hover (underline white), focus 2px `--red` offset 3px |
+| header, brand, crumb | site | static, not sticky |
 | large figure | new, sized like `.page-head h1`, tabular figures | normal; wrong sum in `--red-hi` with the sentence that says so; replaced by the setup sentence or the finding |
 | note | status page `.note`, border 1px instead of a 2px side bar | no JavaScript, stale connection, crowded stream or full address, load rested |
 | finding | note with a 1px `--red` border, wording in mono with line breaks kept | |
-| fact rows | site.css 1098 (`.uptime`) | empty row hidden |
-| node column | new, lines like status page `.svc-s` | answers, catching up, silent, down, frozen, cut, repair, halted by a finding, starting; the leader carries the site's 5px red square (site.css 413), only while it answers |
+| fact rows | site `.uptime` | empty row hidden |
+| node column | new, lines like status page `.svc-s` | answers, catching up, silent, down, frozen, cut, repair, halted by a finding, starting; the leader carries the site's 5px red square, only while it answers |
 | target choice | status page `.opts input`, `fieldset` with `legend` | checked label in white; focus ring offset 3px |
-| fault button | status page `.btn.warn` (app.css 1269) | normal, hover (white), focus ring, pressed (`scale(.97)`), disabled (`--line` border, `--muted` text, reason in the status line right under it), hidden without JavaScript with the name shown as text instead |
+| fault button | status page `.btn.warn` | normal, hover (white), focus ring, pressed (`scale(.97)`), disabled (`--line` border, `--muted` text, reason in the status line right under it), hidden without JavaScript with the name shown as text instead |
 | status line | new | ready, running with seconds left, counting, done, failed, pause, finding, setup; the script adds address limit, young log, refused; takes the focus (`tabindex="-1"`, ring as everywhere) when the focused fault button is locked |
 | log | site `.pipe`/`.stage` panel in `--ink`, mono .75rem | newest line on top; demo and check lines in white, node lines `lang="en"`; a line whose source and text equal the line above (the newer one) in `--muted`, so a quiet minute of identical counts does not read as twelve news; long lines and line breaks wrap anywhere; pinned finding above in a red-bordered row; explanation under the panel |
 | viewer count | status page `.sec-head p` | with scripting it stays invisible (`visibility: hidden`, `@media (scripting: enabled)`) until the first `tick`, because the count in the served page and in the first `state` does not yet include this visitor; without scripting it shows the count of the served page |
-| accounts table | site.css 2809 (`.sum`) | sum row with a `--line` rule and weight 600; empty state sentence when nothing is booked |
-| receipt steps | site.css 1001 (`.flow`) | dot `--muted` until the comparison that covers the step has held, `--green` with "stimmt", `--red-hi` with "stimmt nicht" |
+| accounts table | site `.sum` | sum row with a `--line` rule and weight 600; empty state sentence when nothing is booked |
+| receipt steps | site `.flow` | dot `--muted` until the comparison that covers the step has held, `--green` with "stimmt", `--red-hi` with "stimmt nicht" |
 | code block | site `.stage pre` in an `--ink` panel | wraps, `user-select: all` |
-| limits list | site.css 2518 (`.ticks`) | |
-| footer | site.css 3171 | privacy sentence, "© DMN Software · Leon", imprint, privacy, legal notes on the site |
+| limits list | site `.ticks` | |
+| footer | site | privacy sentence, "© DMN Software · Leon", imprint, privacy, legal notes on the site |
 
 State is never carried by colour alone: every red or green element carries its word ("antwortet nicht",
 "getrennt", "stimmt", "stimmt nicht", "Befund").

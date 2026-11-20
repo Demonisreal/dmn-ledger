@@ -109,7 +109,7 @@ func TestMoreStatesInChrome(t *testing.T) {
 		}),
 		at(7, func(st *State) {
 			st.Phase, st.Load = "finding", "held"
-			st.Finding = &Finding{At: st.Now - 1100, Check: "S8", Reason: "transfer 12 lost", ResetAt: st.Now + 28900, Evidence: "befund-1795036499-2"}
+			st.Finding = &Finding{At: st.Now - 1100, Check: "S8", Reason: "transfer 12 lost", ResetAt: st.Now + 28900, Evidence: "finding-1795036499-2"}
 			down(st, 2)
 		}),
 		at(8, func(st *State) {

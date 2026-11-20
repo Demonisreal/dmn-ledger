@@ -309,7 +309,7 @@ func TestThrottledSecondsStayInTheBand(t *testing.T) {
 			v.Valid, v.Reasons, f.Bands.Slow.Seconds, v.Throttled)
 	}
 	out := string(render([]*run{{name: f.ID + ".json", f: f}})[Results])
-	for _, want := range []string{"| 15 of 15, thermal limit in 12 |", "thermal limit: seconds in which the thermal counter of a target core rose"} {
+	for _, want := range []string{"| 15 of 15, thermal limit in 12 |", `"thermal limit" counts the seconds in which the thermal counter of a target core rose.`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("RESULTS.md lacks %q", want)
 		}

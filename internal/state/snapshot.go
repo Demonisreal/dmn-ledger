@@ -13,7 +13,7 @@ import (
 
 const snapshotVersion = 2
 
-var ErrBadSnapshot = errors.New("bad snapshot")
+var ErrBadSnapshot = errors.New("state: bad snapshot")
 
 func (m *Machine) encode(w *bufio.Writer) error {
 	var buf [audit.LinkSize]byte

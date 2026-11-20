@@ -188,7 +188,7 @@ func TestPageStates(t *testing.T) {
 		r := render(t, func(st *State) {
 			at, reset = st.Now-2000, st.Now+28000
 			st.Phase, st.Load = "finding", "held"
-			st.Finding = &Finding{At: at, Check: "replay", Reason: reason, ResetAt: reset, Evidence: "befund-1795036490-2"}
+			st.Finding = &Finding{At: at, Check: "replay", Reason: reason, ResetAt: reset, Evidence: "finding-1795036490-2"}
 		})
 		r.shows(t, "Befund um "+hm(at)+": replay, ", "Der Cluster steht und wird um "+hm(reset)+" neu aufgesetzt. Die Daten der Knoten sind gesichert.",
 			"Gesperrt, solange der Befund steht.")
@@ -414,7 +414,7 @@ func TestFindingSaysOnlyWhatHappened(t *testing.T) {
 	}{
 		{"before the evidence is copied", 0, "", nil, []string{reset, kept, "00:00:00"}},
 		{"a fourth finding, nothing copied", 1795036520000, "", []string{"Der Cluster steht und wird um " + hm(1795036520000) + " neu aufgesetzt."}, []string{kept}},
-		{"copied", 1795036520000, "befund-1795036490-2", []string{"neu aufgesetzt. " + kept}, nil},
+		{"copied", 1795036520000, "finding-1795036490-2", []string{"neu aufgesetzt. " + kept}, nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

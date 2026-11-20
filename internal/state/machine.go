@@ -12,7 +12,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/u128"
 )
 
-var ErrMalformedBatch = errors.New("malformed batch")
+var ErrMalformedBatch = errors.New("state: malformed batch")
 
 const (
 	tsLimit   = 1 << 63
