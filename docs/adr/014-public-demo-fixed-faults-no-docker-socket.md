@@ -200,8 +200,9 @@ bridge sends to the host itself, for example `iptables -I INPUT -i br-ledger-dem
 
 The controller needs no capability to signal its children: they run under the same user. It is
 PID 1 in the container, reaps its children and handles `SIGTERM` itself. The `Dockerfile` sets
-the address of the repository with `-ldflags -X`, so the page in the image links to the source; a
-local `go build` leaves the links out. The image was built again with that flag and started once:
+the address of the repository with `-ldflags -X` from its build argument `REPO`, so the page in
+the image links to the source; an empty `REPO` or a local `go build` leaves the links out. The
+image was built with the address and started once:
 the page carries the links, a kill of the leader healed, and the container stopped with 0.
 
 What has run, on the development laptop: the image builds; a container started with `docker run`
@@ -253,6 +254,8 @@ What remains there:
   address for as long as the operator keeps that log.
 - The proxy was attached by hand and not in its compose file. If its container is created anew,
   the connection has to be made again, or the site answers 502.
+- The image there is built with an empty `REPO`, so its page carries no links to the source,
+  for as long as the repository is not public.
 
 ## What the demo does not show
 

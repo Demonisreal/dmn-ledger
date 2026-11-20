@@ -1923,9 +1923,9 @@ as user 65532), a `compose.yml`, an `.env.example` and a site block for a revers
 `compose.yml` reads `DEMO_ORIGIN` and `PROXY_IP` from a `.env` next to it, passes `PROXY_IP/32`
 as `DEMO_PROXIES` and attaches the service to a network that is created beforehand; the command
 is in ADR-014. The `Dockerfile` sets the address of the repository with
-`-ldflags -X …/internal/demo.repo=…`, and only then does the page show the links to the source and
-the `git clone` line; a plain `go build` leaves them out. What they restrict and what of that has
-run is in ADR-014.
+`-ldflags -X …/internal/demo.repo=…` from its build argument `REPO`, and only then does the page
+show the links to the source and the `git clone` line; an empty `REPO` or a plain `go build`
+leaves them out. What they restrict and what of that has run is in ADR-014.
 
 ### Tests
 
