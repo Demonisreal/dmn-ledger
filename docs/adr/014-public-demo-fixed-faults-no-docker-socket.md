@@ -174,8 +174,8 @@ terminates TLS.
 The controller needs no capability to signal its children: they run under the same user. It is
 PID 1 in the container, reaps its children and handles `SIGTERM` itself. The `Dockerfile` sets
 the address of the repository with `-ldflags -X`, so the page in the image links to the source; a
-local `go build` leaves the links out. That flag came after the build described below and has not
-been built since.
+local `go build` leaves the links out. The image was built again with that flag and started once:
+the page carries the links, a kill of the leader healed, and the container stopped with 0.
 
 What has run, on the development laptop: the image builds; a container started with `docker run`
 and the switches of the table (user, read-only, no capabilities, no new privileges, one CPU,
