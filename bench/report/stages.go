@@ -125,6 +125,10 @@ func (c *chain) overload() overload {
 		}
 	}
 	o.held = median(held)
+	if n := len(held); n > 0 && n%2 == 0 {
+		slices.Sort(held)
+		o.held.med = held[n/2-1]
+	}
 	return o
 }
 
@@ -178,6 +182,8 @@ func (o overload) judge() (string, bool) {
 		return "no valid run", false
 	case len(o.open) > 0:
 		return fmt.Sprintf("undecided: the saturated stage of pass %d has no valid run", o.open[0]), false
+	case len(o.runs) == 0 && slices.Contains(o.never, "budget"):
+		return "at least: a pass held every stage that fits the budget", true
 	case len(o.runs) == 0:
 		return "at least: a pass held every stage", true
 	}
@@ -262,7 +268,10 @@ func writeStages(b *strings.Builder, gs []*group, out map[string][]byte) {
 	b.WriteString("How many transfers per second does one node hold, how many a cluster of three nodes, and how does the wait grow " +
 		"with the load? Each stage offers a fixed rate for a fixed window. A stage is held when at the end of its window fewer " +
 		"arrivals are open than fall due in one second; otherwise it is saturated. The last held stage comes from the raster of " +
-		"stages, the throughput under overload is measured in the first saturated stage of each pass. The last held stage counts " +
+		"stages, the throughput under overload is measured in the first saturated stage of each pass. Over the passes the last " +
+		"held stage is the median; with an even number of passes it is the lower of the two middle values, a stage that both of " +
+		"these passes held or went beyond. In the first table, \"runs\" counts the runs made at the stages the throughput under " +
+		"overload comes from, as the table of the chain does for each stage. The last held stage counts " +
 		"only stages that ran at the disk speed of the throughput under overload; where none held at that speed, the speed of " +
 		"the stage shown stands next to it. A row without a throughput under overload counts the stages at the slow speed, else " +
 		"at the fast one, and names the speed when it is not slow. Where the load generator and not the target was the limit, " +
@@ -288,9 +297,15 @@ func writeStages(b *strings.Builder, gs []*group, out map[string][]byte) {
 		case o.atLeast() && len(o.counted) > 0:
 			tp = "at least " + tp
 		}
+		made := 0
+		for _, s := range c.stages {
+			if slices.ContainsFunc(o.runs, func(r *run) bool { return r.f.Load.Rate == s.rate }) {
+				made += len(s.runs)
+			}
+		}
 		text, _ := o.judge()
 		sum.add(name(g.target), strconv.Itoa(g.target.Lanes), g.workload, strconv.Itoa(o.passes), held, tp,
-			fmt.Sprintf("%d of %d", len(o.counted), len(o.runs)), o.seconds(), o.limit(), text)
+			fmt.Sprintf("%d of %d", len(o.counted), made), o.seconds(), o.limit(), text)
 		for _, s := range c.stages {
 			all = append(all, s.runs...)
 		}

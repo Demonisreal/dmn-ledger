@@ -56,12 +56,12 @@ func summary(f *raw.File) string {
 		}
 		parts = append(parts, "new term around the window: "+changed)
 		if size := highest(f, "snapshot_bytes"); size > 0 {
-			parts = append(parts, fmt.Sprintf("largest snapshot file %d MiB", size>>20))
+			parts = append(parts, fmt.Sprintf("largest snapshot file %.0f MB", float64(size)/1e6))
 		}
 		if b := f.Bounce; b != nil {
 			back := "caught up from the log"
 			if b.Snapshot > 0 {
-				back = fmt.Sprintf("got a snapshot of %d MiB", b.Snapshot>>20)
+				back = fmt.Sprintf("got a snapshot of %.0f MB", float64(b.Snapshot)/1e6)
 			}
 			parts = append(parts, fmt.Sprintf("stopped %s, a %s; after its return it %s, longest round %d ms", b.Node, b.Role, back, b.Slowest.Milliseconds()))
 		}
@@ -96,7 +96,8 @@ func (b *bench) planText() []byte {
 	if b.only != nil {
 		fmt.Fprintf(&s, "Only runs matching %q were selected.\n", b.only.String())
 	}
-	s.WriteString("Every run is listed in the order it ran, with the reasons when it is not valid. Invalid runs stay in raw/.\n" +
+	s.WriteString("Every run is listed in the order it ran, with the reasons when it is not valid. Invalid runs stay in raw/; a run " +
+		"the plan discards, such as the first run after the start of the container, leaves no raw file.\n" +
 		"m6 is not part of this plan: there is no load for proofs, and the benchmarks of the chain do not reach RESULTS.md.\n")
 	block := ""
 	for _, l := range b.lines {
@@ -151,8 +152,18 @@ func (b *bench) machineText() ([]byte, error) {
 				fmt.Fprintf(&s, "  %s: no second at this speed\n", mean.Speed)
 				continue
 			}
-			fmt.Fprintf(&s, "  %s: fsync on a growing file %v over %d s, fdatasync on a preallocated file %v over %d s, ratio %.2f\n",
-				mean.Speed, mean.Growing.Round(time.Microsecond), mean.GrowingSeconds, mean.Prealloc.Round(time.Microsecond), mean.PreallocSeconds, mean.Ratio)
+			growing, prealloc := "no second at this speed", "no second at this speed"
+			if mean.GrowingSeconds > 0 {
+				growing = fmt.Sprintf("%v over %d s", mean.Growing.Round(time.Microsecond), mean.GrowingSeconds)
+			}
+			if mean.PreallocSeconds > 0 {
+				prealloc = fmt.Sprintf("%v over %d s", mean.Prealloc.Round(time.Microsecond), mean.PreallocSeconds)
+			}
+			fmt.Fprintf(&s, "  %s: fsync on a growing file %s, fdatasync on a preallocated file %s", mean.Speed, growing, prealloc)
+			if mean.GrowingSeconds > 0 && mean.PreallocSeconds > 0 {
+				fmt.Fprintf(&s, ", ratio %.2f", mean.Ratio)
+			}
+			s.WriteString("\n")
 		}
 	}
 	heats, err := filepath.Glob(filepath.Join(b.out, "heat-*.json"))

@@ -124,7 +124,8 @@ one raw file per run and builds the report from those files.
     JSON file per run with every second of it, valid or not, and `machine.txt`, `postgres.txt`,
     `plan.txt` and `plan.json`. `bench report` writes `RESULTS.md` and the curves from the raw
     files, the same bytes every time. `bench check` recomputes both, compares them with what is in
-    the folder and applies decision 8. Every figure below and in the README is copied from
+    the folder and applies decision 8; how to run the plan and how each column is made is in
+    [bench/README.md](../../bench/README.md). Every figure below and in the README is copied from
     [RESULTS.md](../bench/2026-11-20-a6ee18b/RESULTS.md) of this run, with one exception that is
     marked: the disk probe is in `machine.txt` of the same folder.
 
@@ -218,8 +219,8 @@ second (11,864–12,424) and gave up 7.4 % of the transfers (3.7 %–11.0 %).
    run of three nodes may write. On 4 lanes both passes held 256,000 at a p50 of 71.7 ms
    (67.6–75.8), from 8 of 12 window seconds. On 32 lanes one pass held it, at 115 ms from a single
    run with 5 valid seconds. The other pass was restless there and its repeat fell to the fast disk
-   speed, so the table gives the last held stage as "at least 192,000 (128,000–256,000)", the
-   middle of 128,000 and 256,000.
+   speed, so the table gives the last held stage as "at least 128,000 (128,000–256,000)", the
+   lower of the two passes and the last stage both of them held.
 6. **Grouping works, on both systems.** The fsyncs per transfer of one node on 32 lanes fall from
    0.314 (0.294–0.334) at 1,000 a second to 0.022 (0.022–0.023) at 16,000 and 0.001 (0.001–0.001)
    at 256,000. For three nodes, all nodes added up, they fall from 0.467 (0.431–0.503) to 0.030
@@ -347,9 +348,8 @@ within 10 % of each other and still lay further apart:
 The first two are about a fifth apart, the third just over a tenth. Outside the required groups 26
 more missed: 22 stages, two groups of the fixed load (`hot` on three nodes at 2,000 a second and
 `uniform-1m` on three nodes at 20,000), three nodes without the seal, and the snapshot runs of one
-node with a million accounts. The last one is in the output of `bench check` only, because the
-snapshot table has no column for it. `RESULTS.md` prints the verdict of every other group in the
-column "agreement", with the two values that disagreed.
+node with a million accounts. `RESULTS.md` prints every verdict with the two values that
+disagreed: in the column "agreement", and for the snapshot runs in a list under their table.
 
 Of the 29 groups that missed, 25 belong to the ledger and 4 to Postgres. Among the groups that got
 a verdict, the ledger agreed in 26 and missed in 25, and Postgres agreed in 31 and missed in 4.

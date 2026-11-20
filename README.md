@@ -125,7 +125,7 @@ transfer on 32 connections held 8,000 transfers a second, and batched under `REA
 32,000, with 44,917 a second (44,833–45,000) confirmed under overload. One node held 256,000 a
 second, the highest stage the load generator could offer; at 512,000 the generator was the limit,
 not the node. At 256,000 its p50 was 23.6 ms (23.6–23.6) on 4 lanes and 28.2 ms (25.1–31.2) on
-32. Three nodes held 256,000 on 4 lanes as well and at least 192,000 (128,000–256,000) on 32;
+32. Three nodes held 256,000 on 4 lanes as well and at least 128,000 (128,000–256,000) on 32;
 their runs end at the amount of data the plan lets a cluster write, not at a limit of the
 cluster.
 
@@ -501,6 +501,8 @@ with real processes, the chaos test and the demo need Linux; `scripts/vectors.mj
 - [docs/bench/2026-11-20-a6ee18b/](docs/bench/2026-11-20-a6ee18b/RESULTS.md): the measurement of
   2026-11-20, with the report, the curves, the machine, the Postgres settings and the raw file of
   every run.
+- [bench/README.md](bench/README.md): how to run the benchmark plan, what each measurement asks,
+  its rules and its criterion in numbers, the columns of the report and how Postgres is set up.
 
 ## Sources
 

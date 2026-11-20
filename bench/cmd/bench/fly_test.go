@@ -417,6 +417,7 @@ func TestPlanTextNamesEveryRun(t *testing.T) {
 		"valid; speed unpaced; saturated, limit target; 12 of 12 window seconds counted; deadlocks in the window 0, transfers given up in the window 42",
 		"m7, pass 1\n  m7-l3x4-uniform-10k-20000-1  not selected",
 		`Only runs matching "^m2"`,
+		"Invalid runs stay in raw/; a run the plan discards, such as the first run after the start of the container, leaves no raw file.",
 		"m6 is not part of this plan",
 		"The plan stopped: bench: not enough memory",
 	} {
@@ -427,5 +428,18 @@ func TestPlanTextNamesEveryRun(t *testing.T) {
 	b.build.Dirty = false
 	if strings.Contains(string(b.planText()), "dirty") {
 		t.Error("a clean tree called dirty")
+	}
+}
+
+func TestSummaryGivesSnapshotsInMB(t *testing.T) {
+	f := file("m4e-l3x32-uniform-1m-2000-1", 1, true, control.Slow, 0, 0, 2000)
+	f.Measurement = "m4"
+	f.Seconds = []raw.Second{{Phase: load.Window.String(), Parts: []raw.Part{{Name: "n1", Counters: map[string]uint64{"snapshot_bytes": 311_300_000}}}}}
+	f.Bounce = &raw.Bounce{Node: "n2", Role: "follower", Snapshot: 298_000_000, Slowest: 761 * time.Millisecond}
+	got := summary(f)
+	for _, want := range []string{"largest snapshot file 311 MB", "stopped n2, a follower; after its return it got a snapshot of 298 MB, longest round 761 ms"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary lacks %q: %s", want, got)
+		}
 	}
 }

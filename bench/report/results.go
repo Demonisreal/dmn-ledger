@@ -25,7 +25,9 @@ const intro = "# Benchmark results\n\n" +
 	"window seconds of the counted runs that entered the figures, out of all their window seconds, with the highest p99 " +
 	"of a second that was left out. \"target cpu\" is the CPU time of the target processes divided by the hardware " +
 	"threads they were given, the mean over the window. \"fsync per transfer, all nodes\" adds up the fsyncs of every " +
-	"node of a cluster and divides them by the confirmed transfers. \"given up\" is the share of the transfers due in the " +
+	"node of a cluster and divides them by the confirmed transfers; for a node these are its calls on the log, on meta and " +
+	"on any other file, for Postgres the syncs of its WAL. \"flush ms\" and \"p50 flushes\" rest on the flush time of the " +
+	"device, read from /proc/diskstats, not on the time an fsync call took. \"given up\" is the share of the transfers due in the " +
 	"counted seconds that Postgres gave up after 20 tries; a stage where more than %d %% of the transfers due in the window were " +
 	"given up counts as saturated. \"retries per transfer\" adds up the retries of the transfers due in the counted seconds, " +
 	"booked or given up, and divides them by the transfers booked in them. \"thermal limit\" counts the seconds in which the " +
@@ -44,11 +46,14 @@ type section struct{ m, title, text string }
 
 var known = []section{
 	{"m2", "Fixed load (m2)", "How long does a transfer wait at a fixed, moderate load, and what do a million accounts, " +
-		"a few hot accounts and two-phase transfers change? \"saturated at\" marks a target that did not hold the load."},
+		"a few hot accounts and two-phase transfers change? \"saturated at\" marks a target that did not hold the load. With " +
+		"twophase, \"rate\" and \"saturated at\" count arrivals and \"throughput/s\" counts transfers, two for each arrival."},
 	{"m3", "Runs with a CPU profile (m3)", "The runs behind the CPU profile further down, with the binary built for profiling."},
 	{"m4", "", ""},
 	{"m5", "Price of the seal (m5)", "The same binary built with simbug, without and with LEDGER_BUG=B13, which leaves out " +
-		"the fsync of meta after the log. Ratios are B against A, the medians at the same disk speed."},
+		"the fsync of meta after the log. Ratios are B against A, the medians at the same disk speed. The load is fixed, so " +
+		"where both held it \"throughput B/A\" is close to 1. \"fsync per transfer B/A\" compares fsyncs per transfer, not per " +
+		"round: with B a round that writes entries makes one fsync fewer."},
 	{"m7", "One follower missing (m7)", "Three nodes with one follower stopped after the setup, next to the healthy runs of m2."},
 }
 
@@ -470,9 +475,18 @@ func writeLoop(b *strings.Builder, gs []*group) {
 
 func writeProfiles(b *strings.Builder, runs []*run) {
 	t := table{head: append(append([]string{"run", "node", "sampled s"}, posts...), "largest three")}
+	counted := make(map[*run]bool)
+	for _, g := range groups(runs) {
+		for _, r := range g.counted {
+			counted[r] = true
+		}
+	}
 	var shown []*run
 	var problems []string
 	for _, r := range runs {
+		if !counted[r] {
+			continue
+		}
 		for _, tr := range r.traces {
 			s, err := countTraces(tr.text)
 			if err != nil {
@@ -497,7 +511,7 @@ func writeProfiles(b *strings.Builder, runs []*run) {
 		"column: its stack is walked from the leaf to the root and the first frame that belongs to a column decides. " +
 		"Stacks without such a frame go to \"kernel\" when they hold a system call, to \"runtime\" when they hold the Go " +
 		"runtime, and to \"rest\" otherwise. A CPU profile does not see the time a node sleeps in fsync; that time is in the " +
-		"table of the node loop.\n\n")
+		"table of the node loop. Only counted runs are shown; the profiles of the others stay in raw/.\n\n")
 	t.write(b)
 	for _, p := range problems {
 		fmt.Fprintf(b, "Not read: %s.\n\n", p)
@@ -553,7 +567,19 @@ func writeSnapshots(b *strings.Builder, runs []*run) {
 		"follower stops during the window and comes back; the last column names it and says whether it got a snapshot from the " +
 		"leader, as its own log reports it, or caught up from the log. Each run stands on its own row.\n\n")
 	t.write(b)
-	writeContext(b, shown, groups(shown))
+	gs := groups(shown)
+	b.WriteString("`bench check` judges these runs by group, and a group holds the runs with the same target, settings, load and " +
+		"rate, whatever their letter:\n\n")
+	for _, g := range gs {
+		var ids []string
+		for _, r := range g.runs {
+			ids = append(ids, r.f.ID)
+		}
+		text, _ := g.judge()
+		fmt.Fprintf(b, "- %s (%s): %s\n", g.subject(), strings.Join(ids, ", "), text)
+	}
+	b.WriteString("\n")
+	writeContext(b, shown, gs)
 }
 
 func yesNo(v bool) string {

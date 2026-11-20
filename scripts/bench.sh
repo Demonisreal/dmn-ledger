@@ -8,7 +8,7 @@ marker=.dmn-ledger-bench
 usage() {
 	echo "usage: scripts/bench.sh all|smoke [flags for bench plan]" >&2
 	echo "       scripts/bench.sh clean" >&2
-	echo "all runs the plan for four to five hours; smoke runs it once with short windows in about 20 minutes" >&2
+	echo "all runs the plan, about two hours on the machine in docs/bench; smoke runs it once with short windows in about 20 minutes" >&2
 	exit 2
 }
 

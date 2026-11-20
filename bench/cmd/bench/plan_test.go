@@ -117,6 +117,29 @@ func TestMachineTextHoldsTheHeat(t *testing.T) {
 	}
 }
 
+func TestMachineTextNamesASpeedWithoutSeconds(t *testing.T) {
+	out := t.TempDir()
+	p := control.Probe{Means: []control.ProbeMean{
+		{Speed: control.Slow, GrowingSeconds: 3, Growing: 3592 * time.Microsecond, PreallocSeconds: 9, Prealloc: 1846 * time.Microsecond, Ratio: 1.95},
+		{Speed: control.Fast, GrowingSeconds: 6, Growing: 601 * time.Microsecond},
+	}}
+	if err := writeJSON(filepath.Join(out, "probe-20261120T154432Z.json"), p); err != nil {
+		t.Fatal(err)
+	}
+	text, err := (&bench{out: out}).machineText()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"  slow: fsync on a growing file 3.592ms over 3 s, fdatasync on a preallocated file 1.846ms over 9 s, ratio 1.95\n",
+		"  fast: fsync on a growing file 601µs over 6 s, fdatasync on a preallocated file no second at this speed\n",
+	} {
+		if !strings.Contains(string(text), want) {
+			t.Errorf("machine.txt lacks %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestSecondPassSwapsTheTargets(t *testing.T) {
 	order := func(items []item, m string, pass int) map[string][]string {
 		byCell := make(map[string][]string)

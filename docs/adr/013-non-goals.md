@@ -142,7 +142,7 @@ commit protocol across groups, and the project is about one group.
 
 Today: capacity is one machine's. One core applies (ADR-001), one disk syncs, and the smallest
 node bounds the ledger (below). How many transfers a second that is was looked for on a laptop
-and not found: one node held 256,000 a second, and three nodes on one disk at least 192,000
+and not found: one node held 256,000 a second, and three nodes on one disk at least 128,000
 (128,000–256,000) with 32 client sessions and 256,000 with 4. The load generator and the plan
 ended those runs, not the nodes (ADR-012). Since a transfer never leaves its ledger
 (`AccountsMustHaveSameLedger`), separate ledgers can run on separate clusters with nothing built;

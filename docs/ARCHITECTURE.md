@@ -1012,6 +1012,29 @@ failed. It logs to stderr one line at start, a line of counters and one line at 
 counters on `SIGUSR1`, on changes of role, leader and repair flag, around every snapshot transfer,
 and for refused connections at most once a second per reason; nothing per request.
 
+The line of counters is written by `statsLine` in `cmd/ledgerd/stats.go`, after the time stamp of
+the log:
+
+```
+stats up=… rounds=… wait=… process=… slowest=… logsync=… logsync_ns=… metasync=… metasync_ns=… othersync=… othersync_ns=… written=…
+```
+
+Every field counts from the start of the process and times are in nanoseconds, except `slowest`,
+which starts from zero again after every line. The benchmarks send `SIGUSR1` once a second and
+take the differences.
+
+| Field | Meaning |
+|---|---|
+| `up` | time since the start |
+| `rounds` | rounds of the loop, one call of `Process` each |
+| `wait` | time the loop waited for an event or a tick |
+| `process` | time in `Process`, the fsyncs inside it included |
+| `slowest` | the longest call of `Process` since the previous line |
+| `logsync`, `logsync_ns` | fsync calls on segments of the log and their time |
+| `metasync`, `metasync_ns` | the same for `meta` and its temporary file |
+| `othersync`, `othersync_ns` | the same for every other file, snapshots included, and for directories |
+| `written` | bytes the node wrote into its files |
+
 `ledgerctl` is a program over the SDK. `LEDGER_CLUSTER` names the cluster and `LEDGER_NODES` the
 client addresses of its nodes in the order of their IDs. `ledgerd` does not know `LEDGER_NODES`
 and refuses to start while it is set. `ledgerctl -h` lists the commands: `status [-keys]`,

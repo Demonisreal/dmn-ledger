@@ -272,7 +272,7 @@ func TestAtLeast(t *testing.T) {
 	budget[1].f.Load.BudgetEnds = true
 	var budgetOut strings.Builder
 	writeStages(&budgetOut, groups(budget), map[string][]byte{})
-	if !strings.Contains(budgetOut.String(), "| three nodes | 4 | uniform-10k | 1 | at least 2,000 | not reached | 0 of 0 | n/a | budget | at least: a pass held every stage |") {
+	if !strings.Contains(budgetOut.String(), "| three nodes | 4 | uniform-10k | 1 | at least 2,000 | not reached | 0 of 0 | n/a | budget | at least: a pass held every stage that fits the budget |") {
 		t.Errorf("a chain that ended at the budget does not say so:\n%s", budgetOut.String())
 	}
 	var b strings.Builder
@@ -401,6 +401,49 @@ func TestOverloadIsTheFirstSaturatedStage(t *testing.T) {
 	o := chains(groups(runs))[0].overload()
 	if o.held.med != 1000 || len(o.runs) != 1 || o.runs[0].f.Load.Rate != 2000 || o.throughput().med != 1800 || o.atLeast() {
 		t.Fatalf("last held %v, overload from %d runs at %d with %v/s", o.held.med, len(o.runs), o.runs[0].f.Load.Rate, o.throughput().med)
+	}
+}
+
+func TestSummaryOfStagesKeepsToTheRaster(t *testing.T) {
+	var runs []*run
+	for _, p := range []plan{
+		ledger("m1", 1, 32, "uniform-10k", 1000),
+		ledger("m1", 1, 32, "uniform-10k", 2000),
+		ledger("m1", 1, 32, "uniform-10k", 4000).with(func(p *plan) { p.flush = window(fast, slow, fast) }),
+		ledger("m1", 1, 32, "uniform-10k", 4000).with(func(p *plan) { p.nr, p.saturated, p.booked = 3, true, 3000 }),
+		ledger("m1", 1, 32, "uniform-10k", 1000).with(func(p *plan) { p.pass, p.nr = 2, 2 }),
+		ledger("m1", 1, 32, "uniform-10k", 2000).with(func(p *plan) { p.pass, p.nr, p.flush = 2, 2, window(fast, slow, fast) }),
+	} {
+		runs = append(runs, &run{name: p.id() + ".json", f: p.file(t)})
+	}
+	var b strings.Builder
+	writeStages(&b, groups(runs), map[string][]byte{})
+	out := b.String()
+	for _, want := range []string{
+		"| one node | 32 | uniform-10k | 2 | at least 1,000 (1,000–2,000) | at least 3,000 | 1 of 2 | ",
+		"| 4,000 | saturated at 4,000 | slow | 1.40 | 1 of 2 | ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stages lack %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestProfilesOfRunsThatDoNotCountStayOut(t *testing.T) {
+	text, err := os.ReadFile("testdata/ledgerd.traces")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restless := ledger("m3", 3, 4, "uniform-10k", 50000).with(func(p *plan) { p.tags, p.flush = []string{"pprof"}, window(fast, slow, fast) })
+	repeat := restless.with(func(p *plan) { p.nr, p.flush = 2, window(slow, slow, slow) })
+	var runs []*run
+	for _, p := range []plan{restless, repeat} {
+		runs = append(runs, &run{name: p.id() + ".json", f: p.file(t), traces: []traces{{node: "n1", text: text}}})
+	}
+	out := string(render(runs)[Results])
+	profiles := out[strings.Index(out, "## CPU profile"):strings.Index(out, "## Runs\n")]
+	if strings.Contains(profiles, "| "+restless.id()+" |") || !strings.Contains(profiles, "| "+repeat.id()+" | n1 |") {
+		t.Errorf("the profile table shows the restless run or lacks its repeat:\n%s", profiles)
 	}
 }
 
