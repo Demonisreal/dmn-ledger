@@ -447,6 +447,8 @@ func TestPageHasAPreview(t *testing.T) {
 		`<meta property="og:description" content="` + about[1] + `">`,
 		`<meta property="og:title" content="dmn-ledger: drei Knoten, ein Hauptbuch">`,
 		`<meta property="og:locale" content="de_DE">`,
+		`<meta property="og:image" content="https://dmn-software.com/assets/og-hauptbuch.png">`,
+		`<meta name="twitter:card" content="summary_large_image">`,
 	} {
 		if !strings.Contains(head, want) {
 			t.Errorf("the head has no %s", want)
