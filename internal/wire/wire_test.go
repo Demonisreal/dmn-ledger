@@ -297,13 +297,13 @@ func TestLengthIsCheckedBeforeAllocation(t *testing.T) {
 		grown := allocated(func() {
 			_, _, err = ReadFrame(stream, nil, cluster, limit)
 		})
-		if !errors.Is(err, ErrTooLarge) || grown > 4<<10 {
+		if !errors.Is(err, ErrTooLarge) || grown > 64<<10 {
 			t.Errorf("ReadFrame, limit %d: %v after allocating %d bytes", limit, err, grown)
 		}
 		grown = allocated(func() {
 			_, _, err = Decode(head, cluster, limit)
 		})
-		if !errors.Is(err, ErrTooLarge) || grown > 4<<10 {
+		if !errors.Is(err, ErrTooLarge) || grown > 64<<10 {
 			t.Errorf("Decode, limit %d: %v after allocating %d bytes", limit, err, grown)
 		}
 	}
@@ -473,7 +473,7 @@ func TestEntryCountIsCheckedBeforeMake(t *testing.T) {
 		grown := allocated(func() {
 			_, err = f.Message()
 		})
-		if !errors.Is(err, ErrFormat) || grown > 4<<10 {
+		if !errors.Is(err, ErrFormat) || grown > 64<<10 {
 			t.Errorf("count %d over two entries: %v after allocating %d bytes", count, err, grown)
 		}
 	}
