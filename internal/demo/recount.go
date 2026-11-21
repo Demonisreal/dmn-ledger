@@ -93,7 +93,7 @@ func (s *Stage) count(r *run, full bool, after Kind) bool {
 	rc.At, rc.After = now.UnixMilli(), after
 	rc.Index, rc.Hash = sts[0].Applied, hex.EncodeToString(sts[0].ApplyHash[:8])
 	s.change(func(st *State) { st.Books.Recount = rc })
-	line := fmt.Sprintf(sayFull, rc.Index, rc.Hash, num(rc.Confirmed), num(rc.Found), num(rc.Refused), num(rc.Strays), money(sum.Value))
+	line := recounted(rc, sum.Value)
 	if after != 0 {
 		line = sayAfter + strings.TrimPrefix(line, "Zählung: ")
 	}

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"math"
 	"path/filepath"
+	"syscall"
 
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 )
@@ -30,7 +31,10 @@ const (
 	metaRepair uint8 = 1
 )
 
-var ErrNoMeta = errors.New("wal: no meta")
+var (
+	ErrNoMeta = errors.New("wal: no meta")
+	ErrNotDir = errors.New("wal: not a directory")
+)
 
 type Identity struct {
 	Cluster uint64
@@ -80,6 +84,9 @@ func openMeta(fsys disk.FS, dir string, create *Identity) (_ *MetaFile, _ Meta, 
 	lock, err := fsys.Lock(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, Meta{}, fmt.Errorf("%w: %s does not exist", ErrNoMeta, dir)
+	}
+	if errors.Is(err, syscall.ENOTDIR) {
+		return nil, Meta{}, fmt.Errorf("%w: %s", ErrNotDir, dir)
 	}
 	if err != nil {
 		return nil, Meta{}, err

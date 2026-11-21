@@ -251,6 +251,10 @@ func TestExitCodes(t *testing.T) {
 		addrs := freeAddrs(t, 4)
 		missing := filepath.Join(t.TempDir(), "missing")
 		empty := t.TempDir()
+		file := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		other, wider, single := dataDir(t, 2, 3), dataDir(t, 1, 3), dataDir(t, 1, 1)
 		earlier := t.TempDir()
 		earlierMeta(t, earlier)
@@ -264,6 +268,7 @@ func TestExitCodes(t *testing.T) {
 		}{
 			{"no directory", nodeEnv(1, addrs[:1], addrs[3], missing), 2, fmt.Sprintf(noMeta, missing, missing+" does not exist")},
 			{"empty directory", nodeEnv(1, addrs[:1], addrs[3], empty), 2, fmt.Sprintf(noMeta, empty, empty+"/meta")},
+			{"file", nodeEnv(1, addrs[:1], addrs[3], file), 2, "node 1 cannot start: LEDGER_DIR=" + file + " is not a directory: wal: not a directory: " + file},
 			{"directory of another node", nodeEnv(1, addrs[:3], addrs[3], other), 2, fmt.Sprintf(foreign, other, "node 2 of 3 in cluster 1", "node 1 of 3 in cluster 1")},
 			{"of another number of nodes", nodeEnv(1, addrs[:1], addrs[3], wider), 2, fmt.Sprintf(foreign, wider, "node 1 of 3 in cluster 1", "node 1 of 1 in cluster 1")},
 			{"of another cluster", nodeEnv(1, addrs[:1], addrs[3], single, "LEDGER_CLUSTER=2"), 2, fmt.Sprintf(foreign, single, "node 1 of 1 in cluster 1", "node 1 of 1 in cluster 2")},

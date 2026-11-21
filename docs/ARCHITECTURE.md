@@ -1083,6 +1083,9 @@ node 1 cannot start: LEDGER_DIR=/data/new is not initialised, "ledgerctl init" m
 node 2 cannot start: LEDGER_DIR=/data/n1 belongs to another node or cluster, compare LEDGER_ID, LEDGER_PEERS, LEDGER_CLUSTER and LEDGER_DIR: replica: the directory belongs to another node or cluster: /data/n1 holds node 1 of 3 in cluster 1, not node 2 of 3 in cluster 1
 ```
 
+A `LEDGER_DIR` that is a file is a configuration error too (`wal.ErrNotDir`), with the line
+`node 1 cannot start: LEDGER_DIR=/data/n1 is not a directory: wal: not a directory: /data/n1`.
+
 A damaged `meta` and one from an earlier build stay at 3. `TestExitCodes` in `cmd/ledgerd` starts
 `ledgerd` on a missing, an empty and a foreign directory and on a `meta` of an earlier build.
 

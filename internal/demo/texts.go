@@ -25,6 +25,7 @@ const (
 	saySetupFailed = "Aufsetzen gescheitert, Versuch %d von %d: %v"
 	sayLight       = "Zählung: Summe %s."
 	sayFull        = "Zählung: alle drei Knoten bei Eintrag %d, Zustand %s. %s Buchungen bestätigt, %s gefunden; %s abgelehnt, %s davon im Hauptbuch. Summe %s."
+	sayFullOne     = "Zählung: alle drei Knoten bei Eintrag %d, Zustand %s. %s Buchung bestätigt, %s gefunden; %s abgelehnt, %s davon im Hauptbuch. Summe %s."
 	sayAfter       = "Zählung nach der Störung: "
 	sayLimit       = "%s Buchungen erreicht. Schlusszählung, dann wird neu aufgesetzt."
 	sayRest        = "Niemand sieht zu. Die Last ruht."
@@ -88,6 +89,14 @@ func standing(st *ledger.NodeStatus) string {
 		return silent
 	}
 	return fmt.Sprintf("%s in Term %d", roleNames[st.Role], st.Term)
+}
+
+func recounted(rc Recount, sum string) string {
+	said := sayFull
+	if rc.Confirmed == 1 {
+		said = sayFullOne
+	}
+	return fmt.Sprintf(said, rc.Index, rc.Hash, num(rc.Confirmed), num(rc.Found), num(rc.Refused), num(rc.Strays), money(sum))
 }
 
 func grouped(digits string) string {

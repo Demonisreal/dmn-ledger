@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -29,6 +30,7 @@ import (
 
 const (
 	chromeLimit  = 30 * time.Second
+	chromeCold   = 2 * time.Minute
 	chromeMemory = 2500
 	chromeZone   = "Asia/Kolkata"
 	appScript    = `<script type="module" src="/static/app.js"></script>`
@@ -69,13 +71,21 @@ func availableMB(t *testing.T) int {
 	return 0
 }
 
+var warmChrome sync.Once
+
 func chrome(t *testing.T, args ...string) (stdout, stderr string) {
 	t.Helper()
 	bin := chromeBin(t)
 	if mb := availableMB(t); mb < chromeMemory {
 		t.Skipf("%d MB available, the browser starts with %d or more", mb, chromeMemory)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), chromeLimit)
+	warmChrome.Do(func() { runChrome(t, bin, chromeCold, "--dump-dom", "data:text/html,<p>warm</p>") })
+	return runChrome(t, bin, chromeLimit, args...)
+}
+
+func runChrome(t *testing.T, bin string, limit time.Duration, args ...string) (stdout, stderr string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	flags := []string{"--headless=new", "--disable-gpu", "--no-first-run", "--user-data-dir=" + t.TempDir(), "--enable-logging=stderr"}
 	cmd := exec.CommandContext(ctx, bin, append(flags, args...)...) //nolint:gosec // G204: the browser of the machine, the flags are fixed
@@ -88,7 +98,7 @@ func chrome(t *testing.T, args ...string) (stdout, stderr string) {
 	err := cmd.Run()
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	if ctx.Err() != nil {
-		t.Fatalf("the browser did not finish within %v and was killed; stderr:\n%s", chromeLimit, errs.String())
+		t.Fatalf("the browser did not finish within %v and was killed; stderr:\n%s", limit, errs.String())
 	}
 	if err != nil {
 		t.Fatalf("browser: %v; stderr:\n%s", err, errs.String())

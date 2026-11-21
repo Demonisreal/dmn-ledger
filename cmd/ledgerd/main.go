@@ -58,6 +58,10 @@ func run(ctx context.Context, environ []string, stderr io.Writer) int {
 		logger.Printf(`node %d cannot start: LEDGER_DIR=%s is not initialised, "ledgerctl init" makes the directory of a node that never ran, a node that lost its directory must stay down: %v`, cfg.id, cfg.dir, err)
 		return 2
 	}
+	if errors.Is(err, wal.ErrNotDir) {
+		logger.Printf("node %d cannot start: LEDGER_DIR=%s is not a directory: %v", cfg.id, cfg.dir, err)
+		return 2
+	}
 	if errors.Is(err, replica.ErrIdentity) {
 		logger.Printf("node %d cannot start: LEDGER_DIR=%s belongs to another node or cluster, compare LEDGER_ID, LEDGER_PEERS, LEDGER_CLUSTER and LEDGER_DIR: %v", cfg.id, cfg.dir, err)
 		return 2

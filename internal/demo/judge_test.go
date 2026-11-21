@@ -165,6 +165,21 @@ func TestRecountSaysOneOrSeveral(t *testing.T) {
 	}
 }
 
+func TestFullCountSaysOneOrSeveral(t *testing.T) {
+	for _, c := range []struct {
+		rc   Recount
+		want string
+	}{
+		{Recount{Index: 9, Hash: "00c0ffee", Confirmed: 1, Found: 1}, "Zählung: alle drei Knoten bei Eintrag 9, Zustand 00c0ffee. 1 Buchung bestätigt, 1 gefunden; 0 abgelehnt, 0 davon im Hauptbuch. Summe 60\u202f000,00."},
+		{Recount{Index: 9, Hash: "00c0ffee", Confirmed: 0, Refused: 1}, "Zählung: alle drei Knoten bei Eintrag 9, Zustand 00c0ffee. 0 Buchungen bestätigt, 0 gefunden; 1 abgelehnt, 0 davon im Hauptbuch. Summe 60\u202f000,00."},
+		{Recount{Index: 18802, Hash: "00c0ffee", Confirmed: 18734, Found: 18734, Refused: 12}, "Zählung: alle drei Knoten bei Eintrag 18802, Zustand 00c0ffee. 18\u202f734 Buchungen bestätigt, 18\u202f734 gefunden; 12 abgelehnt, 0 davon im Hauptbuch. Summe 60\u202f000,00."},
+	} {
+		if got := recounted(c.rc, "6000000"); got != c.want {
+			t.Errorf("%d confirmed: %q, want %q", c.rc.Confirmed, got, c.want)
+		}
+	}
+}
+
 func TestBurstOfNodeLinesIsCounted(t *testing.T) {
 	s := New(Config{Log: log.New(io.Discard, "", 0)})
 	r := &run{fresh: make(chan struct{})}
