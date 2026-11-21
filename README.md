@@ -182,8 +182,9 @@ What these numbers do not say:
 
 ## Try it
 
-From the root of the repository, in bash: build the two programs, make a key for each node and
-start three nodes on loopback, with client ports 7101 to 7103 and peer ports 7201 to 7203.
+From the root of the repository, in bash: build the two programs, make a key and a data directory
+for each node and start three nodes on loopback, with client ports 7101 to 7103 and peer ports
+7201 to 7203.
 
 ```
 $ dir=$(mktemp -d)
@@ -194,6 +195,19 @@ $ for i in 1 2 3; do ledgerctl key new n$i.key; done
 7f34e6432538e7bf669a80216dbbf6c1797bc475cc30c27d22876c532f20840e
 cd020782875b156cacdfc60528a91de91a6d35308aa12f2f6c7b64f050a48f16
 7cc2ea66d9ab38b251bb3ff1532bdf3004656ce97a8aa77012923bf6708ef778
+```
+
+`ledgerd` starts only on a directory that `ledgerctl init` made, for the node ID, the number of
+nodes and the cluster it is started with:
+
+```
+$ for i in 1 2 3; do LEDGER_CLUSTER=1 ledgerctl init -id $i -nodes 3 n$i; done
+initialised /tmp/tmp.w1fwkLybqI/n1 as node 1 of 3 in cluster 1
+start it only if node 1 has never run in cluster 1: a node that ran has voted and acknowledged entries, and this directory knows none of that
+initialised /tmp/tmp.w1fwkLybqI/n2 as node 2 of 3 in cluster 1
+start it only if node 2 has never run in cluster 1: a node that ran has voted and acknowledged entries, and this directory knows none of that
+initialised /tmp/tmp.w1fwkLybqI/n3 as node 3 of 3 in cluster 1
+start it only if node 3 has never run in cluster 1: a node that ran has voted and acknowledged entries, and this directory knows none of that
 $ peers=127.0.0.1:7201,127.0.0.1:7202,127.0.0.1:7203
 $ for i in 1 2 3; do
     LEDGER_ID=$i LEDGER_CLUSTER=1 LEDGER_PEERS=$peers LEDGER_CLIENT_ADDR=127.0.0.1:710$i \
@@ -259,6 +273,12 @@ node  address         role      term  commit  applied  apply hash        head   
 3     127.0.0.1:7103  follower  2     11      11       8223cbcf9076f709  4:1f3501e41522b668  no      2026-11-16T09:48:24.117697923Z  +0ms   -
 nodes agree at index 11
 ```
+
+On an empty directory instead, `ledgerd` would exit with 2 and name `ledgerctl init` in its log.
+Node 3 has voted and acknowledged entries, and only its directory remembers that; started without
+that memory, it could help elect a leader that lacks a committed entry. `ledgerctl init` on a new
+directory for node 3 would succeed all the same, which is why its output says it is for a node
+that has never run ([ADR-016](docs/adr/016-directory-identity.md)).
 
 Then fetch a receipt for transfer 10 and check it offline against the node keys. The status frame
 carries each node's public key, and `status -keys` writes them as a list:
@@ -495,7 +515,9 @@ with real processes, the chaos test and the demo need Linux; `scripts/vectors.mj
   [ADR-013](docs/adr/013-non-goals.md) what is not built, what each gap means today and how it
   could be closed,
   [ADR-014](docs/adr/014-public-demo-fixed-faults-no-docker-socket.md) the demo and its threat
-  model, [ADR-015](docs/adr/015-binary-protocol-over-plain-tcp.md) the protocol and the network.
+  model, [ADR-015](docs/adr/015-binary-protocol-over-plain-tcp.md) the protocol and the network,
+  [ADR-016](docs/adr/016-directory-identity.md) what a data directory says about its node and
+  what it cannot say.
 - [docs/ledger-rules.md](docs/ledger-rules.md): fields, check order, time, chains, the audit
   trail, invariants and the snapshot format of the state machine.
 - [docs/demo-page.md](docs/demo-page.md): the tokens and components the demo page is built from,

@@ -15,7 +15,7 @@ internal/server      second driver of replica.Node: sockets, the real clock, the
 internal/wire        frames for requests, replies, status, the peer hello, raft messages, snapshots
 internal/replica     one loop per node: raft + WAL + state
   internal/raft      consensus core, no I/O
-  internal/wal       log, metadata (term, vote, seal) and snapshots on disk.FS
+  internal/wal       log, metadata (identity, term, vote, seal) and snapshots on disk.FS
   internal/state     ledger state machine and its hash chain, deterministic
 internal/audit       hash formats of the audit trail: Merkle tree, links, heads, receipts
 internal/notary      Ed25519 stamps over heads, key files
@@ -328,42 +328,56 @@ error, and only a new `Open` continues. That includes an entry or a snapshot tha
 checksum when it is read. A node never applies or sends an entry that failed its checksum; the
 next start decides whether the disk is damaged (`TestBitFlipFoundWhileApplyingStopsTheNode`,
 `TestBitFlipFoundWhileSendingStopsTheLeader`). Steps 1 to 3 of the contract live in `persist` and
-steps 5 to 9 of a start in `mend`, both in `replica/rules.go` and not in `node.go`, because that
+steps 6 to 10 of a start in `mend`, both in `replica/rules.go` and not in `node.go`, because that
 is where a planted bug can switch them (see Planted bugs).
 
 ### Files and start
 
 A node keeps `<dir>/meta`, `<dir>/wal/` and `<dir>/snap/`. `meta` holds term, vote, the repair
 flag and the seal in two slots of 40 bytes at offsets 0 and 4096, each with a sequence number and
-a CRC32C; the valid slot with the higher sequence counts. Storing term, vote or flag writes both
-slots, one after the other, each with its own fsync. A seal writes one slot, the one that is not
-the newest. `Open` takes these steps in this order:
+a CRC32C; the valid slot with the higher sequence counts. Each slot also names the identity of the
+directory, under the same CRC32C: the cluster ID, the node ID and the number of nodes it was made
+for. Sequence number, term, seal and cluster ID take eight bytes each, vote, node ID, number of
+nodes and flags one byte each. Every write carries the identity read from the file; no call
+changes it. Storing term, vote or flag writes both slots, one after the other, each with its own
+fsync. A seal writes one slot, the one that is not the newest. A vote above 255 does not fit:
+`Save` then writes nothing and stops the file as after a failed write
+(`TestSaveRefusesAVoteThatDoesNotFit`). Node IDs are 1 to 5. `Open` takes these steps in this
+order:
 
-1. `meta`: term, vote, repair flag, seal, and whether both slots were valid. With no valid slot
-   `Open` fails.
-2. Snapshots: the newest one whose checksum holds is loaded, with sessions, ledger state and apply
+1. `meta`: identity, term, vote, repair flag, seal, and whether both slots were valid. Without
+   `meta`, or without the directory, `Open` fails with `wal.ErrNoMeta` and creates neither. Only
+   with `Config.Create`, which the simulator sets (see Simulator), it creates both, with term 0,
+   no vote and seal 0. With no valid slot `Open` fails.
+2. Identity: the one in `meta` is compared with `Config.Cluster`, `Config.ID` and the number of
+   `Config.Peers`, with `Create` as well. A difference fails with `replica.ErrIdentity`, and the
+   message names both identities. This comes before every write: `Open` has created no folder,
+   cut nothing and sealed nothing, and a refused directory holds what it held before; only the
+   lock file `LOCK` can be new (`TestOpenRefusesTheDirectoryOfAnotherNode`,
+   `TestOpenRefusesADirectoryWithoutMeta`).
+3. Snapshots: the newest one whose checksum holds is loaded, with sessions, ledger state and apply
    hash, and `applied` is its index. Broken ones above it are noted. Without a valid snapshot the
    state is empty and `applied` is 0.
-3. The WAL, judged by the seal (table below).
-4. Cover: if the seal is above the loaded snapshot, the log has to start no later than the entry
+4. The WAL, judged by the seal (table below).
+5. Cover: if the seal is above the loaded snapshot, the log has to start no later than the entry
    after the snapshot and reach the seal. Otherwise that is damage as well. So is a broken
    snapshot when one slot of `meta` was invalid: the seal may then be older than that snapshot.
-5. `meta` is settled. With two valid slots the one just read is written back and synced, so that
+6. `meta` is settled. With two valid slots the one just read is written back and synced, so that
    it is on disk and not only in the page cache before the other one is overwritten. With one
    valid slot nothing is written. No earlier step writes to `meta`: a power loss must not leave a
    torn slot next to a torn end of the log.
-6. On damage the repair flag is stored, before anything is deleted. A cluster of one node fails
+7. On damage the repair flag is stored, before anything is deleted. A cluster of one node fails
    here with `wal.ErrCorrupt` instead, because there is no other node to repair it from.
-7. Broken snapshot files are deleted. A damaged WAL is cut back to its valid beginning: the
+8. Broken snapshot files are deleted. A damaged WAL is cut back to its valid beginning: the
    segment is cut at the first broken place, and all later segments are removed.
-8. The log is checked against the snapshot. If it ends before the snapshot index or holds another
+9. The log is checked against the snapshot. If it ends before the snapshot index or holds another
    term there, the seal is lowered to the snapshot index and the log is emptied from the back.
    Both sides are valid data in that case and the snapshot wins; it is the state after a crash in
    the middle of an install. A log that starts after index + 1 makes `Open` fail, unless the
    repair flag is set: then it is emptied as well.
-9. The last index is sealed, always. That restores a slot that was invalid, and it takes in valid
-   frames after the old seal, left by a crash between the sync of the log and the seal.
-10. The core starts with term, vote and repair flag, and with a log view whose last index is
+10. The last index is sealed, always. That restores a slot that was invalid, and it takes in valid
+    frames after the old seal, left by a crash between the sync of the log and the seal.
+11. The core starts with term, vote and repair flag, and with a log view whose last index is
     `max(wal last, snapshot index)`.
 
 A power loss at any disk access of these steps leaves a disk that the next start judges the same
@@ -382,15 +396,49 @@ places on the disk at one such point. The verdicts on the WAL are the cases of
 | seal above the loaded snapshot, and the log ends before the seal or starts later than the entry after the snapshot | damage |
 | one slot of `meta` invalid | no damage by itself, the next write restores the slot |
 | both slots invalid | `Open` fails |
+| no `meta`, or no directory | not damage, `Open` fails with `wal.ErrNoMeta` and creates neither |
+| `meta` of another node, another number of nodes or another cluster, also in the one valid slot | not damage, `Open` fails with `replica.ErrIdentity` before any write |
+| both slots valid, with two identities | damage that is not repaired, `Open` fails with `wal.ErrCorrupt` (`TestMetaSlotsOfTwoNodesAreCorrupt`) |
 | newest snapshot fails its checksum | the next older one is loaded and the file deleted; damage only if the log then leaves a gap up to the seal |
 | broken snapshot when one slot was invalid | damage, the seal may be older than the snapshot |
 | checksum of a snapshot holds, content cannot be read | not a disk fault, `Open` fails |
 | checksum of a snapshot holds, its footer names another index or term than the file name | not a disk fault, `Open` fails with `wal.ErrMisnamed` |
 | unknown version of a segment, unknown flag in `meta` | not damage, `Open` fails with `wal.ErrVersion` |
+| a slot of `meta` that names no node, written by an earlier build | not damage, `Open` fails with `wal.ErrVersion` (`TestMetaOfAnEarlierLayoutIsAnotherVersion`) |
 | read error (EIO) | fail-stop |
 
 The commit index is not stored. Entries after the snapshot are applied again once a leader reports
 them as committed.
+
+### Making a directory
+
+`replica.Init(fsys, dir, id)` makes the data directory of a node that has never run. It takes a
+directory that does not exist, or one that holds nothing but the lock file and a `meta.tmp` left
+by an earlier attempt. A `meta` there is `replica.ErrInitialised`; `wal/`, `snap/` or any other
+file is `replica.ErrNotEmpty`, with the name in the message. `disk.OS.List` names regular files
+only, so a foreign folder other than `wal` and `snap` is not seen. `Init` then calls
+`wal.CreateMeta`, which makes the path, takes the lock, writes `meta.tmp` in full with two valid
+slots that carry the identity, syncs it and renames it to `meta`, and settles the file, which
+syncs the directory. When `Init` returns without an error, `meta` and its directory entry are on
+disk. `wal/` and `snap/` appear at the first start. The check comes before the lock. Of two runs
+at once, the second finds the lock or the `meta` of the first, and it accepts that `meta` only if
+it names the same identity and holds nothing yet.
+
+`meta` comes into being only by renaming a file that was synced before, so a crash at any disk
+access of `Init` leaves one of two states. Either the directory is not made: `Open` fails with
+`wal.ErrNoMeta`, and `Init` makes it again. Or it is made: it opens, and `Init` refuses it. A
+directory made by an `Init` that did not return is as good as a finished one, since no node has
+run on it. `TestInitCrashAtEveryDiskAccess` cuts the power or ends the process at each of the nine
+disk accesses from no directory and the ten from an empty one, under three journal rates. After
+each it requires one of the two states, runs `Init` once more, and opens the directory, then
+again after one more power loss.
+
+`Init` cannot know whether a node with this identity has run before. That is written in the
+directory that was lost and nowhere else, so `Init` on an empty replacement succeeds, and the node
+started there has forgotten its vote and what it acknowledged.
+`TestNodeInitialisedAgainLosesACommittedEntry` holds what follows: with three nodes it and one
+that is behind elect a leader that lacks a confirmed transfer, and the third node halts with
+`raft.ErrSafety` when it hears that leader. ADR-016 has the decision and what it leaves open.
 
 ### Log entries
 
@@ -652,7 +700,9 @@ contact: the client port is not authenticated (ADR-015).
 
 A data directory holds snapshots and a log, but not the commit index. `replica.Recount` opens a
 copy of it as a cluster of one node (ID 1, peers `[1]`), which elects itself and commits its whole
-log, the start a node takes in operation, seal and cover check included. It applies everything,
+log, the start a node takes in operation, seal and cover check included. The copy may be that of
+any node: of the identity in `meta` only the cluster is compared, with `Config.Cluster`, and a
+copy without `meta` does not get one. It applies everything,
 compares the head at the number of a head saved earlier, and does it twice: from the newest
 snapshot and, with the newest one removed from the copy, from the older one, if the log reaches
 back to it. An entry changed between the two snapshots is read only by the second run.
@@ -664,15 +714,22 @@ back to it. An entry changed between the two snapshots is read only by the secon
 | `replica.ErrOtherHead` | another head at that number, within what the snapshots cover |
 | `replica.ErrOtherLog` | another head at a number only the log reaches: an entry was changed, or it was never committed, as in the log of a deposed leader |
 | `wal.ErrCorrupt` | the directory is damaged; a cluster of one refuses to start on it |
-| any other error | it does not open, for example a snapshot whose records and links disagree |
+| `replica.ErrIdentity` | the directory was made for another cluster |
+| any other error | it does not open, for example a copy without `meta` (`wal.ErrNoMeta`) or a snapshot whose records and links disagree |
 
 Only links up to the number of the saved head are compared; whatever follows is not checked.
 `MaxSessions` must be the cluster's value. `ledgerctl verify dir` reads the directory into a
 `disk.Sim` in memory, holds the directory's lock while it copies, so it refuses a directory a
-running node holds, and never writes to the original. The tests are in
-`internal/replica/recount_test.go`, among them `TestRecountMatchesTheLiveHead`,
-`TestRecountFindsChangedLogEntry`, `TestRecountFindsChangedSnapshot` and
-`TestRecountOfADeposedLeaderIsNotAnotherHead`.
+running node holds, and never writes to the original. It passes `LEDGER_CLUSTER` on as the
+cluster. A directory of another cluster is a usage error, exit code 2, with a line such as
+`ledgerctl: LEDGER_CLUSTER=2 is not the cluster of this directory: replica: the directory belongs
+to another node or cluster: it holds node 2 of 3 in cluster 1, not cluster 2`. A copy without
+`meta` ends with `does not open: wal: no meta: /copy/meta`, where `/copy` is the copy in memory,
+and exit code 1. The
+tests are in `internal/replica/recount_test.go`, among them `TestRecountMatchesTheLiveHead`,
+`TestRecountFindsChangedLogEntry`, `TestRecountFindsChangedSnapshot`,
+`TestRecountOfADeposedLeaderIsNotAnotherHead`, `TestRecountOpensTheDirectoryOfAnyNode` and
+`TestRecountRefusesAnotherCluster`; those of `verify dir` in `cmd/ledgerctl/proof_test.go`.
 
 ## Client sessions (`internal/client`)
 
@@ -991,7 +1048,7 @@ does not know, so a typo does not let a default apply in silence.
 | `LEDGER_CLUSTER` | 1 to 2^64-1, decimal or `0x` | required |
 | `LEDGER_PEERS` | 1, 3 or 5 `IP:port` peer addresses, comma-separated; the position is the node ID | required |
 | `LEDGER_CLIENT_ADDR` | `IP:port` | required |
-| `LEDGER_DIR` | absolute path | required |
+| `LEDGER_DIR` | absolute path of a directory made by `ledgerctl init` | required |
 | `LEDGER_TICK` | 1ms to 1s | `10ms` |
 | `LEDGER_SNAPSHOT_EVERY` | 1 to 2^32 entries | `100000` |
 | `LEDGER_SEGMENT_SIZE` | 2 MiB to 64 MiB, in bytes | 64 MiB |
@@ -1004,13 +1061,30 @@ Any other `LEDGER_` variable is a configuration error. A `ledgerd` built with `-
 takes `LEDGER_PROFILE`, the absolute path of a file it writes a CPU profile to until it stops;
 the benchmarks use it.
 
+`ledgerd` creates neither the data directory nor `meta`. On a directory without `meta` it leaves
+at most the lock file `LOCK` behind (`TestLedgerdCreatesNoDirectory`); `wal/`, `snap/` and
+`recv/` appear at the first start on a directory that `ledgerctl init` made.
+
 Addresses are IP and port, never host names. A node listens for peers on its own entry in
 `LEDGER_PEERS`. It exits with 0 after `SIGTERM` or `SIGINT`, 1 when the node halted (the reason is
-in the log), 2 for a configuration error, a `LEDGER_MAX_SESSIONS` that does not fit the data
-directory included, and 3 when it cannot start: directory locked, port taken, `replica.Open`
-failed. It logs to stderr one line at start, a line of counters and one line at the end, a line of
-counters on `SIGUSR1`, on changes of role, leader and repair flag, around every snapshot transfer,
-and for refused connections at most once a second per reason; nothing per request.
+in the log), 2 for a configuration error, and 3 when it cannot start: directory locked, port
+taken, `replica.Open` failed. It logs to stderr one line at start, a line of counters and one line
+at the end, a line of counters on `SIGUSR1`, on changes of role, leader and repair flag, around
+every snapshot transfer, and for refused connections at most once a second per reason; nothing
+per request.
+
+A configuration error includes a `LEDGER_MAX_SESSIONS` that does not fit the data directory, a
+`LEDGER_DIR` that is not initialised (`wal.ErrNoMeta`) and one that belongs to another node,
+number of nodes or cluster (`replica.ErrIdentity`): the same environment fails the same way
+again. Each of the last two has a line of its own, here after the time stamp:
+
+```
+node 1 cannot start: LEDGER_DIR=/data/new is not initialised, "ledgerctl init" makes the directory of a node that never ran, a node that lost its directory must stay down: wal: no meta: /data/new/meta
+node 2 cannot start: LEDGER_DIR=/data/n1 belongs to another node or cluster, compare LEDGER_ID, LEDGER_PEERS, LEDGER_CLUSTER and LEDGER_DIR: replica: the directory belongs to another node or cluster: /data/n1 holds node 1 of 3 in cluster 1, not node 2 of 3 in cluster 1
+```
+
+A damaged `meta` and one from an earlier build stay at 3. `TestExitCodes` in `cmd/ledgerd` starts
+`ledgerd` on a missing, an empty and a foreign directory and on a `meta` of an earlier build.
 
 The line of counters is written by `statsLine` in `cmd/ledgerd/stats.go`, after the time stamp of
 the log:
@@ -1031,7 +1105,7 @@ take the differences.
 | `process` | time in `Process`, the fsyncs inside it included |
 | `slowest` | the longest call of `Process` since the previous line |
 | `logsync`, `logsync_ns` | fsync calls on segments of the log and their time |
-| `metasync`, `metasync_ns` | the same for `meta` and its temporary file |
+| `metasync`, `metasync_ns` | the same for `meta` |
 | `othersync`, `othersync_ns` | the same for every other file, snapshots included, and for directories |
 | `written` | bytes the node wrote into its files |
 
@@ -1039,13 +1113,27 @@ take the differences.
 client addresses of its nodes in the order of their IDs. `ledgerd` does not know `LEDGER_NODES`
 and refuses to start while it is set. `ledgerctl -h` lists the commands: `status [-keys]`,
 `account create|get`, `transfer create|post|void|get`, `key new|show`,
-`proof account|transfer|expiry|batch`, `head` and `verify proof|chain|dir`. Exit codes: 0 for a
-good answer, 1 when the cluster answered but the answer is bad (a failed event, a missing ID, a
-node unreachable or in repair, nodes that differ, a receipt that does not hold, two heads with the
-same number and different hashes, a file of links that does not connect two heads), 2 for a usage
-error, 3 when there is no verdict (no answer within 10 s, an unknown outcome, an evicted session,
-a receipt without a stamp, links from the cluster that do not connect two heads, a directory
-behind the head or held by a running node).
+`proof account|transfer|expiry|batch`, `head`, `verify proof|chain|dir` and `init`. Exit codes: 0
+for a good answer, 1 when the cluster answered but the answer is bad (a failed event, a missing
+ID, a node unreachable or in repair, nodes that differ, a receipt that does not hold, two heads
+with the same number and different hashes, a file of links that does not connect two heads), 2
+for a usage error, 3 when there is no verdict (no answer within 10 s, an unknown outcome, an
+evicted session, a receipt without a stamp, links from the cluster that do not connect two heads,
+a directory behind the head or held by a running node).
+
+`ledgerctl init -id N -nodes N DIR` makes `DIR` the data directory of node `-id` in a cluster of
+`-nodes` nodes (1, 3 or 5) and of `LEDGER_CLUSTER`, through `replica.Init`; it reads no
+`LEDGER_NODES` and talks to no node. It names the directory by its absolute path and prints two
+lines, the second of them always:
+
+```
+initialised /data/n2 as node 2 of 3 in cluster 7
+start it only if node 2 has never run in cluster 7: a node that ran has voted and acknowledged entries, and this directory knows none of that
+```
+
+A directory that is already initialised (`ledgerctl: init: DIR is already initialised, nothing was
+changed`), one that a node has used, and one that a running node holds end with exit code 2 and
+change nothing; any other error, such as a path that is a file, is 1 (`TestInitRefusals`).
 
 ## SDK (`ledger`)
 
@@ -1181,6 +1269,10 @@ line of the trace.
 - **Wire.** Every message goes through `internal/wire` when it leaves: the `Clone` of each body in
   `sim/ledger.go` encodes it and decodes it again, a snapshot as chunks and an end frame. A codec
   error panics, and a panic is a finding. The cluster ID is a constant.
+- **Directories.** A node opens with `replica.Config.Create`, so its directory and `meta` are
+  made at its first start, with its identity. A power loss early in that start can take `meta`
+  away again, and the next start makes it once more. Every start compares the identity as in
+  `ledgerd`, which never sets `Create`. No start in the simulator is refused for a missing `meta`.
 - **Disk corruption.** `rot` runs the `all` faults and gives a quarter of the windows to damage in
   data at rest: one flipped bit or, in a quarter of the cases, a whole sector of garbage, in one
   durable file of one node. Empty and temporary files are left out. At least half of the faults
@@ -1491,7 +1583,8 @@ non-zero code into 1.
 
 The simulator runs the node code, not the program. The chaos test runs the program: three
 `ledgerd` processes, built once by the test, each with a data directory of its own under
-`$TMPDIR`. It needs Linux and the build tag `chaos`, and it does not run in CI.
+`$TMPDIR`, which `internal/local` makes before the node starts for the first time. It needs Linux
+and the build tag `chaos`, and it does not run in CI.
 
 ```
 test process
@@ -1624,7 +1717,9 @@ up:
    addresses of its peers, `LEDGER_CLIENT_ADDR`, `LEDGER_DIR`, `LEDGER_KEY_FILE`,
    `LEDGER_MAX_CLIENTS=16`, `GOMEMLIMIT=64MiB`) and nothing from the environment of the
    controller, no arguments, and `Pdeathsig: SIGKILL`, so the kernel ends it when the controller
-   dies. Everything else stays at the defaults of `ledgerd`.
+   dies. Everything else stays at the defaults of `ledgerd`. Before a node starts for the first
+   time, `local.Start` makes its data directory with `replica.Init`; a restart after a fault does
+   not make it again (`TestNodeWithoutMetaDoesNotStart`).
 4. Wait up to 10 s until all three answer and agree on leader and term.
 5. Dial five clients: four for the load, one, the teller, for counts and receipts.
 6. Through the recorder: create seven accounts in one call, accounts 1 to 6 with

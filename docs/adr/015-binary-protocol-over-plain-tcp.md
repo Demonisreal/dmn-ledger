@@ -1,6 +1,7 @@
 # ADR-015: A binary protocol of its own over plain TCP, in a trusted network
 
-Status: accepted, 2026-11-16.
+Status: accepted, 2026-11-16. Amended 2026-11-21: a data directory names the cluster it was made
+for (ADR-016).
 
 ## Context
 
@@ -25,8 +26,10 @@ goroutines and no clock, or the simulated cluster would speak another protocol t
   encoder writes, so a decoded frame encodes back to the same bytes. There are no error frames:
   any error closes the connection, and the node logs a line.
 - **The cluster ID is in every frame.** It keeps two clusters from mixing, two demos on one machine
-  or a test against production, and a client from writing to the wrong cluster. It is no secret
-  and it is not stored: a node started with the wrong ID reaches nobody and never leads.
+  or a test against production, and a client from writing to the wrong cluster. It is no secret.
+  A data directory names the cluster it was made for, and `ledgerd` does not start on it under
+  another cluster ID ([ADR-016](016-directory-identity.md)). A node whose directory was made for
+  the wrong cluster reaches nobody and never leads.
 - **The version is in every frame** and goes up with every change to a layout. All nodes of a
   cluster run the same version; switching a running cluster to another one is not supported.
 - **No TLS and no authentication.** Both ports belong in a network one trusts. The client port is a

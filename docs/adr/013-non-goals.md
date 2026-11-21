@@ -2,6 +2,8 @@
 
 Status: accepted, 2026-11-20. Amended 2026-11-20: what the benchmarks of ADR-012 measured is no
 longer listed as open, and the snapshot pause that costs a leader its role is a measurement.
+Amended 2026-11-21: a data directory names its node, and `ledgerd` refuses an empty or foreign one
+(ADR-016).
 
 ## Context
 
@@ -62,14 +64,17 @@ Today:
 - A node whose directory is gone stays gone. Three nodes without one of them still commit, but
   they are two voters that need each other: the next failure stops the cluster, and a disk fault
   on one of the two can stop it for good, as with two damaged nodes of three in ADR-009.
-- Starting `ledgerd` with the ID of the lost node on an empty directory is not refused, and it is
-  unsafe. `wal.OpenMeta` creates a new `meta` with term 0, no vote and seal 0, so the node is a
-  voter that has forgotten its vote and everything it acknowledged. That is the node the seal
-  exists to rule out, and ADR-009 names it as not covered. With three nodes, the empty node and
-  one that is behind can elect a leader that lacks a committed entry. The same holds for a
-  directory put back from an older copy.
-- A data directory records neither the cluster ID nor the node ID nor the peers. `ledgerd` cannot
-  tell that it was given the directory of another node or of another cluster.
+- Starting `ledgerd` with the ID of the lost node on an empty directory is refused. `ledgerd`
+  makes no data directory, and without `meta` the start ends with exit code 2
+  ([ADR-016](016-directory-identity.md), `TestExitCodes` in `cmd/ledgerd`).
+- `ledgerctl init` on a new directory for that ID is not refused, because nothing outside the lost
+  directory knows that the node ever ran, and it is unsafe. The node that starts there is a voter
+  that has forgotten its vote and everything it acknowledged. That is the node the seal exists to
+  rule out, and ADR-009 names it as not covered. With three nodes, it and one that is behind can
+  elect a leader that lacks a committed entry (`TestNodeInitialisedAgainLosesACommittedEntry`).
+  The same holds for a directory put back from an older copy.
+- A data directory names its cluster, its node and the number of nodes, and not the addresses of
+  the peers. `ledgerd` refuses the directory of another node or of another cluster (ADR-016).
 
 To add it: single-server changes as in chapter 4 of the Raft dissertation. The configuration
 becomes a log entry of a new kind that takes effect when it is appended; `peers`, `quorum()` and
@@ -79,7 +84,7 @@ configuration in its header, which is a new snapshot version; the peer hello, wh
 addresses a new node asks first. A new node joins without a vote and is caught up by snapshot,
 which is close to what a node in repair already is (R20, R21), except that its acknowledgements
 must not count either. Replacing a lost node is then "remove ID 3, add ID 4": a new ID has never
-voted, and that is what makes an empty directory safe. The mechanism is the smaller part. The hard
+voted, and that is what makes a new directory safe. The mechanism is the smaller part. The hard
 part is the cases: a change while the leader fails, a leader that changes the set before it has
 committed an entry of its own term, a removed node that keeps asking for votes, and repair, where
 the majority for commits and the one for elections already differ. It would hold when S1 to S5
@@ -88,12 +93,11 @@ the receipt book of S5 kept per configuration, and when planted bugs for the kno
 configuration that takes effect at commit, two changes in flight, a change before the leader's
 first commit) are found.
 
-A much smaller step closes the dangerous half. `ledgerd` cannot tell the first start of a new
-cluster from an old node on a lost disk, because both are an empty directory. An explicit
-`ledgerctl init` that writes cluster ID and node ID into the directory, and a `ledgerd` that
-refuses a directory without them or with other ones, would turn the unsafe start into a refused
-one. It needs a place for the two IDs, since the 40-byte slot of `meta` is full, and one test per
-refusal.
+Closing what is left of the unsafe start, a directory made a second time for a node that had run,
+would take a number drawn at every `ledgerctl init`, sent in the peer hello and kept by the other
+nodes, so that they refuse a node that comes back with another one. That changes the wire format
+and what a node stores about its peers, so it belongs to the protocol for membership changes; an
+older copy put back would still pass.
 
 ### No leadership transfer
 
@@ -360,9 +364,10 @@ be a key list with a range of link numbers per key, on the verifier's side.
 
 ### No upgrade without stopping, no migration of formats
 
-Every format carries a version, and every reader accepts exactly one: frames are version 2, WAL
-segments 1, the snapshot of the node and the one of the state machine 2, receipts 1. Nothing reads
-an older version and nothing converts.
+Every format but one carries a version, and every reader accepts exactly one: frames are version
+2, WAL segments 1, the snapshot of the node and the one of the state machine 2, receipts 1. `meta`
+has no version number; its reader refuses a flag bit it does not know and a slot that names no
+node. Nothing reads an older version and nothing converts.
 
 Today:
 
@@ -373,8 +378,10 @@ Today:
   snapshot. The node refuses the version (`TestLoadRefusesOtherSnapshotVersions`), and a snapshot
   that cannot be read is not damage: the start ends with the error, no older snapshot is tried and
   nothing is deleted (`TestSnapshotUnreadableContentStopsTheLoad`). The step from snapshot format
-  1 to 2 was made this way: there is no reader for format 1. Nothing in the repository carries a
-  cluster with data over such a change.
+  1 to 2 was made this way: there is no reader for format 1. So was the step to a `meta` that
+  names its node: a `meta` from before is refused with `wal.ErrVersion`
+  (`TestMetaOfAnEarlierLayoutIsAnotherVersion`). Nothing in the repository carries a cluster with
+  data over such a change.
 - **Rules.** No log entry says which version of the ledger rules applied it. A binary with a
   changed check replays the entries after its snapshot differently from the binary that first
   applied them, and two versions in one cluster apply the same entry differently. No node would
@@ -408,9 +415,10 @@ Today:
   lock on its directory, and `verify dir` refuses it. What a start on files copied from under a
   running node does is not tested.
 - Putting an older copy back under a node of a running cluster is the node that forgot, above.
-- Nothing stops an operator from starting nodes on copies of one directory, since it names no
-  cluster and no node, and `replica.Recount` does open a copy as a cluster of one. No test starts
-  a cluster that way, and no document says when it is safe.
+- A copy of a directory starts only under the node ID, the number of nodes and the cluster the
+  directory was made for (ADR-016). Nothing stops an operator from starting two copies under that
+  one ID.
+  `replica.Recount` opens the copy of any node of the named cluster as a cluster of one.
 - A majority lost for good leaves a cluster that accepts nothing: two of three directories gone,
   or the two damaged nodes without a leader of ADR-009, where the code has no way out. The
   surviving directory can still be recounted. No tool exports its records or starts a new cluster
@@ -559,8 +567,9 @@ These are costs of decisions, argued where the decision is made:
 - The sketches are not a roadmap. None is scheduled, and several contradict a decision that stands
   (ADR-001 for a snapshot in the background, ADR-002 for transfers on disk); building one starts
   with amending that ADR.
-- If the project had to run somewhere, the order would follow the danger, not the size: first the
-  refusal of an empty or foreign directory, then backup and restore, then membership changes.
+- If the project had to run somewhere, the order would follow the danger, not the size. The
+  refusal of an empty or foreign directory stood first and is built (ADR-016); the order now
+  begins with backup and restore, then membership changes.
 
 ## Rejected alternatives
 

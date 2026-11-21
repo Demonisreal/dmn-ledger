@@ -140,9 +140,11 @@ restless or had a checkpoint or a new WAL segment in their window, then a third 
 of every chain of m1 and every group of m2 on `uniform-10k` that has no verdict yet, then twice
 the repeats again. Between two runs the plan waits 10 seconds.
 
-**Builds.** `ledgerd` is built from the repository three times: normally, with `-tags simbug` for
-m5 only and with `-tags pprof` for m3 only. `bench check` refuses a raw file built with `simbug`
-outside m5 and one built from a tree with changes.
+**Builds.** `ledgerd` and `ledgerctl` are built from the repository three times: normally, with
+`-tags simbug` for m5 only and with `-tags pprof` for m3 only. `bench check` refuses a raw file
+built with `simbug` outside m5 and one built from a tree with changes. Each node gets its data
+directory from `ledgerctl init`, as an operator makes it; all of them are made before the first
+node starts, outside every window.
 
 **Nodes.** Each node gets `LEDGER_SNAPSHOT_EVERY=4294967296`, so no snapshot is taken outside
 m4, `LEDGER_SWEEP=on`, `LEDGER_MAX_CLIENTS=128`, `GOMEMLIMIT=4500MiB` alone and `1500MiB` in a
@@ -177,7 +179,7 @@ cluster of three, the default tick of 10 ms, and runs under `taskset` on its two
   fit is shortened, a quarter of the seconds that fit as warm-up and the rest as window, and then
   needs half of its window as valid seconds. Below a window of 6 s it is not run: the chain ends
   there and shows `budget` in the column "limit". When a stage fits the budget but not on top of
-  what the nodes wrote in the stages before, they are started again with an empty data directory
+  what the nodes wrote in the stages before, they are started again with new data directories
   and set up anew. Postgres and m4 have no budget.
 - **Repeats and stops.** A run that was restless, or a Postgres run with a checkpoint or a new WAL
   segment in its window, is repeated at the end, at most twice. The plan stops when the books of a

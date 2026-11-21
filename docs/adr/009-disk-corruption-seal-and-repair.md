@@ -1,7 +1,8 @@
 # ADR-009: Disk corruption: a seal on disk, repair as a non-voter
 
 Status: accepted, 2026-11-13. Amended 2026-11-16: seed counts measured again. Amended 2026-11-20:
-the price of the seal measured with one binary (ADR-012).
+the price of the seal measured with one binary (ADR-012). Amended 2026-11-21: a slot of `meta`
+names cluster and node, and `ledgerd` does not start on an empty directory (ADR-016).
 
 ## Context
 
@@ -28,11 +29,12 @@ using what the protocol knows. This ADR follows that idea, not their protocol.
    A broken frame after the seal, at the end of the log, is a torn write and is cut off. The seal
    is in a different file from the data it vouches for, so one bad sector never takes both.
 2. **Two copies.** `meta` has two slots of 40 bytes in different 4 KiB pages, each with a sequence
-   number and a CRC32C. Storing term, vote or the repair flag writes both slots, one after the
-   other, each with its own fsync. Writing the seal writes one slot, the one that is not the
-   newest. Both slots therefore agree on term, vote and flag, and a broken slot costs at most the
-   seal of the last round. A node that found one slot invalid treats every broken end of the log
-   as damage, because the seal it read may be one round old.
+   number and a CRC32C. Each slot also names the cluster, the node and the number of nodes the
+   directory was made for (ADR-016). Storing term, vote or the repair flag writes both slots, one
+   after the other, each with its own fsync. Writing the seal writes one slot, the one that is not
+   the newest. Both slots therefore agree on term, vote and flag, and a broken slot costs at most
+   the seal of the last round. A node that found one slot invalid treats every broken end of the
+   log as damage, because the seal it read may be one round old.
 3. **Repair as a non-voter.** A node that finds damage on start stores a repair flag in `meta`
    before it deletes anything. Then it removes broken snapshot files and cuts the log back to its
    valid beginning. With the flag set it starts no election and grants no vote and no pre-vote. It
@@ -183,9 +185,10 @@ cores.
   the first half.
 - Nothing scans data at rest. A latent fault is found at the next read or the next start, and a
   second node can take damage in between.
-- Bit flips in memory or in pages that are not on disk yet, misdirected writes, a node with an
-  empty disk in place of an old one and malicious nodes are not covered. Detection is as strong as
-  CRC32C.
+- Bit flips in memory or in pages that are not on disk yet, misdirected writes and malicious nodes
+  are not covered. `ledgerd` does not start on an empty directory in place of an old one
+  ([ADR-016](016-directory-identity.md)). A directory that was made a second time for the same
+  node, or put back from an older copy, is not covered either. Detection is as strong as CRC32C.
 
 ## Rejected alternatives
 
