@@ -252,10 +252,6 @@ What remains there:
   a finding on the public page (decision 7), although the ledger did nothing wrong.
 - The proxy keeps its own log without a size limit, and a failed request is named there with its
   address for as long as the operator keeps that log.
-- The proxy was attached by hand and not in its compose file. If its container is created anew,
-  the connection has to be made again, or the site answers 502.
-- The image there is built with an empty `REPO`, so its page carries no links to the source,
-  for as long as the repository is not public.
 
 ## What the demo does not show
 

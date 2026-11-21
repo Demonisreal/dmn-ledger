@@ -4,9 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>dmn-ledger: drei Knoten, ein Hauptbuch</title>
+<meta name="description" content="{{template "about"}}">
+<meta property="og:site_name" content="DMN Software">
+<meta property="og:title" content="dmn-ledger: drei Knoten, ein Hauptbuch">
+<meta property="og:description" content="{{template "about"}}">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="de_DE">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0b0b0d">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon.png">
 <link rel="stylesheet" href="/static/page.css">
 </head>
 <body>
@@ -19,7 +26,7 @@
       <img src="/static/icon.svg" alt="" width="28" height="28">
       <span>DMN<span class="slash">/</span><span class="soft">Software</span></span>
     </a>
-    <p class="crumb"><a href="https://dmn-software.com/#projekte">Projekte</a><span class="sep" aria-hidden="true">/</span><span>dmn-ledger</span></p>
+    <p class="crumb"><a href="https://dmn-software.com/#projekte">Projekte</a><span class="sep" aria-hidden="true">/</span><a href="https://dmn-software.com/hauptbuch.html">dmn-ledger</a></p>
   </div>
 </header>
 
@@ -50,7 +57,7 @@
       <p class="cap" id="sum-cap">{{if ne .Value .Want}}{{template "sum-wrong" (args "sum" (money .Value) "want" (money .Want))}}{{else}}{{template "caption" (args "want" (money .Want) "at" .At)}}{{end}}</p>
       {{- end}}{{end}}
       <ul class="facts">
-        <li id="booked">{{with .Books}}{{if or (not .Recount.At) (not .Recount.Found)}}{{template "booked-none" (args "n" (num .Confirmed))}}{{else if .Recount.After}}{{template "booked-after" (args "n" (num .Confirmed) "at" .Recount.At "found" (num .Recount.Found))}}{{else}}{{template "booked" (args "n" (num .Confirmed) "at" .Recount.At "found" (num .Recount.Found))}}{{end}}{{end}}</li>
+        <li id="booked">{{with .Books}}{{if or (not .Recount.At) (not .Recount.Found)}}{{template "booked-none" (args "n" (num .Confirmed) "word" (plural .Confirmed "Buchung" "Buchungen"))}}{{else if .Recount.After}}{{template "booked-after" (args "n" (num .Confirmed) "word" (plural .Confirmed "Buchung" "Buchungen") "at" .Recount.At "found" (num .Recount.Found))}}{{else}}{{template "booked" (args "n" (num .Confirmed) "word" (plural .Confirmed "Buchung" "Buchungen") "at" .Recount.At "found" (num .Recount.Found))}}{{end}}{{end}}</li>
         <li id="judged">{{if .Totals.Found}}{{with latest .Totals.Findings}}{{template "judged-found" (args "n" (num $.Totals.Found) "word" (plural $.Totals.Found "Befund" "Befunde") "at" .At)}}{{end}}{{else if .Books.Judged.Upto}}{{template "judged" (args "upto" .Books.Judged.Upto)}}{{end}}</li>
       </ul>
       <p class="since" id="since">{{$acts := total .Totals.Actions}}{{template "since" (args "at" .Started "actions" (num $acts) "actword" (plural $acts "Störung" "Störungen") "healed" (num .Totals.Healed) "found" (num .Totals.Found) "foundword" (plural .Totals.Found "Befund" "Befunde"))}}</p>
@@ -171,7 +178,11 @@
   </section>
 
   <section class="log" aria-labelledby="log-h">
-    <h2 id="log-h">Protokoll</h2>
+    <div class="sec-head">
+      <h2 id="log-h">Protokoll</h2>
+      <button type="button" class="btn" id="log-hold" aria-pressed="false" data-js hidden>Protokoll anhalten</button>
+    </div>
+    <p class="note" id="log-held" hidden>Angehalten. Die Knoten laufen weiter; ein zweiter Druck auf den Knopf holt die neuen Zeilen nach.</p>
     {{- with latest .Totals.Findings}}
     <p class="pinned" id="pinned">{{template "pinned" (args "check" .Check "reason" .Reason)}}{{with .Evidence}}{{template "evidence" (args "dir" .)}}{{end}}</p>
     {{- end}}
@@ -340,9 +351,9 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <div id="texts" hidden>
 <template data-t="caption">{{template "caption" (args "want" "{want}" "at" "{at}")}}</template>
 <template data-t="sum-wrong">{{template "sum-wrong" (args "sum" "{sum}" "want" "{want}")}}</template>
-<template data-t="booked-none">{{template "booked-none" (args "n" "{n}")}}</template>
-<template data-t="booked">{{template "booked" (args "n" "{n}" "at" "{at}" "found" "{found}")}}</template>
-<template data-t="booked-after">{{template "booked-after" (args "n" "{n}" "at" "{at}" "found" "{found}")}}</template>
+<template data-t="booked-none">{{template "booked-none" (args "n" "{n}" "word" "{word}")}}</template>
+<template data-t="booked">{{template "booked" (args "n" "{n}" "word" "{word}" "at" "{at}" "found" "{found}")}}</template>
+<template data-t="booked-after">{{template "booked-after" (args "n" "{n}" "word" "{word}" "at" "{at}" "found" "{found}")}}</template>
 <template data-t="judged">{{template "judged" (args "upto" "{upto}")}}</template>
 <template data-t="judged-found">{{template "judged-found" (args "n" "{n}" "word" "{word}" "at" "{at}")}}</template>
 <template data-t="since">{{template "since" (args "at" "{at}" "actions" "{actions}" "actword" "{actword}" "healed" "{healed}" "found" "{found}" "foundword" "{foundword}")}}</template>
@@ -428,6 +439,8 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <template data-t="w-hashes">{{template "w-hashes"}}</template>
 <template data-t="w-finding">{{template "w-finding"}}</template>
 <template data-t="w-findings">{{template "w-findings"}}</template>
+<template data-t="w-booking">{{template "w-booking"}}</template>
+<template data-t="w-bookings">{{template "w-bookings"}}</template>
 <template data-t="w-fault">{{template "w-fault"}}</template>
 <template data-t="w-faults">{{template "w-faults"}}</template>
 <template data-t="pinned">{{template "pinned" (args "check" "{check}" "reason" "{reason}")}}</template>
@@ -437,14 +450,15 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 <script type="module" src="/static/app.js"></script>
 </body>
 </html>
+{{define "about"}}Drei laufende Server führen gemeinsam ein Hauptbuch; auf dieser Seite schießt man einen ab, friert ihn ein, trennt ihn vom Netz oder kippt ein Bit in seinen Daten.{{end}}
 {{define "t"}}<time datetime="{{iso .}}">{{clock .}}</time>{{end}}
 {{define "d"}}<time datetime="{{iso .}}" data-k="day">{{day .}}</time>{{end}}
 
 {{define "caption"}}Summe der sechs Konten. Soll: {{.want}}. Gezählt um {{template "t" .at}}.{{end}}
 {{define "sum-wrong"}}Die Summe stimmt nicht: {{.sum}} statt {{.want}}. Das ist ein Befund.{{end}}
-{{define "booked-none"}}{{.n}} Buchungen bestätigt.{{end}}
-{{define "booked"}}{{.n}} Buchungen bestätigt. Bei der letzten vollen Zählung um {{template "t" .at}} alle {{.found}} wiedergefunden.{{end}}
-{{define "booked-after"}}{{.n}} Buchungen bestätigt. Bei der Zählung nach der letzten Störung um {{template "t" .at}} alle {{.found}} wiedergefunden.{{end}}
+{{define "booked-none"}}{{.n}} {{.word}} bestätigt.{{end}}
+{{define "booked"}}{{.n}} {{.word}} bestätigt. Bei der letzten vollen Zählung um {{template "t" .at}} alle {{.found}} wiedergefunden.{{end}}
+{{define "booked-after"}}{{.n}} {{.word}} bestätigt. Bei der Zählung nach der letzten Störung um {{template "t" .at}} alle {{.found}} wiedergefunden.{{end}}
 {{define "judged"}}Jede Antwort wird gegen ein zweites, unabhängiges Hauptbuch nachgespielt: kein Verstoß bis Buchung {{.upto}}.{{end}}
 {{define "judged-found"}}{{.n}} {{.word}} seit dem Start des Steuerprogramms, zuletzt um {{template "t" .at}}. Unten steht er im Wortlaut.{{end}}
 {{define "since"}}Seit dem Start am {{template "d" .at}} um {{template "t" .at}}: {{.actions}} {{.actword}} ausgelöst, {{.healed}}-mal erholt, {{.found}} {{.foundword}}.{{end}}
@@ -534,6 +548,8 @@ DEMO_DIR=/tmp/demo/data /tmp/demo/demo</code></pre>
 {{define "w-hashes"}}Hashes{{end}}
 {{define "w-finding"}}Befund{{end}}
 {{define "w-findings"}}Befunde{{end}}
+{{define "w-booking"}}Buchung{{end}}
+{{define "w-bookings"}}Buchungen{{end}}
 {{define "w-fault"}}Störung{{end}}
 {{define "w-faults"}}Störungen{{end}}
 {{define "pinned"}}<span class="src">check</span> <span>Befund <span class="check">{{.check}}</span>: <span class="said">{{.reason}}</span></span>{{end}}

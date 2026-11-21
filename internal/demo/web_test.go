@@ -142,6 +142,19 @@ func TestNoCookies(t *testing.T) {
 	}
 }
 
+func TestCrawlersReadButDoNotIndex(t *testing.T) {
+	web := NewWeb(newFake(), testOrigin, nil)
+	w := hit(web, "GET", "/robots.txt")
+	if body := w.Body.String(); body != "User-agent: *\nDisallow:\n" {
+		t.Errorf("robots.txt is %q; a link preview needs the page, so nothing may be disallowed", body)
+	}
+	for _, target := range []string{"/", "/nothing", "/robots.txt"} {
+		if got := hit(web, "GET", target).Header().Get("X-Robots-Tag"); got != "noindex" {
+			t.Errorf("GET %s: X-Robots-Tag %q, want noindex", target, got)
+		}
+	}
+}
+
 func TestActAnswers(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		until := time.Now().Add(2500 * time.Millisecond)
@@ -220,6 +233,41 @@ func TestUnknownActionIs404(t *testing.T) {
 			if acts := show.calls(); len(acts) != 1 || acts[0].kind != kind || acts[0].target != target {
 				t.Errorf("POST /act/%s/%s: Act got %v, want %v on %d", name, node, acts, kind, target)
 			}
+		}
+	}
+}
+
+func TestUnknownPathShowsAPage(t *testing.T) {
+	web := NewWeb(newFake(), testOrigin, nil)
+	for _, target := range []string{"/nothing", "/static/", "/index.html", "/act/kill", "/events/x"} {
+		w := hit(web, "GET", target)
+		if w.Code != http.StatusNotFound || w.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+			t.Errorf("GET %s: status %d, %s; want 404 with a page", target, w.Code, w.Header().Get("Content-Type"))
+			continue
+		}
+		body := w.Body.String()
+		for _, want := range []string{`<html lang="de">`, `<link rel="stylesheet" href="/static/page.css">`, `<h1>Diese Seite gibt es nicht.</h1>`, `<a href="/">Startseite</a>`, `href="https://dmn-software.com/impressum.html"`, crumb} {
+			if !strings.Contains(body, want) {
+				t.Errorf("GET %s: the page has no %s", target, want)
+			}
+		}
+	}
+	if w := hit(web, "HEAD", "/nothing"); w.Code != http.StatusNotFound {
+		t.Errorf("HEAD /nothing: status %d, want 404", w.Code)
+	}
+	for _, c := range []struct {
+		method, target string
+		status         int
+	}{
+		{"GET", "/static/nothing.js", http.StatusNotFound},
+		{"POST", "/nothing", http.StatusNotFound},
+		{"POST", "/act/kill", http.StatusNotFound},
+		{"GET", "/act/kill/1", http.StatusMethodNotAllowed},
+		{"GET", "/robots.txt", http.StatusOK},
+	} {
+		w := hit(web, c.method, c.target, "Origin", testOrigin)
+		if w.Code != c.status || strings.Contains(w.Body.String(), "<html") {
+			t.Errorf("%s %s: status %d, body %q; want %d without the page", c.method, c.target, w.Code, w.Body.String(), c.status)
 		}
 	}
 }
@@ -566,7 +614,8 @@ func TestNoInlineScriptOrStyle(t *testing.T) {
 	if !strings.Contains(page, "&lt;script&gt;alert(1)") || !strings.Contains(page, "&lt;img src=x onerror=alert(3)&gt;") {
 		t.Fatal("the page does not show the finding and the line")
 	}
-	for name, html := range map[string]string{"template": string(tmpl), "page": page} {
+	missing := hit(NewWeb(show, testOrigin, nil), "GET", "/nothing").Body.String()
+	for name, html := range map[string]string{"template": string(tmpl), "page": page, "missing": missing} {
 		if inline := inlineCode(html); len(inline) > 0 {
 			t.Errorf("%s has inline script or style: %q", name, inline)
 		}

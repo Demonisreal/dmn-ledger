@@ -6,7 +6,11 @@ here is a second palette. What the page says, and in which order, is fixed in th
 
 Files: `internal/demo/web/page.html` (Go `html/template`), `internal/demo/web/page.css`,
 `internal/demo/web/app.js` and `internal/demo/web/proof.js` (behaviour, see below),
-`internal/demo/web/icon.svg` and `internal/demo/web/grain-1.svg` (both copied unchanged from the site).
+`internal/demo/web/icon.svg` and `internal/demo/web/grain-1.svg` (both copied unchanged from the site),
+`internal/demo/web/icon.png` (the site's apple-touch icon, copied unchanged), and `internal/demo/web/missing.html`, the
+404 page: static, no script, the page's header, one heading, one sentence with a link to `/`, and the footer without
+the privacy sentence. The server sends it with status 404 for GET and HEAD on a path no route knows; unknown files
+under `/static/`, other methods and the JSON answers stay as they are.
 
 ## Tokens
 
@@ -72,6 +76,7 @@ Non-text (3:1 needed):
 | focus ring | `--red` | `--card` | 3.83 |
 | fault button border | `--red` | `--dark` | 4.14 |
 | button border | `--muted` | `--dark` | 6.39 |
+| pressed button border | `--text` | `--dark` | 10.35 |
 | radio (accent) | `--red` | `--dark` | 4.14 |
 | disabled button border | `--line` | `--dark` | 1.95 (disabled, exempt; the reason stands as text) |
 
@@ -81,7 +86,8 @@ Not used for text: `--red` (3.83 to 4.14, below 4.5), `--line`, `--edge`.
 
 The nine sections come in this order: verdict, nodes, faults, log, books, receipt, limits,
 run it yourself, footer. Above them the site's header bar, without the section nav: brand linking back to
-dmn-software.com, and the crumb "Projekte / dmn-ledger".
+dmn-software.com, and the crumb "Projekte / dmn-ledger": "Projekte" leads to `#projekte` on the site, "dmn-ledger"
+to the project's page there, `hauptbuch.html`.
 
 From 64rem the first four sections stand in two columns, 6fr and 5fr, each a `div.col` of its own:
 
@@ -93,8 +99,9 @@ nodes    | log
 The columns flow independently: the left reads verdict then nodes, the right reads faults then the log, and a
 long finding in the verdict does not push the log down. At 1366 x 768 the verdict, the three nodes, the faults
 with status line and explanation, and the first lines of the log stand without scrolling (measured in
-headless Chrome while idle and during each of the four faults; the first log line stands at 669px in every
-one of them). While a node is cut off its column grows and the agreement line drops
+headless Chrome while idle and during each of the four faults; the first log line stood at 669px in every
+one of them, and at 672px idle in Chrome and WebKit, 673px in Firefox, once the log's heading row carried the
+hold button). While a node is cut off its column grows and the agreement line drops
 below the fold; that is accepted.
 
 The fault column has a minimum height of 32.5rem, the measured height of its longest state (after a bit flip:
@@ -118,16 +125,17 @@ next to a list; steps on a rail; a list with square marks; prose with code.
 | Component | Taken from | States |
 |---|---|---|
 | link | site | normal (white, red 1px underline), hover (underline white), focus 2px `--red` offset 3px |
-| header, brand, crumb | site | static, not sticky |
+| header, brand, crumb | site | static, not sticky; the crumb has a row of at least 2.25rem with its links centred, so when the header wraps (320 px, 400 % zoom) "Projekte" keeps the 24px spacing of WCAG 2.5.8 to the brand |
 | large figure | new, sized like `.page-head h1`, tabular figures | normal; wrong sum in `--red-hi` with the sentence that says so; replaced by the setup sentence or the finding |
-| note | status page `.note`, border 1px instead of a 2px side bar | no JavaScript, stale connection, crowded stream or full address, load rested |
+| note | status page `.note`, border 1px instead of a 2px side bar | no JavaScript, stale connection, crowded stream or full address, load rested, log held |
 | finding | note with a 1px `--red` border, wording in mono with line breaks kept | |
 | fact rows | site `.uptime` | empty row hidden |
 | node column | new, lines like status page `.svc-s` | answers, catching up, silent, down, frozen, cut, repair, halted by a finding, starting; the leader carries the site's 5px red square, only while it answers |
 | target choice | status page `.opts input`, `fieldset` with `legend` | checked label in white; focus ring offset 3px |
 | fault button | status page `.btn.warn` | normal, hover (white), focus ring, pressed (`scale(.97)`), disabled (`--line` border, `--muted` text, reason in the status line right under it), hidden without JavaScript with the name shown as text instead |
 | status line | new | ready, running with seconds left, counting, done, failed, pause, finding, setup; the script adds address limit, young log, refused; takes the focus (`tabindex="-1"`, ring as everywhere) when the focused fault button is locked |
-| log | site `.pipe`/`.stage` panel in `--ink`, mono .75rem | newest line on top; demo and check lines in white, node lines `lang="en"`; a line whose source and text equal the line above (the newer one) in `--muted`, so a quiet minute of identical counts does not read as twelve news; long lines and line breaks wrap anywhere; pinned finding above in a red-bordered row; explanation under the panel |
+| log | site `.pipe`/`.stage` panel in `--ink`, mono .75rem, at most `min(22rem, 70dvh)` high so it never fills more than the window at 400 % zoom | newest line on top; demo and check lines in white, node lines `lang="en"`; a line whose source and text equal the line above (the newer one) in `--muted`, so a quiet minute of identical counts does not read as twelve news; long lines and line breaks wrap anywhere; pinned finding above in a red-bordered row; explanation under the panel |
+| log hold | site `.btn` in the log's `.sec-head`, a toggle with `aria-pressed` | not pressed; pressed: `--text` border, `--white` label, the note "Angehalten. Die Knoten laufen weiter; ein zweiter Druck auf den Knopf holt die neuen Zeilen nach." between heading and panel; hidden without JavaScript |
 | viewer count | status page `.sec-head p` | with scripting it stays invisible (`visibility: hidden`, `@media (scripting: enabled)`) until the first `tick`, because the count in the served page and in the first `state` does not yet include this visitor; without scripting it shows the count of the served page |
 | accounts table | site `.sum` | sum row with a `--line` rule and weight 600; a caption for screen readers only (`.vh`), because heading, intro and column head already say it on screen; empty state sentence when nothing is booked |
 | receipt steps | site `.flow` | dot `--muted` until the comparison that covers the step has held, `--green` with "stimmt", `--red-hi` with "stimmt nicht" |
@@ -141,11 +149,11 @@ State is never carried by colour alone: every red or green element carries its w
 ## Focus order
 
 1. "Zum Inhalt" (skip link)
-2. brand, "Projekte"
+2. brand, "Projekte", "dmn-ledger"
 3. the four targets (one radio group, arrow keys inside)
 4. Abschießen, Einfrieren, Abtrennen, Bit kippen; when the focused one is locked (pressed, or another visitor
    started a fault), the focus goes to the status line, which says why, and Tab goes on to the log
-5. the log panel (scrollable region)
+5. "Protokoll anhalten", then the log panel (scrollable region)
 6. "Jüngste Buchung beweisen", then "Ein Byte im Beleg ändern" once a receipt is shown
 7. the repository links (only once the repository is public)
 8. footer: DMN Software, Impressum, Datenschutz, Rechtliche Hinweise
@@ -157,6 +165,7 @@ Focus ring everywhere as on the site: 2px `--red`, offset 3px.
 
 | Width | Layout |
 |---|---|
+| 320 | one column; the header wraps, the crumb gets its own row; nothing scrolls sideways, also at 400 % zoom of 1280 |
 | 360 | one column; nodes below each other; log lines put the text under time and source; fault buttons 7rem wide, 44px tall |
 | 768 | one column; nodes side by side; h1 2rem, figure 3rem |
 | 1366 | two columns from 64rem as above; buttons and radios 36px tall |
@@ -183,7 +192,8 @@ browser's zone, counted against `now` of the server, and only change when an eve
 | refused | the sentence for `limited`, `cooling`, `recovering`, `young`, or "Das hat der Server nicht angenommen (`<status>`)" in place of "Bereit"; with `until` (or `Retry-After`) the buttons stay locked until then |
 | receipt | steps up to the first that fails say "stimmt", that one "stimmt nicht", later ones stay empty and grey; with a changed byte step 3 fails; a receipt that is not a transfer never says it holds |
 | receipt, no answer | "Der Beleg kam nicht an, der Server war nicht zu erreichen." next to the button; a receipt shown before stays |
-| first count of a cluster | while the last full count found no booking (right after the setup), the line says only "`<n>` Buchungen bestätigt." instead of "alle 0 wiedergefunden" |
+| first count of a cluster | while the last full count found no booking (right after the setup), the line says only "`<n>` Buchungen bestätigt." instead of "alle 0 wiedergefunden"; for exactly one it says "1 Buchung bestätigt." |
+| log held | the script keeps writing new lines into a detached copy of the list and leaves the shown list alone; `#said` stays silent. The second press puts the copy in place in one step, so the log shows what it would show had it never stopped: the newest 200 lines, or after a gap in the numbers (a new stream after a reconnect) the server's last 60, exactly as when the page was not held. The held lines are not read out. Values, nodes, books and the fault buttons are not held: they are the demonstration (WCAG 2.2.2, exception for essential real-time content); the log is not, and a line arriving on top moves what someone is reading |
 
 Step 7 ("denselben Kopf") compares the head that `check` computed with the head the controller sent; it is
 the only comparison outside `receipt.js` and computes nothing. The explanatory text and the command block

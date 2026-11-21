@@ -9,7 +9,9 @@ const REFUSALS = { cooling: 'pause', limited: 'limited', recovering: 'recovering
 const page = document.querySelector('main')
 const texts = new Map(Array.from(document.querySelectorAll('#texts template'), (t) => [t.dataset.t, t]))
 const kinds = Array.from(document.querySelectorAll('button[data-kind]'))
-const list = document.getElementById('lines')
+const shown = document.getElementById('lines')
+const logHold = document.getElementById('log-hold')
+const logHeld = document.getElementById('log-held')
 const conn = document.getElementById('conn')
 const initial = kinds.some((btn) => btn.disabled)
 
@@ -19,6 +21,7 @@ let lost = ''
 let hold = null
 let pending = null
 let sent = null
+let list = shown
 let top = Math.max(0, ...Array.from(list.children, (li) => Number(li.dataset.n)))
 let said = ''
 let born = null
@@ -127,8 +130,9 @@ function reason() {
 function booked() {
   const { books } = st
   const n = grouped(books.confirmed)
-  if (!books.recount.at || !books.recount.found) return fill('booked-none', { n })
-  return fill(books.recount.after ? 'booked-after' : 'booked', { n, at: books.recount.at, found: grouped(books.recount.found) })
+  const word = plural(books.confirmed, 'w-booking', 'w-bookings')
+  if (!books.recount.at || !books.recount.found) return fill('booked-none', { n, word })
+  return fill(books.recount.after ? 'booked-after' : 'booked', { n, word, at: books.recount.at, found: grouped(books.recount.found) })
 }
 
 function judged() {
@@ -282,7 +286,7 @@ function faults() {
 
 function pinned() {
   const last = findings().at(-1)
-  const pin = optional('pinned', last, () => el('p', { class: 'pinned', id: 'pinned' }), document.getElementById('log-h'))
+  const pin = optional('pinned', last, () => el('p', { class: 'pinned', id: 'pinned' }), logHeld)
   if (pin) patch(pin, box(fill('pinned', { check: last.check, reason: last.reason }), last.evidence ? fill('evidence', { dir: last.evidence }) : ''))
 }
 
@@ -337,7 +341,7 @@ function relog(lines) {
 function heardLine(line) {
   if (line.n <= top) return
   add(line)
-  if ((line.src === 'demo' || line.src === 'check') && line.text !== said) {
+  if (list === shown && (line.src === 'demo' || line.src === 'check') && line.text !== said) {
     said = line.text
     document.getElementById('said').textContent = line.text
   }
@@ -478,6 +482,18 @@ document.addEventListener('visibilitychange', () => {
   }
 })
 
+function holdLog() {
+  const held = list !== shown
+  if (held) {
+    shown.replaceChildren(...list.childNodes)
+    list = shown
+  } else {
+    list = shown.cloneNode(true)
+  }
+  logHold.setAttribute('aria-pressed', String(!held))
+  logHeld.hidden = held
+}
+
 async function strike(btn) {
   pending = btn
   hold = null
@@ -506,6 +522,7 @@ for (const t of page.querySelectorAll('time')) {
   else t.textContent = t.dataset.k === 'day' ? day(ms) : clock(ms)
 }
 for (const btn of kinds) btn.addEventListener('click', () => strike(btn))
+logHold.addEventListener('click', holdLog)
 document.getElementById('prove').addEventListener('click', () => prove())
 document.getElementById('tamper').addEventListener('click', () => tamper())
 watch()

@@ -326,6 +326,13 @@ func TestPageStates(t *testing.T) {
 		r.hides(t, "alle 0 wiedergefunden")
 	})
 
+	t.Run("one booking", func(t *testing.T) {
+		r := render(t, func(st *State) { st.Books.Confirmed, st.Books.Recount.Found = 1, 0 })
+		r.shows(t, "1 Buchung bestätigt.")
+		r.hides(t, "1 Buchungen")
+		r.knows(t, "{n} {word} bestätigt.")
+	})
+
 	t.Run("large numbers", func(t *testing.T) {
 		r := render(t, func(st *State) {
 			st.Totals.Actions = Actions{Kill: 1_000_000, Freeze: 234_567}
@@ -429,8 +436,39 @@ func TestFindingSaysOnlyWhatHappened(t *testing.T) {
 	}
 }
 
+func TestPageHasAPreview(t *testing.T) {
+	r := render(t, nil)
+	head, _, _ := strings.Cut(r.raw, "</head>")
+	about := regexp.MustCompile(`<meta name="description" content="([^"]+)">`).FindStringSubmatch(head)
+	if about == nil || len(html.UnescapeString(about[1])) < 60 {
+		t.Fatalf("no description for a preview: %q", about)
+	}
+	for _, want := range []string{
+		`<meta property="og:description" content="` + about[1] + `">`,
+		`<meta property="og:title" content="dmn-ledger: drei Knoten, ein Hauptbuch">`,
+		`<meta property="og:locale" content="de_DE">`,
+	} {
+		if !strings.Contains(head, want) {
+			t.Errorf("the head has no %s", want)
+		}
+	}
+	for _, icon := range regexp.MustCompile(`<link rel="(?:icon|apple-touch-icon)" href="/static/([^"]+)"`).FindAllStringSubmatch(head, -1) {
+		if _, ok := assets[icon[1]]; !ok {
+			t.Errorf("the head names %s, which is not served", icon[1])
+		}
+	}
+	if !strings.Contains(head, `rel="apple-touch-icon"`) {
+		t.Error("no icon for a home screen")
+	}
+}
+
+const crumb = `<p class="crumb"><a href="https://dmn-software.com/#projekte">Projekte</a><span class="sep" aria-hidden="true">/</span><a href="https://dmn-software.com/hauptbuch.html">dmn-ledger</a></p>`
+
 func TestPageIsAccessible(t *testing.T) {
 	r := render(t, nil)
+	if !strings.Contains(r.page, crumb) {
+		t.Error("the crumb does not lead to the projects and to the page of the project on the site")
+	}
 	if !strings.HasPrefix(r.raw, "<!doctype html>\n<html lang=\"de\">") {
 		t.Errorf("the page does not start with the doctype and lang=\"de\": %q", r.raw[:min(40, len(r.raw))])
 	}

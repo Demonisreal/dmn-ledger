@@ -62,6 +62,14 @@ type asset struct {
 
 var assets = loadAssets()
 
+var missingPage = func() []byte {
+	body, err := webFS.ReadFile("web/missing.html")
+	if err != nil {
+		panic(err)
+	}
+	return body
+}()
+
 func loadAssets() map[string]asset {
 	files, err := fs.ReadDir(webFS, "web")
 	if err != nil {
@@ -167,7 +175,23 @@ func (web *Web) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "body", time.Time{})
 		return
 	}
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && web.unrouted(r) {
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(missingPage)
+		return
+	}
 	web.mux.ServeHTTP(w, r)
+}
+
+func (web *Web) unrouted(r *http.Request) bool {
+	if _, pattern := web.mux.Handler(r); pattern != "" {
+		return false
+	}
+	post := r.Clone(r.Context())
+	post.Method = http.MethodPost
+	_, pattern := web.mux.Handler(post)
+	return pattern == ""
 }
 
 func refuse(w http.ResponseWriter, status int, reason string, until time.Time) {
@@ -285,7 +309,7 @@ func (web *Web) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func robots(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
+	_, _ = w.Write([]byte("User-agent: *\nDisallow:\n"))
 }
 
 type capped struct {

@@ -268,6 +268,7 @@ func moments(lines, later []Line) []moment {
 		{"tick", at(7, func(st *State) {
 			st.Action = &Action{Kind: Kill, Node: 2, Phase: "done", Began: st.Now - 6000, Ended: st.Now - 3750}
 			st.Next = st.Now + 7200
+			st.Books.Confirmed, st.Books.Recount.Found = 1, 0
 		})},
 		{"tick", at(8, func(st *State) {
 			st.Action = &Action{Kind: Kill, Node: 2, Phase: "done", Began: st.Now - 16000, Ended: st.Now - 13750}

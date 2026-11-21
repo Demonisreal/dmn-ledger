@@ -156,7 +156,9 @@ code {
 .crumb {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: .5rem;
+  min-height: 2.25rem;
   margin: 0;
   color: var(--muted);
   font-size: .875rem;
@@ -542,6 +544,11 @@ fieldset {
 
 .btn.warn[aria-busy="true"] { border-color: var(--red); }
 
+.btn[aria-pressed="true"] {
+  border-color: var(--text);
+  color: var(--white);
+}
+
 .kinds .btn { width: 100%; }
 
 @media (hover: hover) and (pointer: fine) {
@@ -600,6 +607,8 @@ fieldset {
   line-height: 1.5;
 }
 
+.log .note { margin: 0 0 .5rem; }
+
 .pinned {
   display: flex;
   flex-wrap: wrap;
@@ -615,7 +624,7 @@ fieldset {
 .pinned > span { min-width: 0; }
 
 .lines {
-  max-height: 22rem;
+  max-height: min(22rem, 70dvh);
   overflow-y: auto;
   border: 1px solid var(--edge);
   border-radius: 8px;

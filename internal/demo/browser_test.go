@@ -7,10 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -316,6 +319,114 @@ func TestLogInChrome(t *testing.T) {
 	}
 }
 
+func TestHeldLogInChrome(t *testing.T) {
+	web := NewWeb(newFake(), "", nil)
+	first := sampleState()
+	first.Lines, first.Totals.Found, first.Totals.Findings = nil, 0, nil
+	now := first.Now
+	holding, resumed, later := first, first, first
+	holding.Now, resumed.Now, later.Now = now+1000, now+2000, now+3000
+	holding.Books.Confirmed += 5
+	later.Totals.Found, later.Totals.Findings = 1, []Finding{{At: now + 2600, Check: "F1", Reason: "node 3 exited"}}
+	news := []Line{
+		{N: 101, At: now + 100, Src: "n2", Text: "entry 9 applied"},
+		{N: 102, At: now + 200, Src: "check", Text: "Zählung: Summe 60 000,00."},
+		{N: 103, At: now + 300, Src: "demo", Text: "SIGSTOP an n1 (PID 41230), Leader in Term 7."},
+	}
+	fresh := Line{N: 104, At: now + 2500, Src: "check", Text: "Zählung: Summe 60 000,00, nach dem Anhalten."}
+
+	done := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.Handle("GET /static/", web)
+	mux.HandleFunc("GET /{$}", pageWith(t, web, `<script type="module" src="/page.js"></script>`+appScript+
+		`<script type="module" src="/hold.js"></script><img src="/held.svg" alt="" hidden>`))
+	mux.HandleFunc("GET /page.js", file("testdata/page.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /hold.js", file("testdata/hold.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /held.svg", held(done))
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		w.Header().Set("Content-Type", "text/event-stream")
+		send := func(ev []byte) {
+			_, _ = w.Write(ev)
+			_ = rc.Flush()
+			time.Sleep(100 * time.Millisecond)
+		}
+		send(retryLine)
+		send(event("state", first))
+		time.Sleep(settle(0))
+		for _, l := range news {
+			send(event("line", l))
+		}
+		send(event("tick", holding))
+		send(event("tick", resumed))
+		send(event("line", fresh))
+		send(event("tick", later))
+		close(done)
+		<-r.Context().Done()
+	})
+	srv := httptest.NewServer(guarded(mux))
+	defer srv.Close()
+	dom, stderr := chrome(t, "--dump-dom", srv.URL+"/")
+	clean(t, stderr)
+	_, shots := snapshots(t, dom)
+	shot := func(st State) string {
+		t.Helper()
+		s, ok := shots[strconv.FormatInt(st.Now, 10)]
+		if !ok {
+			t.Fatalf("no snapshot at %d", st.Now)
+		}
+		return s
+	}
+	numbered := regexp.MustCompile(`<li data-n="(\d+)"`)
+	said := regexp.MustCompile(`<div class="vh" aria-live="polite">([^<]*)</div>`)
+
+	while := shot(holding)
+	log := section(t, while, "log")
+	if n := numbered.FindAllString(log, -1); len(n) != 0 {
+		t.Errorf("while held the log took %d new lines", len(n))
+	}
+	if !strings.Contains(log, `aria-pressed="true"`) {
+		t.Error("the button does not say that it is pressed")
+	}
+	if !strings.Contains(log, `<p class="note">Angehalten. Die Knoten laufen weiter;`) {
+		t.Error("the note that the log is held does not show")
+	}
+	if got := said.FindStringSubmatch(log); got == nil || got[1] != "" {
+		t.Errorf("while held the live region says %q", got)
+	}
+	booked := strings.ReplaceAll(num(holding.Books.Confirmed), " ", "'") + " Buchungen bestätigt."
+	if !strings.Contains(plain(section(t, while, "verdict")), booked) {
+		t.Errorf("while the log is held the values stand still, want %q", booked)
+	}
+	if a, b := faultButton.FindAllString(section(t, shot(first), "faults"), -1), faultButton.FindAllString(section(t, while, "faults"), -1); !slices.Equal(a, b) {
+		t.Errorf("holding the log changed the fault buttons: %q, then %q", a, b)
+	}
+
+	log = section(t, shot(resumed), "log")
+	var order []string
+	for _, m := range numbered.FindAllStringSubmatch(log, -1) {
+		order = append(order, m[1])
+	}
+	if !slices.Equal(order, []string{"103", "102", "101"}) {
+		t.Errorf("after the hold the log holds %v, want the held lines 103, 102, 101", order)
+	}
+	if !strings.Contains(log, `aria-pressed="false"`) || !strings.Contains(log, `<p class="note" hidden="">Angehalten.`) {
+		t.Error("after the hold the button is still pressed or the note still shows")
+	}
+	if got := said.FindStringSubmatch(log); got == nil || got[1] != "" {
+		t.Errorf("the held lines were read out after the hold: %q", got)
+	}
+	log = section(t, shot(later), "log")
+	if got := said.FindStringSubmatch(log); got == nil || got[1] != fresh.Text {
+		t.Errorf("after the hold the live region says %q, want the next line of check", got)
+	}
+	head := regexp.MustCompile(`(?s)<div class="sec-head">.*?</div>`).FindString(log)
+	pin, note, lines := strings.Index(log, `<p class="pinned">`), strings.Index(log, `<p class="note"`), strings.Index(log, `<div class="lines"`)
+	if strings.Contains(head, "pinned") || pin < note || pin > lines {
+		t.Errorf("the pinned finding stands at %d, want between the note at %d and the lines at %d", pin, note, lines)
+	}
+}
+
 func TestReconnectKeepsItsDistanceInChrome(t *testing.T) {
 	everyone, here := "Gerade sehen zu viele zu.", "Von dieser Adresse sehen schon vier zu."
 	for _, tc := range []struct {
@@ -558,6 +669,48 @@ func TestReceiptValuesInChrome(t *testing.T) {
 	for _, name := range []string{"strange", "blind"} {
 		if strings.Contains(shots[name], "schlüssig") {
 			t.Errorf("%s: the page calls the receipt sound", name)
+		}
+	}
+}
+
+func TestSmallTargetsKeepTheirDistanceInChrome(t *testing.T) {
+	web := NewWeb(newFake(), "", nil)
+	measure := `<script type="module" src="/targets.js"></script>`
+	missing := strings.Replace(hit(web, "GET", "/nothing").Body.String(), "</body>", measure+"</body>", 1)
+	mux := http.NewServeMux()
+	mux.Handle("GET /static/", web)
+	mux.HandleFunc("GET /{$}", pageWith(t, web, measure))
+	mux.HandleFunc("GET /nothing", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(missing))
+	})
+	mux.HandleFunc("GET /targets.js", file("testdata/targets.js", "text/javascript; charset=utf-8"))
+	widths, paths := []string{"320", "1440"}, []string{"/", "/nothing"}
+	for _, width := range widths {
+		for i, path := range paths {
+			frame := fmt.Sprintf(`<!doctype html><html lang="de"><iframe src="%s" width="%s" height="800"></iframe></html>`, path, width)
+			mux.HandleFunc(fmt.Sprintf("GET /frame/%s/%d", width, i), func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = io.WriteString(w, frame)
+			})
+		}
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	measured := regexp.MustCompile(`<html lang="de" data-width="(\d+)" data-close="([^"]*)">`)
+	for _, width := range widths {
+		for i, path := range paths {
+			dom, stderr := chrome(t, "--window-size=1500,900", "--dump-dom", fmt.Sprintf("%s/frame/%s/%d", srv.URL, width, i))
+			clean(t, stderr)
+			got := measured.FindStringSubmatch(dom)
+			switch {
+			case got == nil:
+				t.Errorf("%s at %s: the page was not measured", path, width)
+			case got[1] != width:
+				t.Errorf("%s: the page is %s px wide, want %s", path, got[1], width)
+			case got[2] != "none":
+				t.Errorf("%s at %s px: %s", path, width, html.UnescapeString(got[2]))
+			}
 		}
 	}
 }
