@@ -338,7 +338,7 @@ func TestRecountRefusesAnotherCluster(t *testing.T) {
 	cfg := ct.config(ct.copy(1))
 	cfg.Cluster = 9
 	_, err := Recount(cfg, ct.head)
-	want := "replica: the directory belongs to another node or cluster: /n holds node 2 of 3 in cluster 7, not cluster 9"
+	want := "replica: the directory belongs to another node or cluster: it holds node 2 of 3 in cluster 7, not cluster 9"
 	if !errors.Is(err, ErrIdentity) || err.Error() != want {
 		t.Fatalf("recount in cluster 9: %v, want %q", err, want)
 	}

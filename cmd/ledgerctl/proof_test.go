@@ -334,7 +334,7 @@ func TestVerifyDirOfAnotherClusterIsAUsageError(t *testing.T) {
 	before := tree(t, data)
 	var out, errs bytes.Buffer
 	code := run(args("verify dir "+data+" -head "+head+" -keys "+keys), &out, &errs)
-	want := "ledgerctl: LEDGER_CLUSTER=2 is not the cluster of this directory: replica: the directory belongs to another node or cluster: /copy holds node 2 of 3 in cluster 1, not cluster 2\n"
+	want := "ledgerctl: LEDGER_CLUSTER=2 is not the cluster of this directory: replica: the directory belongs to another node or cluster: it holds node 2 of 3 in cluster 1, not cluster 2\n"
 	if code != 2 || out.String() != "" || errs.String() != want {
 		t.Fatalf("exit %d, stdout %q, stderr %q, want exit 2 and %q", code, out.String(), errs.String(), want)
 	}

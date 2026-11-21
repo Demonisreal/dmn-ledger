@@ -29,10 +29,10 @@ plan runs the measurement plan: it builds ledgerd and ledgerctl from the reposit
 machine, probes the disk, starts the container dmn-ledger-bench-pg when Postgres is part of the run,
 and writes one raw file per run to OUT/raw together with plan.json, plan.txt, machine.txt and
 postgres.txt. DIR holds the data of the nodes and of Postgres; it must be on ext4, and DIR/run and
-DIR/pg must be empty. Runs whose raw file is there already are skipped, so a plan that stopped goes on where it
-stopped. The plan refuses to start without a memory limit on its own cgroup: start it through
-scripts/bench.sh. -smoke runs the same plan with one pass and judges nothing: the stages of m1
-with 2 s to warm up, a window of 6 s and 3 s to drain, up to the first saturated stage, the other
+DIR/pg must be empty. Runs whose raw file is there already are skipped, so a plan that stopped goes
+on where it stopped. The plan refuses to start without a memory limit on its own cgroup: start it
+through scripts/bench.sh. -smoke runs the same plan with one pass and judges nothing: the stages of
+m1 with 2 s to warm up, a window of 6 s and 3 s to drain, up to the first saturated stage, the other
 runs with windows of 3 s; it takes about 20 minutes. -only keeps the runs whose id matches, together
 with their repeats and later passes.
 

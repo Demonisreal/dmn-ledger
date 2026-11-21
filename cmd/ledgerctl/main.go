@@ -52,7 +52,8 @@ there is "no verdict".
 
 init makes DIR the data directory of node -id in a cluster of -nodes nodes. ledgerd starts on no
 other directory. It is for a node that has never run: the votes and acknowledgements of a node are
-in its directory and nowhere else, and a node that lost it cannot come back under its ID.`
+in its directory and nowhere else, and init cannot tell whether the node ran. A node that lost its
+directory must stay down; started on a new one under its old ID, it can lose committed entries.`
 
 var patience = 10 * time.Second
 

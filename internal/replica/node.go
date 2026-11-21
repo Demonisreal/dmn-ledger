@@ -160,7 +160,7 @@ func Open(cfg Config) (_ *Node, err error) {
 	held := n.meta.Identity()
 	switch {
 	case cfg.recount && held.Cluster != own.Cluster:
-		return nil, fmt.Errorf("%w: %s holds %s, not cluster %d", ErrIdentity, cfg.Dir, held, own.Cluster)
+		return nil, fmt.Errorf("%w: it holds %s, not cluster %d", ErrIdentity, held, own.Cluster)
 	case !cfg.recount && held != own:
 		return nil, fmt.Errorf("%w: %s holds %s, not %s", ErrIdentity, cfg.Dir, held, own)
 	}

@@ -80,6 +80,17 @@ func TestInitRefusals(t *testing.T) {
 	}
 	t.Setenv("LEDGER_CLUSTER", "7")
 
+	cwd := mkdir(t, at("cwd"))
+	mkdir(t, filepath.Join(cwd, "n1"))
+	t.Chdir(cwd)
+	var out0, errs0 bytes.Buffer
+	if code := run([]string{"init", "-id", "1", "-nodes", "1", ""}, &out0, &errs0); code != 2 || errs0.String() != "ledgerctl init: want one directory\n" {
+		t.Errorf("init with an empty DIR: exit %d, stderr %q, want exit 2 and want one directory", code, errs0.String())
+	}
+	if names := slices.Sorted(maps.Keys(tree(t, cwd))); !slices.Equal(names, []string{cwd, filepath.Join(cwd, "n1")}) {
+		t.Fatalf("init with an empty DIR left %v in the working directory", names)
+	}
+
 	left := mkdir(t, at("left"))
 	write(t, filepath.Join(left, disk.LockName), nil)
 	write(t, filepath.Join(left, "meta.tmp"), []byte("half of an earlier init"))

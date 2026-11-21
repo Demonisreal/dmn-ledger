@@ -19,7 +19,7 @@ func (c *ctl) initDir(args []string) int {
 		return code
 	}
 	switch {
-	case len(dirs) != 1:
+	case len(dirs) != 1 || dirs[0] == "":
 		return c.misuse(flags, "want one directory")
 	case *nodes != 1 && *nodes != 3 && *nodes != 5:
 		return c.misuse(flags, "-nodes: want 1, 3 or 5")

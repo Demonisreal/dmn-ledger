@@ -132,6 +132,7 @@ func (c *Cluster) launch(ctx context.Context) error {
 		return err
 	}
 	peers, clients := ports[:c.cfg.Nodes], ports[c.cfg.Nodes:]
+	var made []*node
 	for i := range c.cfg.Nodes {
 		n := &node{id: i + 1, addr: clients[i]}
 		n.log = filepath.Join(c.run, n.name()+".log")
@@ -158,6 +159,9 @@ func (c *Cluster) launch(ctx context.Context) error {
 		if msg, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("init %s: %w: %s", n.name(), err, bytes.TrimSpace(msg))
 		}
+		made = append(made, n)
+	}
+	for _, n := range made {
 		if err := n.start(c.cfg.Bin); err != nil {
 			return fmt.Errorf("start %s: %w", n.name(), err)
 		}

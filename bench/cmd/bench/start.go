@@ -230,7 +230,7 @@ func (b *bench) buildAll(ctx context.Context) error {
 			continue
 		}
 		folder := cmp.Or(kind, "normal")
-		fmt.Fprintf(b.log, "build ledgerd, %s\n", folder)
+		fmt.Fprintf(b.log, "build ledgerd and ledgerctl, %s\n", folder)
 		out := filepath.Join(b.dir, "bin", folder)
 		if err := os.MkdirAll(out, 0o750); err != nil {
 			return err
