@@ -17,6 +17,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/replica"
 	"github.com/Demonisreal/dmn-ledger/internal/server"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 )
 
 func main() {
@@ -51,6 +52,14 @@ func run(ctx context.Context, environ []string, stderr io.Writer) int {
 	srv, clients, err := start(cfg, disks, logger)
 	if errors.Is(err, replica.ErrMaxSessions) {
 		logger.Printf("node %d cannot start: LEDGER_MAX_SESSIONS=%d does not fit the data directory, set the value the cluster runs with: %v", cfg.id, cfg.maxSessions, err)
+		return 2
+	}
+	if errors.Is(err, wal.ErrNoMeta) {
+		logger.Printf(`node %d cannot start: LEDGER_DIR=%s is not initialised, "ledgerctl init" makes the directory of a node that never ran, a node that lost its directory must stay down: %v`, cfg.id, cfg.dir, err)
+		return 2
+	}
+	if errors.Is(err, replica.ErrIdentity) {
+		logger.Printf("node %d cannot start: LEDGER_DIR=%s belongs to another node or cluster, compare LEDGER_ID, LEDGER_PEERS, LEDGER_CLUSTER and LEDGER_DIR: %v", cfg.id, cfg.dir, err)
 		return 2
 	}
 	if err != nil {

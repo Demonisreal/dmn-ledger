@@ -30,6 +30,7 @@ const usage = `usage:
   ledgerctl verify proof FILE... -keys FILE [-unsigned]
   ledgerctl verify chain OLDER NEWER -keys FILE [-links FILE]
   ledgerctl verify dir DIR -head FILE -keys FILE
+  ledgerctl init -id N -nodes N DIR
 IDs and amounts are decimal or 0x, TIME is the timestamp of the first record of a batch, in
 nanoseconds or as printed by create. LEDGER_CLUSTER names the cluster, LEDGER_NODES the client
 addresses of its nodes in the order of their IDs, separated by commas; verify dir reads
@@ -47,7 +48,11 @@ came from: SHA-256 shows that the newer head continues the older one. "CONFLICT"
 for two heads with the same number and different hashes; that needs no links and shows that their
 signers vouch for two histories. Links that do not connect show nothing about the heads, because
 nobody vouches for links: from a file given with -links they are "invalid", from the cluster
-there is "no verdict".`
+there is "no verdict".
+
+init makes DIR the data directory of node -id in a cluster of -nodes nodes. ledgerd starts on no
+other directory. It is for a node that has never run: the votes and acknowledgements of a node are
+in its directory and nowhere else, and a node that lost it cannot come back under its ID.`
 
 var patience = 10 * time.Second
 
@@ -82,13 +87,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		"verify proof":    c.verifyProofs,
 		"verify chain":    c.verifyChain,
 		"verify dir":      c.verifyDir,
+		"init":            c.initDir,
 	}
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "-help" || args[0] == "help") {
 		fmt.Fprintln(stderr, usage)
 		return 0
 	}
 	name := strings.Join(args[:min(2, len(args))], " ")
-	if len(args) > 0 && (args[0] == "status" || args[0] == "head") {
+	if len(args) > 0 && (args[0] == "status" || args[0] == "head" || args[0] == "init") {
 		name = args[0]
 	}
 	cmd, ok := commands[name]

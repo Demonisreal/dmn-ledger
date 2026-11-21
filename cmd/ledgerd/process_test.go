@@ -3,13 +3,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"hash/crc32"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -125,6 +132,25 @@ func dataDir(t *testing.T, id, nodes int) string {
 	return dir
 }
 
+func earlierMeta(t *testing.T, dir string) {
+	t.Helper()
+	raw := make([]byte, wal.MetaStride+wal.MetaSlotLen)
+	for seq, off := range []int{0, wal.MetaStride} {
+		slot := raw[off : off+wal.MetaSlotLen]
+		binary.LittleEndian.PutUint64(slot, uint64(seq))
+		binary.LittleEndian.PutUint64(slot[8:], 3)
+		binary.LittleEndian.PutUint64(slot[16:], 2)
+		binary.LittleEndian.PutUint32(slot[36:], crc32.Checksum(slot[:36], crc32.MakeTable(crc32.Castagnoli)))
+	}
+	if err := os.WriteFile(filepath.Join(dir, wal.MetaName), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func loggedAlone(logs, line string) bool {
+	return regexp.MustCompile(`^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\.\d{6} ` + regexp.QuoteMeta(line) + "\n$").MatchString(logs)
+}
+
 func nodeEnv(id int, peers []string, client, dir string, extra ...string) []string {
 	return append([]string{
 		"LEDGER_ID=" + strconv.Itoa(id),
@@ -221,6 +247,34 @@ func TestExitCodes(t *testing.T) {
 			t.Fatalf("exit %d, log:\n%s\nwant exit 2 and %q", code, p.logs(t), want)
 		}
 	})
+	t.Run("2 or 3 on a directory that is not the node's", func(t *testing.T) {
+		addrs := freeAddrs(t, 4)
+		missing := filepath.Join(t.TempDir(), "missing")
+		empty := t.TempDir()
+		other, wider, single := dataDir(t, 2, 3), dataDir(t, 1, 3), dataDir(t, 1, 1)
+		earlier := t.TempDir()
+		earlierMeta(t, earlier)
+		const noMeta = `node 1 cannot start: LEDGER_DIR=%s is not initialised, "ledgerctl init" makes the directory of a node that never ran, a node that lost its directory must stay down: wal: no meta: %s`
+		const foreign = "node 1 cannot start: LEDGER_DIR=%[1]s belongs to another node or cluster, compare LEDGER_ID, LEDGER_PEERS, LEDGER_CLUSTER and LEDGER_DIR: replica: the directory belongs to another node or cluster: %[1]s holds %s, not %s"
+		for _, tc := range []struct {
+			name string
+			env  []string
+			code int
+			want string
+		}{
+			{"no directory", nodeEnv(1, addrs[:1], addrs[3], missing), 2, fmt.Sprintf(noMeta, missing, missing+" does not exist")},
+			{"empty directory", nodeEnv(1, addrs[:1], addrs[3], empty), 2, fmt.Sprintf(noMeta, empty, empty+"/meta")},
+			{"directory of another node", nodeEnv(1, addrs[:3], addrs[3], other), 2, fmt.Sprintf(foreign, other, "node 2 of 3 in cluster 1", "node 1 of 3 in cluster 1")},
+			{"of another number of nodes", nodeEnv(1, addrs[:1], addrs[3], wider), 2, fmt.Sprintf(foreign, wider, "node 1 of 3 in cluster 1", "node 1 of 1 in cluster 1")},
+			{"of another cluster", nodeEnv(1, addrs[:1], addrs[3], single, "LEDGER_CLUSTER=2"), 2, fmt.Sprintf(foreign, single, "node 1 of 1 in cluster 1", "node 1 of 1 in cluster 2")},
+			{"meta of an earlier build", nodeEnv(1, addrs[:1], addrs[3], earlier), 3, "node 1 cannot start: wal: unknown format version: " + earlier + "/meta holds no identity, an earlier build wrote it"},
+		} {
+			p := launch(t, tc.env...)
+			if code := p.exit(t); code != tc.code || !loggedAlone(p.logs(t), tc.want) {
+				t.Errorf("%s: exit %d, log:\n%s\nwant exit %d and the line %q", tc.name, code, p.logs(t), tc.code, tc.want)
+			}
+		}
+	})
 	t.Run("3 on a locked directory", func(t *testing.T) {
 		addrs := freeAddrs(t, 4)
 		dir := dataDir(t, 1, 1)
@@ -253,6 +307,64 @@ func TestExitCodes(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestLedgerdCreatesNoDirectory(t *testing.T) {
+	addrs := freeAddrs(t, 2)
+	missing := filepath.Join(t.TempDir(), "missing")
+	empty := t.TempDir()
+	for _, dir := range []string{missing, empty} {
+		p := launch(t, nodeEnv(1, addrs[:1], addrs[1], dir)...)
+		if code := p.exit(t); code != 2 {
+			t.Fatalf("%s: exit %d, log:\n%s", dir, code, p.logs(t))
+		}
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ledgerd made %s: %v", missing, err)
+	}
+	ents, err := os.ReadDir(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	if !slices.Equal(names, []string{disk.LockName}) {
+		t.Errorf("ledgerd left %v in an empty directory, want only %s", names, disk.LockName)
+	}
+}
+
+func TestInitOutput(t *testing.T) {
+	parent := t.TempDir()
+	cmd := exec.Command(filepath.Join(bin, "ledgerctl"), "init", "-id", "2", "-nodes", "3", "n2") //nolint:gosec // G204: the binary TestMain built
+	cmd.Dir = parent
+	cmd.Env = []string{"LEDGER_CLUSTER=1"}
+	var out, errs bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errs
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ledgerctl init: %v, stderr %q", err, errs.String())
+	}
+	dir := filepath.Join(parent, "n2")
+	want := "initialised " + dir + " as node 2 of 3 in cluster 1\n" +
+		"start it only if node 2 has never run in cluster 1: a node that ran has voted and acknowledged entries, and this directory knows none of that\n"
+	if out.String() != want || errs.String() != "" {
+		t.Fatalf("stdout %q, stderr %q, want %q", out.String(), errs.String(), want)
+	}
+
+	addrs := freeAddrs(t, 4)
+	wrong := launch(t, nodeEnv(3, addrs[:3], addrs[3], dir)...)
+	refused := "node 3 cannot start: LEDGER_DIR=" + dir + " belongs to another node or cluster, compare LEDGER_ID, LEDGER_PEERS, LEDGER_CLUSTER and LEDGER_DIR: replica: the directory belongs to another node or cluster: " + dir + " holds node 2 of 3 in cluster 1, not node 3 of 3 in cluster 1"
+	if code := wrong.exit(t); code != 2 || !loggedAlone(wrong.logs(t), refused) {
+		t.Fatalf("node 3: exit %d, log:\n%s\nwant exit 2 and the line %q", code, wrong.logs(t), refused)
+	}
+	right := launch(t, nodeEnv(2, addrs[:3], addrs[3], dir)...)
+	awaitStatus(t, addrs[3], anyStatus)
+	right.signal(t, syscall.SIGTERM)
+	started := fmt.Sprintf(" node 2 of 3 in cluster 1 started: peers on %s, clients on %s, term 0, repair no, no key", addrs[1], addrs[3])
+	if code := right.exit(t); code != 0 || !strings.Contains(right.logs(t), started+"\n") {
+		t.Fatalf("node 2: exit %d, log:\n%s\nwant a line ending in %q", code, right.logs(t), started)
+	}
 }
 
 func TestLedgerdRefusesStrangersAtThePeerPort(t *testing.T) {

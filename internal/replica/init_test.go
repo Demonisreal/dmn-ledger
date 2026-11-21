@@ -2,6 +2,7 @@ package replica
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"math/rand/v2"
 	"slices"
@@ -135,42 +136,72 @@ func TestInitCrashAtEveryDiskAccess(t *testing.T) {
 		}
 		return n.Close()
 	}
-	for _, journal := range []float64{0, 0.5, 1} {
-		for _, shred := range []float64{0, 1} {
-			accesses := 0
-			for k := uint64(1); ; k++ {
-				d := disk.NewSim(rand.New(rand.NewPCG(k, 3)))
-				d.JournalRate, d.ShredRate = journal, shred
-				d.FailAfter(k)
-				if Init(d, "/n", node2) == nil {
-					accesses = int(k) - 1
-					break
-				}
-				d.FailAfter(0)
-				d.Crash()
-				err := open(d)
-				switch {
-				case errors.Is(err, wal.ErrNoMeta):
-					if err := Init(d, "/n", node2); err != nil {
-						t.Fatalf("journal %v shred %v access %d: init after a refused start: %v", journal, shred, k, err)
+	for _, start := range []struct {
+		name     string
+		empty    bool
+		accesses int
+	}{
+		{"no directory", false, 9},
+		{"an empty directory", true, 10},
+	} {
+		for _, crash := range []struct {
+			name  string
+			power bool
+		}{
+			{"power loss", true},
+			{"process crash", false},
+		} {
+			for _, journal := range []float64{0, 0.5, 1} {
+				for _, shred := range []float64{0, 1} {
+					run := fmt.Sprintf("%s, %s, journal %v shred %v", start.name, crash.name, journal, shred)
+					accesses, refused, opened := 0, 0, 0
+					for k := uint64(1); ; k++ {
+						d := disk.NewSim(rand.New(rand.NewPCG(k, 3)))
+						d.JournalRate, d.ShredRate = journal, shred
+						if start.empty {
+							if err := d.MkdirAll("/n"); err != nil {
+								t.Fatal(err)
+							}
+						}
+						d.FailAfter(k)
+						if Init(d, "/n", node2) == nil {
+							accesses = int(k) - 1
+							break
+						}
+						d.FailAfter(0)
+						if crash.power {
+							d.Crash()
+						}
+						err := open(d)
+						switch {
+						case errors.Is(err, wal.ErrNoMeta):
+							refused++
+							if err := Init(d, "/n", node2); err != nil {
+								t.Fatalf("%s, access %d: init after a refused start: %v", run, k, err)
+							}
+						case err != nil:
+							t.Fatalf("%s, access %d: open after the crash: %v", run, k, err)
+						default:
+							opened++
+							if err := Init(d, "/n", node2); !errors.Is(err, ErrInitialised) {
+								t.Fatalf("%s, access %d: init on a directory that opens: %v", run, k, err)
+							}
+						}
+						if err := open(d); err != nil {
+							t.Fatalf("%s, access %d: open after the second init: %v", run, k, err)
+						}
+						d.Crash()
+						if err := open(d); err != nil {
+							t.Fatalf("%s, access %d: open after one more power loss: %v", run, k, err)
+						}
 					}
-				case err != nil:
-					t.Fatalf("journal %v shred %v access %d: open after the power loss: %v", journal, shred, k, err)
-				default:
-					if err := Init(d, "/n", node2); !errors.Is(err, ErrInitialised) {
-						t.Fatalf("journal %v shred %v access %d: init on a directory that opens: %v", journal, shred, k, err)
+					if accesses != start.accesses {
+						t.Fatalf("%s: init makes %d disk accesses that can fail, want %d", run, accesses, start.accesses)
+					}
+					if (journal > 0 || !crash.power) && (refused == 0 || opened == 0) {
+						t.Fatalf("%s: %d crashes left a directory that is refused and %d one that opens, want both", run, refused, opened)
 					}
 				}
-				if err := open(d); err != nil {
-					t.Fatalf("journal %v shred %v access %d: open after the second init: %v", journal, shred, k, err)
-				}
-				d.Crash()
-				if err := open(d); err != nil {
-					t.Fatalf("journal %v shred %v access %d: open after one more power loss: %v", journal, shred, k, err)
-				}
-			}
-			if accesses != 9 {
-				t.Fatalf("journal %v shred %v: init makes %d disk accesses that can fail, want 9", journal, shred, accesses)
 			}
 		}
 	}

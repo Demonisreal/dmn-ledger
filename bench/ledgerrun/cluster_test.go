@@ -20,7 +20,7 @@ import (
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
 
-var bin string
+var bin, ctl string
 
 var tiny = load.Workload{Name: "tiny", Accounts: 10}
 
@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	bin, err = Build(context.Background(), "../..", dir)
+	bin, ctl, err = Build(context.Background(), "../..", dir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		_ = os.RemoveAll(dir)
@@ -43,7 +43,7 @@ func TestMain(m *testing.M) {
 
 func startCluster(t *testing.T, cfg Config) *Cluster {
 	t.Helper()
-	cfg.Bin, cfg.Dir = bin, t.TempDir()
+	cfg.Bin, cfg.Ctl, cfg.Dir = bin, ctl, t.TempDir()
 	c, err := Start(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -497,7 +497,7 @@ func TestFailedStartLeavesNoNode(t *testing.T) {
 			dir := t.TempDir()
 			ctx, cancel := context.WithTimeout(t.Context(), tc.wait)
 			defer cancel()
-			c, err := Start(ctx, Config{Bin: bin, Dir: dir, Nodes: 3, Lanes: 1, Env: tc.env})
+			c, err := Start(ctx, Config{Bin: bin, Ctl: ctl, Dir: dir, Nodes: 3, Lanes: 1, Env: tc.env})
 			if !errors.Is(err, tc.want) {
 				if c != nil {
 					_ = c.Close()
@@ -514,12 +514,27 @@ func TestFailedStartLeavesNoNode(t *testing.T) {
 	}
 }
 
+func TestFailedInitNamesTheNodeAndWhatLedgerctlSaid(t *testing.T) {
+	dir := t.TempDir()
+	_, err := Start(t.Context(), Config{Bin: bin, Ctl: ctl, Dir: dir, Nodes: 3, Lanes: 1, Env: []string{"LEDGER_CLUSTER=0"}})
+	want := `init n1: exit status 2: ledgerctl: LEDGER_CLUSTER="0": want a number from 1 to 2^64-1, decimal or 0x`
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %q", err, want)
+	}
+	if left := ours(t); len(left) > 0 {
+		t.Fatalf("ledgerd processes %v run after a failed init", left)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "run")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("run directory still there: %v", err)
+	}
+}
+
 func TestStartWantsAnEmptyRunDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "run", "n1"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Start(t.Context(), Config{Bin: bin, Dir: dir, Nodes: 1, Lanes: 1}); !errors.Is(err, ErrLeftover) {
+	if _, err := Start(t.Context(), Config{Bin: bin, Ctl: ctl, Dir: dir, Nodes: 1, Lanes: 1}); !errors.Is(err, ErrLeftover) {
 		t.Fatalf("got %v, want ErrLeftover", err)
 	}
 }

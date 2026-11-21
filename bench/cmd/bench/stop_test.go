@@ -227,14 +227,14 @@ func TestHangUpStopsThePlan(t *testing.T) {
 
 func TestStageWithoutRoomEndsTheChain(t *testing.T) {
 	bins := t.TempDir()
-	bin, err := ledgerrun.Build(t.Context(), "../../..", bins)
+	bin, ctl, err := ledgerrun.Build(t.Context(), "../../..", bins)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
 	fsys := machine("6442450944", "0", "16000000")
 	cg, _ := ownCgroup(fsys)
-	b := &bench{root: fsys, cgroup: cg, dir: dir, bins: map[string]string{"": bin}, th: control.Defaults(), log: io.Discard, files: map[string]*raw.File{}}
+	b := &bench{root: fsys, cgroup: cg, dir: dir, bins: map[string]string{"": bin}, ctls: map[string]string{"": ctl}, th: control.Defaults(), log: io.Discard, files: map[string]*raw.File{}}
 	var runs []run
 	for i, rate := range []int{1_000_000, 2_000_000} {
 		runs = append(runs, run{m: "m1", pass: 1, nr: 1, target: l1, lanes: 1, workload: "uniform-10k", rate: rate, stage: i + 1, timing: shape{smoke: true}.stage()})
@@ -251,11 +251,11 @@ func TestStageWithoutRoomEndsTheChain(t *testing.T) {
 }
 
 func TestBounceStopsAFollower(t *testing.T) {
-	bin, err := ledgerrun.Build(t.Context(), "../../..", t.TempDir())
+	bin, ctl, err := ledgerrun.Build(t.Context(), "../../..", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := ledgerrun.Start(t.Context(), ledgerrun.Config{Bin: bin, Dir: t.TempDir(), Nodes: 3, Lanes: 1})
+	c, err := ledgerrun.Start(t.Context(), ledgerrun.Config{Bin: bin, Ctl: ctl, Dir: t.TempDir(), Nodes: 3, Lanes: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,14 +329,14 @@ func TestStageWithoutRoomIsNotTriedAgain(t *testing.T) {
 
 func TestFailedRunLeavesNoNode(t *testing.T) {
 	bins := t.TempDir()
-	bin, err := ledgerrun.Build(t.Context(), "../../..", bins)
+	bin, ctl, err := ledgerrun.Build(t.Context(), "../../..", bins)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
 	fsys := machine("6442450944", "0", "16000000")
 	cg, _ := ownCgroup(fsys)
-	b := &bench{root: fsys, cgroup: cg, dir: dir, bins: map[string]string{"": bin}, th: control.Defaults(), log: io.Discard}
+	b := &bench{root: fsys, cgroup: cg, dir: dir, bins: map[string]string{"": bin}, ctls: map[string]string{"": ctl}, th: control.Defaults(), log: io.Discard}
 	r := run{m: "m7", pass: 1, nr: 1, target: l1, lanes: 1, workload: "uniform-10k", rate: 100, stop: true, timing: shape{smoke: true}.fixed()}
 	err = b.onLedger(t.Context(), []run{r})
 	if err == nil {

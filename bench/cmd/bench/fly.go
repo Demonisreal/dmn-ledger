@@ -52,7 +52,7 @@ type bench struct {
 	log            io.Writer
 	root           fs.FS
 	items          []item
-	bins           map[string]string
+	bins, ctls     map[string]string
 	build          raw.Build
 	machine        control.Machine
 	probe          control.Probe
@@ -195,7 +195,7 @@ func (b *bench) onLedger(ctx context.Context, runs []run) (err error) {
 	if err := awaitMemory(ctx, b.root, []string{b.cgroup}, b.log); err != nil {
 		return err
 	}
-	cfg := ledgerrun.Config{Bin: b.bins[first.build], Dir: b.dir, Nodes: first.target.nodes, Lanes: first.lanes, Pin: true, Env: first.env()}
+	cfg := ledgerrun.Config{Bin: b.bins[first.build], Ctl: b.ctls[first.build], Dir: b.dir, Nodes: first.target.nodes, Lanes: first.lanes, Pin: true, Env: first.env()}
 	if first.build == "pprof" {
 		cfg.Profiles = filepath.Join(b.dir, "prof", first.id())
 		if err := os.MkdirAll(cfg.Profiles, 0o750); err != nil {

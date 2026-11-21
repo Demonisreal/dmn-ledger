@@ -1,12 +1,14 @@
 package ledgerrun
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -49,6 +51,7 @@ const (
 
 type Config struct {
 	Bin      string
+	Ctl      string
 	Dir      string
 	Nodes    int
 	Lanes    int
@@ -149,6 +152,11 @@ func (c *Cluster) launch(ctx context.Context) error {
 		n.env = env
 		if c.cfg.Pin {
 			n.cores = cpus(i)
+		}
+		cmd := exec.CommandContext(ctx, c.cfg.Ctl, "init", "-id", strconv.Itoa(n.id), "-nodes", strconv.Itoa(c.cfg.Nodes), n.dir) //nolint:gosec // G204: the ledgerctl that Build made
+		cmd.Env = []string{"LEDGER_CLUSTER=" + c.env["LEDGER_CLUSTER"]}
+		if msg, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("init %s: %w: %s", n.name(), err, bytes.TrimSpace(msg))
 		}
 		if err := n.start(c.cfg.Bin); err != nil {
 			return fmt.Errorf("start %s: %w", n.name(), err)

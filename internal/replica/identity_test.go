@@ -69,12 +69,19 @@ func TestOpenRefusesADirectoryWithoutMeta(t *testing.T) {
 		{"empty", empty},
 		{"with wal and snap", used},
 	} {
-		before := tc.d.Durable()
+		listed := func() string {
+			names, err := tc.d.List("/n")
+			return fmt.Sprint(names, err)
+		}
+		before, held := tc.d.Durable(), listed()
 		if _, err := tn.probe(1, tc.d); !errors.Is(err, wal.ErrNoMeta) {
 			t.Errorf("%s: open = %v, want wal.ErrNoMeta", tc.name, err)
 		}
 		if after := tc.d.Durable(); !slices.Equal(after, before) {
 			t.Errorf("%s: durable files %v, before the start %v", tc.name, after, before)
+		}
+		if after := listed(); after != held {
+			t.Errorf("%s: /n lists %s, before the start %s", tc.name, after, held)
 		}
 	}
 	if _, err := missing.List("/n"); !errors.Is(err, fs.ErrNotExist) {

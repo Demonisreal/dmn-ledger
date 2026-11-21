@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -336,8 +337,8 @@ func TestNodeWithoutMetaDoesNotStart(t *testing.T) {
 	}
 	select {
 	case err := <-exited:
-		if err == nil {
-			t.Fatal("n2 without meta ended without an error")
+		if exit, ok := errors.AsType[*exec.ExitError](err); !ok || exit.ExitCode() != 2 {
+			t.Fatalf("n2 without meta ended with %v, want exit 2", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("n2 without meta kept running")

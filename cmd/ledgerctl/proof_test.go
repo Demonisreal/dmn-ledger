@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,7 +18,10 @@ import (
 
 	"github.com/Demonisreal/dmn-ledger/internal/audit"
 	"github.com/Demonisreal/dmn-ledger/internal/client"
+	"github.com/Demonisreal/dmn-ledger/internal/disk"
 	"github.com/Demonisreal/dmn-ledger/internal/notary"
+	"github.com/Demonisreal/dmn-ledger/internal/replica"
+	"github.com/Demonisreal/dmn-ledger/internal/wal"
 	"github.com/Demonisreal/dmn-ledger/internal/wire"
 	"github.com/Demonisreal/dmn-ledger/ledger"
 )
@@ -309,5 +313,53 @@ func TestProofsAndTheirChecks(t *testing.T) {
 	step{args("verify dir " + data + " -head " + at("later") + " -keys " + at("keys")), 2, `LEDGER_MAX_SESSIONS="0": want a number from 1 to 1000000`}.check(t)
 	if digest(t, data) != before {
 		t.Fatal("verify dir changed the directory it checked")
+	}
+}
+
+func signedHead(t *testing.T, dir string, cluster uint64) (string, string) {
+	t.Helper()
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	head := audit.Head{Seq: 1, Hash: [32]byte{1}}
+	keys := write(t, filepath.Join(dir, "keys"), []byte(hex.EncodeToString(key.Public().(ed25519.PublicKey))+"\n"))
+	return write(t, filepath.Join(dir, "head"), append(audit.AppendHead(nil, head), notary.Sign(key, cluster, head)...)), keys
+}
+
+func TestVerifyDirOfAnotherClusterIsAUsageError(t *testing.T) {
+	data := t.TempDir()
+	if err := replica.Init(disk.OS{}, data, wal.Identity{Cluster: 1, Node: 2, Nodes: 3}); err != nil {
+		t.Fatal(err)
+	}
+	head, keys := signedHead(t, t.TempDir(), 2)
+	t.Setenv("LEDGER_CLUSTER", "2")
+	before := tree(t, data)
+	var out, errs bytes.Buffer
+	code := run(args("verify dir "+data+" -head "+head+" -keys "+keys), &out, &errs)
+	want := "ledgerctl: LEDGER_CLUSTER=2 is not the cluster of this directory: replica: the directory belongs to another node or cluster: /copy holds node 2 of 3 in cluster 1, not cluster 2\n"
+	if code != 2 || out.String() != "" || errs.String() != want {
+		t.Fatalf("exit %d, stdout %q, stderr %q, want exit 2 and %q", code, out.String(), errs.String(), want)
+	}
+	if !maps.Equal(tree(t, data), before) {
+		t.Fatal("verify dir changed the directory it checked")
+	}
+}
+
+func TestVerifyDirWithoutMetaDoesNotOpen(t *testing.T) {
+	empty := t.TempDir()
+	logged := t.TempDir()
+	if err := os.Mkdir(filepath.Join(logged, "wal"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	head, keys := signedHead(t, t.TempDir(), 1)
+	t.Setenv("LEDGER_CLUSTER", "1")
+	for _, dir := range []string{empty, logged} {
+		before := tree(t, dir)
+		var out, errs bytes.Buffer
+		code := run(args("verify dir "+dir+" -head "+head+" -keys "+keys), &out, &errs)
+		if want := "does not open: wal: no meta: /copy/meta\n"; code != 1 || out.String() != want || errs.String() != "" {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q, want exit 1 and %q", dir, code, out.String(), errs.String(), want)
+		}
+		if !maps.Equal(tree(t, dir), before) {
+			t.Errorf("verify dir changed %s", dir)
+		}
 	}
 }

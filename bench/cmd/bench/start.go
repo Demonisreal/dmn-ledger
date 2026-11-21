@@ -223,7 +223,7 @@ func (b *bench) readFiles() error {
 }
 
 func (b *bench) buildAll(ctx context.Context) error {
-	b.bins = make(map[string]string)
+	b.bins, b.ctls = make(map[string]string), make(map[string]string)
 	for _, it := range b.items {
 		kind := it.runs[0].build
 		if _, ok := b.bins[kind]; ok || !b.selected(it) || it.runs[0].target.kind != "ledger" {
@@ -235,11 +235,11 @@ func (b *bench) buildAll(ctx context.Context) error {
 		if err := os.MkdirAll(out, 0o750); err != nil {
 			return err
 		}
-		bin, err := ledgerrun.Build(ctx, b.repo, out, it.runs[0].tags()...)
+		bin, ctl, err := ledgerrun.Build(ctx, b.repo, out, it.runs[0].tags()...)
 		if err != nil {
 			return err
 		}
-		b.bins[kind] = bin
+		b.bins[kind], b.ctls[kind] = bin, ctl
 	}
 	return nil
 }

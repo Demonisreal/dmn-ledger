@@ -259,6 +259,9 @@ func (c *ctl) verifyDir(args []string) int {
 	case errors.Is(err, replica.ErrMaxSessions):
 		fmt.Fprintf(c.stderr, "ledgerctl: LEDGER_MAX_SESSIONS=%d is not the value of this directory: %v\n", sessions, err)
 		return 2
+	case errors.Is(err, replica.ErrIdentity):
+		fmt.Fprintf(c.stderr, "ledgerctl: LEDGER_CLUSTER=%d is not the cluster of this directory: %v\n", c.cluster, err)
+		return 2
 	case errors.Is(err, wal.ErrCorrupt):
 		fmt.Fprintf(c.stdout, "damaged: %v\n", err)
 		return 1

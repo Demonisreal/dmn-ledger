@@ -25,11 +25,11 @@ const usage = `usage:
 selftest drives the null target at 200 000 transfers a second and a target that stalls for one
 second, and fails when the generator itself adds more than 1 ms at p99.
 
-plan runs the measurement plan: it builds ledgerd from the repository, checks the machine, probes
-the disk, starts the container dmn-ledger-bench-pg when Postgres is part of the run, and writes one
-raw file per run to OUT/raw together with plan.json, plan.txt, machine.txt and postgres.txt. DIR
-holds the data of the nodes and of Postgres; it must be on ext4, and DIR/run and DIR/pg must be
-empty. Runs whose raw file is there already are skipped, so a plan that stopped goes on where it
+plan runs the measurement plan: it builds ledgerd and ledgerctl from the repository, checks the
+machine, probes the disk, starts the container dmn-ledger-bench-pg when Postgres is part of the run,
+and writes one raw file per run to OUT/raw together with plan.json, plan.txt, machine.txt and
+postgres.txt. DIR holds the data of the nodes and of Postgres; it must be on ext4, and DIR/run and
+DIR/pg must be empty. Runs whose raw file is there already are skipped, so a plan that stopped goes on where it
 stopped. The plan refuses to start without a memory limit on its own cgroup: start it through
 scripts/bench.sh. -smoke runs the same plan with one pass and judges nothing: the stages of m1
 with 2 s to warm up, a window of 6 s and 3 s to drain, up to the first saturated stage, the other
